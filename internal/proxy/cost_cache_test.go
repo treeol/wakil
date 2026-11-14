@@ -31,8 +31,8 @@ func TestOpenRouterHostGate(t *testing.T) {
 	if !isOpenRouterHost("https://us.openrouter.ai/api") {
 		t.Error("us.openrouter.ai must be recognised (regional host)")
 	}
-	if !isOpenRouterHost("https://api.openrouter.ai/v1") {
-		t.Error("api.openrouter.ai subdomain must be recognised")
+	if isOpenRouterHost("https://api.openrouter.ai/v1") {
+		t.Error("api.openrouter.ai must NOT be recognised (not one of the three exact hosts)")
 	}
 	if isOpenRouterHost("http://127.0.0.1:8080") {
 		t.Error("loopback must not be OpenRouter")

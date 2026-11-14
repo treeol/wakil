@@ -1683,7 +1683,12 @@ func (a *App) recordUsage(u proxy.UsageStat) {
 // clients). A nil client records nothing: there is no fallback to a.Client, so
 // main-turn usage can never be re-counted as aux. sourceKey is the caller's source;
 // empty means the standard inference source. nil tracker/client → no-op.
-func (a *App) RecordAuxInferenceCost(client *proxy.Client, sourceKey string) {
+//
+// When err is the failed Stream call's error, the same rule the main loop
+// uses for failed streams applies (RecordFailedStreamCost): no cost row is
+// recorded for an HTTP status that arrived before any stream data, for a
+// user cancellation, or when the client published no usage for the request.
+func (a *App) RecordAuxInferenceCost(client *proxy.Client, sourceKey string, err ...error) {
 	if a.Costs == nil {
 		return
 	}
@@ -1692,6 +1697,18 @@ func (a *App) RecordAuxInferenceCost(client *proxy.Client, sourceKey string) {
 	// would re-count main-turn tokens under the aux category.
 	if client == nil {
 		return
+	}
+	// Failed side-call rule, shared with the main loop: a pre-stream HTTP
+	// status or a user cancellation is refused, not billed; a request that
+	// published no usage (policy refusal, build failure) has nothing to
+	// attribute.
+	for _, e := range err {
+		if e == nil {
+			continue
+		}
+		if errors.Is(e, context.Canceled) || proxy.IsPreStreamStatus(e) {
+			return
+		}
 	}
 	c := client
 	u := c.LastUsage()

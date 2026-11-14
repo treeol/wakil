@@ -490,6 +490,38 @@ func TestIsULA(t *testing.T) {
 	}
 }
 
+// TestIsOpenRouterHostExactList pins the single OpenRouter classification
+// (Group 7): only the three exact hosts count, everywhere.
+func TestIsOpenRouterHostExactList(t *testing.T) {
+	for _, h := range []string{"openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai"} {
+		if !IsOpenRouterHost("https://" + h + "/api") {
+			t.Errorf("IsOpenRouterHost(https://%s) = false, want true", h)
+		}
+		if !IsOpenRouterHost(h) { // bare host name (classifyHost feeds bare names)
+			t.Errorf("IsOpenRouterHost(%s) = false, want true", h)
+		}
+	}
+	for _, h := range []string{"api.openrouter.ai", "evil-openrouter.ai", "openrouter.ai.evil.example", "localhost", "127.0.0.1"} {
+		if IsOpenRouterHost("https://" + h + "/api") {
+			t.Errorf("IsOpenRouterHost(https://%s) = true, want false", h)
+		}
+		if IsOpenRouterHost(h) {
+			t.Errorf("IsOpenRouterHost(%s) = true, want false (bare)", h)
+		}
+	}
+	// classifyHost agrees: the same three hosts classify as openrouter here.
+	for _, h := range []string{"openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai"} {
+		if got := classifyHost(h, nil); got != hostOpenRouter {
+			t.Errorf("classifyHost(%q) = %q, want openrouter", h, got)
+		}
+	}
+	for _, h := range []string{"api.openrouter.ai", "evil-openrouter.ai"} {
+		if got := classifyHost(h, nil); got != hostOther {
+			t.Errorf("classifyHost(%q) = %q, want other", h, got)
+		}
+	}
+}
+
 // TestClassifyHostExtras covers the remaining classifyHost branches.
 func TestClassifyHostExtras(t *testing.T) {
 	cases := map[string]string{

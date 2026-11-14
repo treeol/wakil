@@ -14,9 +14,16 @@ import (
 // a live facade (session created), and a subscribed event pump that delivers
 // turn events through the delivery callback.
 func TestBootstrapTUIFresh(t *testing.T) {
-	cfg := config.DefaultConfig()
+	// Hermetic copy of testManagerConfig (manager_rotation_test.go): the
+	// production endpoint resolution now needs an explicit backend URL, and
+	// the previous config relied on a stale default pointing at the host's
+	// discovery endpoint — which retried on the very backend error this
+	// test's submit input provokes, stalling the turn past the 5 s deadline.
+	srv := sseServer(t, []string{contentChunk("done")})
+	defer srv.Close()
+	cfg := testManagerConfig(t, srv.URL)
 	cfg.WorkDir = t.TempDir()
-	cfg.ExecMode = "direct"
+	cfg.HostWorkDir = cfg.WorkDir
 
 	var mu sync.Mutex
 	var delivered []event.Event
@@ -83,9 +90,11 @@ func TestBootstrapTUIResumeMissing(t *testing.T) {
 // left the facade with no subscription → no pump → turn events never reached
 // the TUI.
 func TestBootstrapTUISubscribeLive(t *testing.T) {
-	cfg := config.DefaultConfig()
+	srv := sseServer(t, []string{contentChunk("done")})
+	defer srv.Close()
+	cfg := testManagerConfig(t, srv.URL)
 	cfg.WorkDir = t.TempDir()
-	cfg.ExecMode = "direct"
+	cfg.HostWorkDir = cfg.WorkDir
 
 	rt, cleanup, err := BootstrapTUI(cfg, fakeExec{}, "", nil, BootstrapTUIOpts{})
 	if err != nil {

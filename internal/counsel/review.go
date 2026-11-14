@@ -12,6 +12,7 @@ import (
 
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/diag"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // Whole-or-fail reviewer dispatch.
@@ -150,11 +151,11 @@ func (e *ProviderHTTPError) Error() string {
 	return fmt.Sprintf("%s: HTTP %d: %s", e.Label, e.Status, e.Msg)
 }
 
-// Retryable reports whether one retry may help: rate limiting (429) and
-// server-side failures (5xx). 4xx request errors (bad parameters, auth) are
-// final — retrying the same request cannot succeed.
+// Retryable reports whether one retry may help, per the same retry
+// classification the main loop uses: proxy.IsRetryableStatus (429, 408,
+// 529 and 5xx are retryable; other 4xx are final).
 func (e *ProviderHTTPError) Retryable() bool {
-	return e.Status == 429 || e.Status >= 500
+	return proxy.IsRetryableStatus(e.Status)
 }
 
 // retryBackoff is the pause before the single retry of a 429/5xx reviewer

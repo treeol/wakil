@@ -2428,7 +2428,7 @@ func (a *App) rateUnratedRounds(ids []int, rounds map[int]RoundRecord, conv []pr
 	msg, err := client.Stream(ctx, msgs, nil, nil, nil)
 	// Record from the servicing client (named-endpoint rater is a fresh
 	// client — RecordInferenceCost would read the stale main client).
-	a.RecordAuxInferenceCost(client, proxy.CostSourceInference) // aux inference: rating pass
+	a.RecordAuxInferenceCost(client, proxy.CostSourceInference, err) // aux inference: rating pass
 	if err != nil {
 		return nil, nil, err
 	}

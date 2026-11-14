@@ -230,6 +230,13 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	return a.runMashuraCore(ctx, name, tc, a.IsSubagent)
 }
 
+// autoCounselResultHeader is the first line of every automatic-counsel
+// result given to the model: it states that Wakil started the round
+// automatically and the model did not call it. This keeps the provenance
+// honest in transcripts — in manual tests the model reported "I called
+// mashura__debug myself, which broke your rule".
+const autoCounselResultHeader = "[automatic mashura round — Wakil started this round automatically; you did not call it]\n\n"
+
 // runMashuraCore is the shared mashūra execution path. sync=true runs the
 // panel inline and returns the formatted result (auto-counsel, registry-full
 // fallback, subagents); sync=false enqueues the panel on the async registry
@@ -1744,9 +1751,14 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			return
 		}
 		// Inject as assistant+tool pair so the model sees the diagnosis.
+		// The result begins with one line stating that Wakil started this
+		// round automatically and the model did not call it — in manual tests
+		// the model must never be able to claim "I called mashura__debug
+		// myself". The synthetic header is one line; the report it prefixes
+		// is untouched.
 		a.appendConv(
 			proxy.Message{Role: "assistant", Content: nil, ToolCalls: []proxy.ToolCall{fakeTC}},
-			proxy.Message{Role: "tool", ToolCallID: fakeTC.ID, Name: fakeTC.Function.Name, Content: StrPtr(result)},
+			proxy.Message{Role: "tool", ToolCallID: fakeTC.ID, Name: fakeTC.Function.Name, Content: StrPtr(autoCounselResultHeader + result)},
 		)
 		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· auto-counsel %d/%d: %s",
 			a.counselCalls, capMax, Truncate(result, 120))))

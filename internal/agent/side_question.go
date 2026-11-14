@@ -64,7 +64,7 @@ func (a *App) StartSideQuestion(ctx context.Context, question string) context.Ca
 		a.sendEvent(SideQuestionDoneMsg{ID: id, Err: err})
 
 		// Record cost from the side-question client (aux category, B5).
-		a.RecordAuxInferenceCost(sideClient, proxy.CostSourceInference)
+		a.RecordAuxInferenceCost(sideClient, proxy.CostSourceInference, err)
 	})
 
 	return cancel

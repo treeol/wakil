@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -274,16 +273,12 @@ func fetchContextLimitFromORRegistry(ctx context.Context, ep config.EndpointConf
 	}, nil
 }
 
-// isOpenRouterHost reports whether rawURL's host is openrouter.ai (or a
-// subdomain). Parsed-host check, not string-contains — "http://evil.example/
-// openrouter.ai" must not match.
+// isOpenRouterHost delegates to proxy.IsOpenRouterHost — the one host
+// classification shared by attribution headers, context limits, cost
+// pricing and the data policy. Parsed-host check, not string-contains —
+// "http://evil.example/openrouter.ai" must not match.
 func isOpenRouterHost(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	h := strings.ToLower(u.Hostname())
-	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
+	return proxy.IsOpenRouterHost(rawURL)
 }
 
 // getJSONWithBackend issues a GET and returns the response body, bounded so a

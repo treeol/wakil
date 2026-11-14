@@ -103,7 +103,10 @@ func TestHandleStreamError_FatalImmediateNoRetry(t *testing.T) {
 // --- retry behaviour ---
 
 func TestHandleStreamError_InteractiveNoRetry(t *testing.T) {
-	// Non-auto interactive: ErrBackendStream passes through without retrying.
+	// Non-auto interactive: the error enters the retry loop (Group 4 changed
+	// the rule from "surface immediately"). Each attempt prints one line
+	// naming the reason and the wait, and the exhausted message names the
+	// last status and attempts.
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
@@ -111,9 +114,12 @@ func TestHandleStreamError_InteractiveNoRetry(t *testing.T) {
 	}))
 	defer srv.Close()
 
+	var out strings.Builder
 	app := newResilienceApp(srv.URL)
 	app.SetAutoApprove(false)
 	app.IsHeadless = false
+	app.Cfg.BackendMaxRetries = 2
+	app.Out = &writerAdapter{&out}
 
 	_, err := app.Send(context.Background(), "hi")
 	if !errors.Is(err, proxy.ErrBackendStream) {
@@ -124,10 +130,17 @@ func TestHandleStreamError_InteractiveNoRetry(t *testing.T) {
 	after := calls.Load()
 
 	if !errors.Is(result, proxy.ErrBackendStream) {
-		t.Errorf("interactive error should pass through; got: %v", result)
+		t.Errorf("exhausted interactive retries should still return the error; got: %v", result)
 	}
-	if after != before {
-		t.Errorf("interactive mode must not retry; made %d extra calls", after-before)
+	if after != before+2 {
+		t.Errorf("interactive retries should make 2 attempts; made %d", after-before)
+	}
+	note := out.String()
+	if !strings.Contains(note, "retrying in") || !strings.Contains(note, "attempt 1 of 2") {
+		t.Errorf("per-attempt line must name the wait and attempt; got: %q", note)
+	}
+	if !strings.Contains(note, "gave up after 2 attempts") || !strings.Contains(note, "last status") || !strings.Contains(note, "Next step") {
+		t.Errorf("final message must name the last status, attempts and a next step; got: %q", note)
 	}
 }
 

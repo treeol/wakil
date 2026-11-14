@@ -55,6 +55,32 @@ func wrapStreamErr(cause error) error {
 	return fmt.Errorf("%w: %w", ErrBackendStream, cause)
 }
 
+// RetryAfter returns the Retry-After duration seen on the most recent
+// non-200 response. 0 = no header (or unparseable). Safe to call from the
+// retry-annotation path while a request is in flight.
+func (c *Client) RetryAfter() time.Duration {
+	if c == nil {
+		return 0
+	}
+	c.retryAfterMu.Lock()
+	defer c.retryAfterMu.Unlock()
+	return c.retryAfter
+}
+
+// ParseRetryAfter parses a Retry-After header value (whole seconds only);
+// anything else returns 0. Negative values are rejected.
+func ParseRetryAfter(v string) time.Duration {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return 0
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return time.Duration(n) * time.Second
+}
+
 // ErrPreStreamStatus marks an HTTP status error returned before any stream
 // data arrived (a non-200 response, including an unretried 404). Such a
 // request was refused, not billed: callers matching it with errors.Is must
@@ -69,16 +95,27 @@ func IsPreStreamStatus(err error) bool {
 	return errors.Is(err, ErrPreStreamStatus)
 }
 
+// IsRetryableStatus is the single retry-classification predicate shared by
+// the main loop (isFatalStatus below) and the Mashūra panel call
+// (counsel.ProviderHTTPError.Retryable): 408 (request timeout), 429 (rate
+// limited), 529 (provider overloaded — Anthropic/OpenRouter convention)
+// and 5xx are retryable; everything else (3xx, other 4xx) is final.
+func IsRetryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests, http.StatusRequestTimeout, 529:
+		return true
+	}
+	return code >= 500 && code < 600
+}
+
 // isFatalStatus classifies a non-200 status as fatal (never retry). 3xx
 // redirects are fatal: the Go HTTP client follows redirects by default, so a
 // 3xx reaching this function means either a non-GET redirect, a redirect loop,
 // or max-redirects exceeded — retrying the same URL is pointless. 4xx are
-// fatal except the transient trio: 429 (rate limited), 408 (request timeout),
-// and 529 (site overloaded — Anthropic/OpenRouter convention). Everything not
-// fatal is retryable.
+// fatal except the transient retryable set (IsRetryableStatus). Everything not
+// otherwise covered marks the status final.
 func isFatalStatus(code int) bool {
-	switch code {
-	case http.StatusTooManyRequests, http.StatusRequestTimeout, 529:
+	if IsRetryableStatus(code) {
 		return false
 	}
 	return code >= 300 && code < 500
@@ -466,20 +503,31 @@ func (c *Client) appAttributionHeaders() (referer, title, categories string) {
 	return referer, title, categories
 }
 
-// isOpenRouterHost reports whether the base URL's host is one of the three
-// exact OpenRouter hosts — the global openrouter.ai plus the two regional
-// hosts eu.openrouter.ai and us.openrouter.ai — or a subdomain of them.
-// Attribution headers, session_id, the context-compression plugin entry and
-// usage.cost handling all treat the regional hosts exactly like the global
-// one (they serve the same API on a regional origin).
-func isOpenRouterHost(baseURL string) bool {
+// IsOpenRouterHost reports whether baseURL targets OpenRouter's API. The
+// rule is the exact host list the policy (policy.go classifyHost) uses:
+// openrouter.ai, eu.openrouter.ai, us.openrouter.ai — and nothing else.
+// api.openrouter.ai or any other *.openrouter.ai subdomain does NOT count.
+// All OpenRouter classification in Wakil goes through this one function.
+func IsOpenRouterHost(baseURL string) bool {
 	u, err := url.Parse(baseURL)
 	if err != nil || u.Host == "" {
+		// A bare host name (no scheme) is treated as its own host: classifyHost
+		// feeds it bare names, the other callers feed URLs.
+		switch strings.ToLower(strings.TrimSpace(baseURL)) {
+		case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
+			return true
+		}
 		return false
 	}
-	h := u.Hostname()
-	return h == "openrouter.ai" || strings.HasSuffix(h, ".openrouter.ai")
+	switch strings.ToLower(u.Hostname()) {
+	case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
+		return true
+	}
+	return false
 }
+
+// isOpenRouterHost is the package-local alias for IsOpenRouterHost.
+func isOpenRouterHost(baseURL string) bool { return IsOpenRouterHost(baseURL) }
 
 // ResolveCwd returns the session's working directory as the value for
 // Client.Cwd: the path the agent's own tools operate on, which is the
@@ -645,15 +693,15 @@ type Client struct {
 	lastExactInputTok int64
 
 	// usageReqStamp identifies which Stream request the published lastUsage
-	// belongs to. Stream publishes its provisional estimate under a fresh
-	// stamp before sending and republishes the authoritative usage at stream
-	// end under a new stamp; either moves it, so a caller that captured the
-	// stamp before the call and reads it afterwards can tell whether THAT call
-	// published usage, or the slot only holds an earlier request's figure. Two
-	// consecutive successful calls never share a stamp — each takes two; a
-	// failed call takes one (the provisional only). Guarded by usageMu
-	// alongside lastUsage.
+	// belongs to.
 	usageReqStamp uint64
+
+	// retryAfter holds the Retry-After duration seen on the most recent
+	// non-200 response. 0 = no header seen (or unparseable). Guarded by
+	// retryAfterMu (separate from usageMu so retry-annotating reads never
+	// contend with usage writes).
+	retryAfterMu sync.Mutex
+	retryAfter   time.Duration
 
 	// requestsSent counts HTTP requests actually dispatched by Stream over
 	// this client's lifetime. B5 uses the cumulative count to tell whether a
@@ -1437,6 +1485,9 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		c.retryAfterMu.Lock()
+		c.retryAfter = ParseRetryAfter(resp.Header.Get("Retry-After"))
+		c.retryAfterMu.Unlock()
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		msg := strings.TrimSpace(string(body))
 		if isFatalStatus(resp.StatusCode) {

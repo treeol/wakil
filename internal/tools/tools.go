@@ -240,7 +240,10 @@ func GatedTool(name string) bool {
 	case "run_shell", "write_file", "write_binary_file", "edit_file",
 		"delete_file", "move_file", "run_background", "kill_process",
 		"save_skill", "update_skill", "forget_skill",
-		"apply_skill_template", "capture_skill_template":
+		"apply_skill_template", "capture_skill_template",
+		// open_url opens a URL on the host desktop; the query string can
+		// carry data out, and every other outbound path needs consent.
+		"open_url":
 		return true
 	default:
 		return false

@@ -340,7 +340,7 @@ func (a *App) defaultSkillPlan(ctx context.Context, prompt string) (string, erro
 		return "", fmt.Errorf("external backend %q not consented", a.SelectedBackend)
 	}
 	msg, err := cl.Stream(ctx, []proxy.Message{{Role: "user", Content: StrPtr(prompt)}}, nil, nil, nil)
-	a.RecordAuxInferenceCost(cl, proxy.CostSourceInference)
+	a.RecordAuxInferenceCost(cl, proxy.CostSourceInference, err)
 	if err != nil {
 		return "", err
 	}

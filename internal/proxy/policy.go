@@ -71,8 +71,9 @@ func (e *PolicyError) Error() string {
 }
 
 // classifyHost buckets a target host for policy purposes. OpenRouter is the
-// three exact hosts (never a subdomain — attribution headers accept any
-// *.openrouter.ai, but only the exact hosts get the policy treatment).
+// exact three hosts (openrouter.ai, eu.openrouter.ai, us.openrouter.ai) through
+// the one shared predicate (proxy.IsOpenRouterHost) that attribution,
+// context limits and cost pricing also use — never a subdomain.
 // Local is loopback, RFC 1918, link-local and ULA IP literals plus any
 // trusted_local_hosts name. Everything else is "other".
 func classifyHost(host string, trusted []string) string {
@@ -80,10 +81,13 @@ func classifyHost(host string, trusted []string) string {
 	if h == "" {
 		return hostOther
 	}
-	switch h {
-	case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
+	// OpenRouter: the exact three hosts, through the one shared predicate
+	// (proxy.IsOpenRouterHost) so attribution, context limits, cost pricing
+	// and data policy cannot disagree.
+	if IsOpenRouterHost(h) {
 		return hostOpenRouter
-	case "localhost":
+	}
+	if h == "localhost" {
 		return hostLocal
 	}
 	if ip := net.ParseIP(h); ip != nil {

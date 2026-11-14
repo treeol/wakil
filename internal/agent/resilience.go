@@ -68,14 +68,16 @@ const streamRetryHint = "The previous response was interrupted by a backend erro
 //   - nil / non-backend error → returned unchanged.
 //   - ErrBackendFatal (4xx) → returned immediately, never retried.
 //   - ErrBackendStream (5xx, reset, timeout) → retried in unattended runs
-//     (AutoApprove or IsHeadless); passed through immediately in interactive
-//     non-auto sessions so the human can decide to re-send.
+//     (AutoApprove or IsHeadless), and also in interactive sessions (Group 4):
+//     each attempt prints one line naming the reason and the wait, and the
+//     exhausted message names the last status, the attempts, and one next
+//     step.
 //
 // Retry loop: up to cfg.BackendMaxRetries attempts with exponential backoff
-// (1s/2s/4s base + jitter). Each attempt is logged. When all retries fail with
-// connection-reset symptoms, a "possibly deterministic" note is added — this
-// distinguishes a transient infrastructure outage from a request that can never
-// succeed (e.g. context-overflow resetting the connection every time).
+// (1s/2s/4s base + jitter) — rate-limited and overloaded failures wait longer
+// (15 s default, Retry-After when present, never past 60 s). A configuration
+// that explicitly sets BackendMaxRetries to 0 means "no retries" and the
+// error surfaces after the one failed attempt.
 func HandleStreamError(ctx context.Context, app *App, err error) error {
 	if err == nil {
 		return nil
@@ -88,32 +90,41 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 	if !errors.Is(err, proxy.ErrBackendStream) {
 		return err
 	}
-	// Interactive non-auto: surface immediately; a human is present to re-send.
-	if !app.Consent().AutoApprove && !app.IsHeadless {
-		return err
-	}
+	// Retries run in interactive sessions too (previously the error was
+	// surfaced immediately there with no attempt at all, which the Group 4
+	// change removes): each attempt prints one line naming the reason and
+	// the wait, and the exhausted message names the last status, the
+	// attempts, and one next step.
 
 	maxRetries := app.Cfg.BackendMaxRetries
-	if maxRetries <= 0 {
+	// The field's contract: 0 disables retrying (DefaultConfig sets 3; a
+	// nil/negative means unset and defaults to 3).
+	if maxRetries < 0 {
 		maxRetries = 3
+	}
+	if maxRetries == 0 {
+		return err
 	}
 
 	allStreamErrors := true // false if any retry produces a non-stream error
 	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
+		delay := retryBackoff(attempt-1, app.RetryDelay)
 		suffix := ""
 		if app.NearContextLimit() {
 			suffix = " (near context limit)"
 		}
-		backendNote(app, fmt.Sprintf("⚠ backend error%s — retry %d/%d", suffix, attempt, maxRetries))
+		// Per-attempt line naming the reason and the wait: rate-limited and
+		// overloaded (429/529) back off longer than other transient errors
+		// and honour Retry-After (see retryWait).
+		wait := retryWait(attempt, lastErr, app)
+		backendNote(app, fmt.Sprintf("⚠ %s — retrying in %s, attempt %d of %d%s", retryReason(lastErr), wait, attempt, maxRetries, suffix))
+		delay = wait
 
-		delay := retryBackoff(attempt-1, app.RetryDelay)
-		if delay > 0 {
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(delay):
-			}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(delay):
 		}
 
 		app.WorkflowStepTrace = nil
@@ -127,13 +138,21 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 		lastErr = rerr
 	}
 
-	// All retries exhausted — annotate based on failure pattern.
+	// All retries exhausted — annotate based on failure pattern. The final
+	// message names the last status, the attempt count and one next step.
+	status := "unknown status"
+	if lastErr != nil {
+		status = lastErr.Error()
+	}
+	if len(status) > 80 {
+		status = status[:80]
+	}
 	if allStreamErrors && app.NearContextLimit() {
-		backendNote(app, "⚠ persistent stream errors near context limit — possible request-size issue; try /compact")
+		backendNote(app, fmt.Sprintf("⚠ gave up after %d attempts — last status: %s. Next step: /compact (near the context limit)", maxRetries, status))
 	} else if allStreamErrors {
-		backendNote(app, "⚠ persistent stream errors — possible deterministic backend failure (context overflow?)")
+		backendNote(app, fmt.Sprintf("⚠ gave up after %d attempts — persistent: last status: %s. Next step: wait a moment, then resend", maxRetries, status))
 	} else {
-		backendNote(app, fmt.Sprintf("⚠ backend unreachable after %d retries", maxRetries))
+		backendNote(app, fmt.Sprintf("⚠ backend unreachable after %d attempts — last status: %s. Next step: check the backend route, then resend", maxRetries, status))
 	}
 	return lastErr
 }
@@ -183,6 +202,64 @@ func DriveTurnWithResilience(ctx context.Context, app *App, userText string) (Tu
 	app.convMu.RUnlock()
 	out = turnOutcome(text, false, currentTurnStopCause(app))
 	return out, nil
+}
+
+// RetryAfterCap is the ceiling honoured for a Retry-After header: the
+// header is never waited out beyond 60 seconds.
+const RetryAfterCap = 60 * time.Second
+
+// RateLimitDefaultWait is the default wait before a retry when the failure
+// was rate limiting or overload (429/529) and no Retry-After applies —
+// deliberately longer than the plain exponential backoff for other errors.
+const RateLimitDefaultWait = 15 * time.Second
+
+// retryWait returns the pause before retry attempt n. A Retry-After header
+// the proxy saw is honoured up to RetryAfterCap (60 s) whenever it is
+// present; 429/529 failures wait at least RateLimitDefaultWait (15 s);
+// everything else uses the exponential backoff schedule.
+func retryWait(n int, lastErr error, app *App) time.Duration {
+	if d := app.Client.RetryAfter(); d > 0 {
+		if d > RetryAfterCap {
+			return RetryAfterCap
+		}
+		return d
+	}
+	if IsRateLimitOrOverload(lastErr) {
+		if d := retryBackoff(n-1, app.RetryDelay); d > RateLimitDefaultWait {
+			return d
+		}
+		return RateLimitDefaultWait
+	}
+	return retryBackoff(n-1, app.RetryDelay)
+}
+
+// retryReason names the failure reason for the per-attempt line, from the
+// status carried by the error. Plain prose a stranger can understand.
+func retryReason(err error) string {
+	if err == nil {
+		return "backend error"
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "429") || strings.Contains(msg, "Too Many Requests"):
+		return "rate limited"
+	case strings.Contains(msg, "529") || strings.Contains(msg, "overloaded"):
+		return "provider overloaded"
+	case strings.Contains(msg, "503"):
+		return "provider unavailable"
+	default:
+		return "backend error"
+	}
+}
+
+// IsRateLimitOrOverload reports whether err carries a 429 (rate limited) or
+// 529 (provider overloaded) status.
+func IsRateLimitOrOverload(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "429") || strings.Contains(msg, "Too Many Requests") || strings.Contains(msg, "529") || strings.Contains(msg, "overloaded")
 }
 
 // retryBackoff returns the wait duration before retry attempt n (0-based).

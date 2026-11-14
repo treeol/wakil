@@ -53,6 +53,59 @@ func costCalls(t *testing.T, app *App) (calls int, inputTok int64) {
 	return calls, inputTok
 }
 
+// TestFailedStreamCost_SideQuestionPreStreamErrorRecordsNothing: a side
+// call that got an HTTP status before any stream data records no row — the
+// same rule the main loop applies in RecordFailedStreamCost. The side
+// question runs through RecordAuxInferenceCost on its cloned client.
+func TestFailedStreamCost_SideQuestionPreStreamErrorRecordsNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(500)
+		fmt.Fprint(w, `{"error":{"message":"boom"}}`)
+	}))
+	defer srv.Close()
+
+	app := failedStreamTestApp(failedStreamTestClient(t, srv))
+	side := failedStreamTestClient(t, srv)
+	_, err := side.Stream(context.Background(),
+		[]proxy.Message{{Role: "user", Content: StrPtr("q")}}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("HTTP 500 must error")
+	}
+	app.RecordAuxInferenceCost(side, proxy.CostSourceInference, err)
+	if rows := costRows(t, app); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0 on pre-stream HTTP error (side call)", len(rows))
+	}
+}
+
+// TestFailedStreamCost_AuxUserCancelRecordsNothing: a side call abandoned by
+// cancellation records no row.
+func TestFailedStreamCost_AuxUserCancelRecordsNothing(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n")
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	app := failedStreamTestApp(failedStreamTestClient(t, srv))
+	side := failedStreamTestClient(t, srv)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+	_, err := side.Stream(ctx,
+		[]proxy.Message{{Role: "user", Content: StrPtr("q")}}, nil, nil, nil)
+	if err == nil {
+		t.Fatal("cancelled stream must error")
+	}
+	app.RecordAuxInferenceCost(side, proxy.CostSourceInference, err)
+	if rows := costRows(t, app); len(rows) != 0 {
+		t.Fatalf("rows = %d, want 0 on user cancel (side call)", len(rows))
+	}
+}
+
 // TestFailedStreamCost_TruncatedStreamRecordsOneRow: stream data arrived,
 // then the connection closed without [DONE]. One row from the provisional
 // input estimate, marked estimated (approx confidence).
