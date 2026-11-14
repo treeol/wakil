@@ -488,8 +488,6 @@ func (e *e2e) waitExit(d time.Duration) bool {
 	}
 }
 
-func (e *e2e) exitCode() int { return e.code }
-
 func (e *e2e) screen() string { return stripE2EANSI(e.out.String()) }
 
 // stripE2EANSI removes ANSI/CSI/OSC escape sequences from program output.
@@ -549,19 +547,6 @@ func (e *e2e) screenSince(m int) string {
 		return ""
 	}
 	return s[m:]
-}
-
-// waitScreenSince waits for substr in the screen text after the given mark.
-func (e *e2e) waitScreenSince(m int, substr string, timeout time.Duration) {
-	e.t.Helper()
-	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		if strings.Contains(e.screenSince(m), substr) {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	e.t.Fatalf("timed out waiting for screen text %q since mark %d\n%s", substr, m, e.tail(2000))
 }
 
 func (e *e2e) waitScreen(substr string, timeout time.Duration) {

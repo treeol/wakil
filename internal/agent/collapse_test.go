@@ -906,14 +906,24 @@ func TestCollapseContextMidTurnBasic(t *testing.T) {
 	assertNoOrphanedToolCalls(t, proj)
 
 	// Projection should have:
-	// proj[0]: U + partial checkpoint block
-	// proj[1]: assistant tool_call collapse_context (idx 3)
-	// proj[2]: tool result collapse_context (idx 4)
+	// proj[0]: U (verbatim task message)
+	// proj[1]: partial checkpoint block as its own user-role message
+	// proj[2]: assistant tool_call collapse_context (idx 3)
+	// proj[3]: tool result collapse_context (idx 4)
 	// (idx 1 and idx 2 — the read_file call+result — are elided!)
-	if len(proj) != 3 {
-		t.Fatalf("projection len = %d, want 3 (U + collapse_context call + result)", len(proj))
+	if len(proj) != 4 {
+		t.Fatalf("projection len = %d, want 4 (U + checkpoint + collapse_context call + result)", len(proj))
 	}
-	uText := DerefStr(proj[0].Content)
+	if DerefStr(proj[0].Content) != "refactor foo.go" {
+		t.Errorf("task message = %q, want byte-identical %q", DerefStr(proj[0].Content), "refactor foo.go")
+	}
+	if proj[1].Role != "user" {
+		t.Errorf("proj[1] role = %q, want user (checkpoint message)", proj[1].Role)
+	}
+	if got, want := DerefStr(proj[1].Content), buildPartialCheckpointBlock(rec); got != want {
+		t.Errorf("checkpoint message = %q, want buildPartialCheckpointBlock %q", got, want)
+	}
+	uText := DerefStr(proj[1].Content)
 	if !strings.Contains(uText, "[assistant checkpoint") {
 		t.Errorf("projected U should contain checkpoint header: %q", uText)
 	}
@@ -1084,12 +1094,21 @@ func TestCollapseContextRepeatedInSameTurn(t *testing.T) {
 
 	proj := app.contextProjection()
 	assertNoOrphanedToolCalls(t, proj)
-	// Only U + cc2 assistant + cc2 tool result should remain in projection (3 msgs).
-	if len(proj) != 3 {
-		t.Fatalf("after 2nd collapse: projection len = %d, want 3", len(proj))
+	// Only U + checkpoint + cc2 assistant + cc2 tool result should remain (4 msgs).
+	if len(proj) != 4 {
+		t.Fatalf("after 2nd collapse: projection len = %d, want 4", len(proj))
 	}
-	if !strings.Contains(DerefStr(proj[0].Content), "Cumulative round 1 + round 2 summary") {
-		t.Errorf("U checkpoint should carry updated cumulative summary: %q", DerefStr(proj[0].Content))
+	if DerefStr(proj[0].Content) != "multi-phase task" {
+		t.Errorf("task message = %q, want byte-identical %q", DerefStr(proj[0].Content), "multi-phase task")
+	}
+	if proj[1].Role != "user" {
+		t.Errorf("proj[1] role = %q, want user (checkpoint message)", proj[1].Role)
+	}
+	if got, want := DerefStr(proj[1].Content), buildPartialCheckpointBlock(rec2); got != want {
+		t.Errorf("checkpoint message = %q, want buildPartialCheckpointBlock %q", got, want)
+	}
+	if !strings.Contains(DerefStr(proj[1].Content), "Cumulative round 1 + round 2 summary") {
+		t.Errorf("checkpoint should carry updated cumulative summary: %q", DerefStr(proj[1].Content))
 	}
 }
 
@@ -1142,9 +1161,15 @@ func TestCollapseContextMultiToolBatchSafety(t *testing.T) {
 
 	proj := app.contextProjection()
 	assertNoOrphanedToolCalls(t, proj)
-	// U + assistant(2 tool calls) + tool(cc-batch) + tool(tc-sibling) = 4 messages.
-	if len(proj) != 4 {
-		t.Fatalf("multi-tool batch projection: want 4 msgs, got %d", len(proj))
+	// U + checkpoint + assistant(2 tool calls) + tool(cc-batch) + tool(tc-sibling) = 5 messages.
+	if len(proj) != 5 {
+		t.Fatalf("multi-tool batch projection: want 5 msgs, got %d", len(proj))
+	}
+	if DerefStr(proj[0].Content) != "check files" {
+		t.Errorf("task message = %q, want byte-identical %q", DerefStr(proj[0].Content), "check files")
+	}
+	if got, want := DerefStr(proj[1].Content), buildPartialCheckpointBlock(rec); got != want {
+		t.Errorf("checkpoint message = %q, want buildPartialCheckpointBlock %q", got, want)
 	}
 }
 

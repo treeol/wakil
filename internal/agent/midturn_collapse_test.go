@@ -84,7 +84,7 @@ func TestMidTurnCollapseFiresInsideLongTurn(t *testing.T) {
 	// Mid-turn collapse printed its line in the turn's Out sink. The line
 	// carries the same shape as the collapse_context tool's but is marked
 	// mid-turn.
-	if !strings.Contains(out.String(), "mid-turn collapse of request") {
+	if !strings.Contains(out.String(), "collapsed request 1:") || !strings.Contains(out.String(), "[mid-turn]") {
 		t.Fatalf("mid-turn collapse line missing; out=%q", out.String())
 	}
 	assertPairing(t, proj)

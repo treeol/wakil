@@ -335,6 +335,7 @@ func TestCollapseContextNeverCollapsesUserMessageOrAttachments(t *testing.T) {
 	if !strings.Contains(got, "collapsed request 1 working set") {
 		t.Fatalf("expected collapse to succeed on the working set, got %q", got)
 	}
+	app.appendConv(proxy.Message{Role: "tool", ToolCallID: "cc", Name: "collapse_context", Content: StrPtr(got)})
 	rec := app.collapsed[1]
 	archBytes, err := os.ReadFile(rec.Archive)
 	if err != nil {
@@ -344,8 +345,18 @@ func TestCollapseContextNeverCollapsesUserMessageOrAttachments(t *testing.T) {
 		t.Fatal("the user's message/attachment ended up in the collapsed working-set archive")
 	}
 	proj := app.contextProjection()
-	if len(proj) == 0 || !strings.HasPrefix(DerefStr(proj[0].Content), userWithAttachment+"\n\n[assistant checkpoint") {
+	if len(proj) == 0 || DerefStr(proj[0].Content) != userWithAttachment {
 		t.Fatal("the user's message/attachment did not survive collapse_context byte-exact in the projection")
+	}
+	assertNoOrphanedToolCalls(t, proj)
+	if len(proj) != 4 {
+		t.Fatalf("projection: want 4 msgs (U + checkpoint + collapse_context call + result), got %d", len(proj))
+	}
+	if proj[1].Role != "user" {
+		t.Errorf("proj[1] role = %q, want user (checkpoint message)", proj[1].Role)
+	}
+	if got, want := DerefStr(proj[1].Content), buildPartialCheckpointBlock(rec); got != want {
+		t.Errorf("checkpoint message = %q, want buildPartialCheckpointBlock %q", got, want)
 	}
 
 	// And if a turn ever lacks a leading user message, collapse_context refuses
