@@ -65,6 +65,16 @@ before it runs; `/auto` changes this (see below). The skill write tools
 (`save_skill`, `update_skill`, `forget_skill`, `capture_skill_template`) and
 `apply_skill_template` always prompt, even in `/auto`.
 
+**Session grants** — at any approval prompt, `g` grants the tool for the rest
+of the session (no more prompts for it). This covers the read-only tools
+(`read_file`, `read_file_full`, `search_files`, `find_files`, `list_dir`, the
+`lsp_*` tools) plus `write_file`, `write_binary_file`, `edit_file`,
+`run_shell`, and `run_background`. A grant for `run_shell` / `run_background`
+never covers a destructive command — those still prompt. `delete_file`,
+`move_file`, and external-backend egress are never grantable. Grants carry
+over on `/new` and `/resume` in the same process; the `/auto destructive`
+grant never does.
+
 **Ungated** — `read_file`, `read_file_full`, `list_dir`, `search_files`,
 `find_files`, `dispatch_subagent`, `dispatch_subagents`, `read_process_log`,
 `math_eval`, `git_status` / `git_diff` / `git_log` / `git_show` / `git_blame`,

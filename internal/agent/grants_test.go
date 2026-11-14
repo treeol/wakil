@@ -25,10 +25,45 @@ func TestGrantEligibilityParity(t *testing.T) {
 }
 
 func TestAddGrantRejectsIneligible(t *testing.T) {
-	app := &App{}
-	app.AddGrant("run_shell") // not eligible
-	if len(app.Grants()) != 0 {
-		t.Errorf("expected 0 grants after ineligible AddGrant, got %d", len(app.Grants()))
+	for _, tool := range []string{"delete_file", "move_file", "external_backend"} {
+		app := &App{}
+		app.AddGrant(tool) // never grant-eligible
+		if len(app.Grants()) != 0 {
+			t.Errorf("expected 0 grants after ineligible AddGrant(%q), got %d", tool, len(app.Grants()))
+		}
+	}
+}
+
+func TestAddGrantAcceptsWriteAndShell(t *testing.T) {
+	for _, tool := range []string{"write_file", "write_binary_file", "edit_file", "run_shell", "run_background"} {
+		app := &App{}
+		app.AddGrant(tool)
+		if !app.HasGrant(tool) {
+			t.Errorf("expected grant for %q", tool)
+		}
+	}
+}
+
+// A run_shell/run_background grant never covers a destructive command — the
+// same IsDestructiveShell classification that suspends /auto.
+func TestGrantEligibleForCallDestructiveShell(t *testing.T) {
+	if GrantEligibleForCall("run_shell", "$ rm -rf /tmp\n  (direct)") {
+		t.Error("destructive run_shell must not be grant-covered")
+	}
+	if GrantEligibleForCall("run_background", "$ rm -rf /tmp (background)") {
+		t.Error("destructive run_background must not be grant-covered")
+	}
+	if !GrantEligibleForCall("run_shell", "$ ls -la\n  (direct)") {
+		t.Error("read-only run_shell should be grant-covered")
+	}
+	if !GrantEligibleForCall("write_file", "path=x") {
+		t.Error("write_file should be grant-covered")
+	}
+	if GrantEligibleForCall("delete_file", "path=x") {
+		t.Error("delete_file is never grant-covered")
+	}
+	if GrantEligibleForCall("external_backend", "switching") {
+		t.Error("external_backend is never grant-covered")
 	}
 }
 

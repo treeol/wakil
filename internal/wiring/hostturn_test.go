@@ -340,6 +340,10 @@ func TestIntegrationApprovalEmitsRequestResolved(t *testing.T) {
 	if resOutcome.Resolver != "usr_owner" {
 		t.Fatalf("Resolver = %q, want usr_owner", resOutcome.Resolver)
 	}
+	reqPayload := reqEvent.Payload.(event.ApprovalRequested)
+	if !reqPayload.GrantEligible {
+		t.Error("write_file approval must carry GrantEligible=true so the prompt shows [g]")
+	}
 
 	// Ordering: ApprovalRequested.Seq < ApprovalResolved.Seq < turn terminal Seq.
 	var turnDoneSeq event.Seq

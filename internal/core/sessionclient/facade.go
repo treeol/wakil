@@ -137,17 +137,26 @@ const (
 
 // grantEligibleTools is the set of tools that can be granted for the session.
 // Shared by the TUI (to show the 'g' key) and the agent (to enforce the
-// allowlist). Only deterministic, built-in, read-only tools are eligible.
+// allowlist). Deletes, moves, and external-backend egress are never
+// eligible. For run_shell/run_background, eligibility in this set is
+// necessary but not sufficient — the per-call destructive-command exclusion
+// is computed agent-side (agent.GrantEligibleForCall) and carried in
+// ApprovalRequest.GrantEligible so the TUI never re-derives it.
 var grantEligibleTools = map[string]bool{
-	"read_file":      true,
-	"read_file_full": true,
-	"search_files":   true,
-	"find_files":     true,
-	"list_dir":       true,
-	"lsp_definition": true,
-	"lsp_references": true,
-	"lsp_hover":      true,
-	"lsp_symbols":    true,
+	"read_file":         true,
+	"read_file_full":    true,
+	"search_files":      true,
+	"find_files":        true,
+	"list_dir":          true,
+	"lsp_definition":    true,
+	"lsp_references":    true,
+	"lsp_hover":         true,
+	"lsp_symbols":       true,
+	"write_file":        true,
+	"write_binary_file": true,
+	"edit_file":         true,
+	"run_shell":         true,
+	"run_background":    true,
 }
 
 // IsGrantEligible reports whether a tool name is eligible for session grants.
@@ -173,6 +182,11 @@ type ApprovalRequest struct {
 	Headline   string
 	Detail     string
 	ReadAction bool
+	// GrantEligible reports whether this call may be counselled into a
+	// session grant (computed agent-side, including the destructive-shell
+	// exclusion). The TUI renders the [g] choice from this field and does
+	// not re-derive it from the tool name.
+	GrantEligible bool
 }
 
 // ---- ClientSnapshot (D26) ----

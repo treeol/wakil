@@ -61,11 +61,12 @@ type completedToolLine struct {
 // is currently rendering, identified by its domain ApprovalID. Key answers
 // go through facade.RespondToApproval (data-only — no response channel).
 type pendingApprovalState struct {
-	approvalID string
-	toolName   string
-	headline   string
-	detail     string
-	readAction bool
+	approvalID    string
+	toolName      string
+	headline      string
+	detail        string
+	readAction    bool
+	grantEligible bool // agent-computed; the [g] choice renders from this
 }
 
 // sideQuestionState tracks a running side-question stream for the TUI.
@@ -1189,7 +1190,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				m.flash = "'a' only applies to read-only actions — y/n"
 			}
 		case "g", "G":
-			if sessionclient.IsGrantEligible(pa.toolName) {
+			if pa.grantEligible {
 				answer(sessionclient.ChoiceGrantTool, styleOK("  ["+pa.toolName+" granted for this session]"))
 			} else {
 				m.flash = pa.toolName + " is not grantable for the session — y/n"

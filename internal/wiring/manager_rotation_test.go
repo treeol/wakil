@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
@@ -208,6 +209,117 @@ func TestManagerEnablesAsyncApproval(t *testing.T) {
 	}
 	if resolvedState != "approved" {
 		t.Fatalf("ApprovalResolved outcome = %q, want approved", resolvedState)
+	}
+}
+
+// TestRotationCarriesGrantsReadsAndAuto verifies the real rotation path
+// carries what the user granted (via the conversation manager's BuildApp
+// construction, NOT InstallSession/NewConversationTransition directly): grants,
+// reads allowance, and auto mode reach the new App on /new and /resume;
+// /auto destructive does not. It also pins whether /auto really is lost or
+// already survives through RepoState — /auto is persisted by the /auto
+// handler into RepoState (saveRepoState) and re-applied by
+// RestoreRepoStateResumeApply/RestoreRepoStateApply inside restoreRepoState,
+// which both NewConversation and ResumeConversation call; the grants,
+// AllowReads, and AllowDestructive consent fields are NOT in RepoState, so
+// no carry-over for them exists today on the real path.
+func TestRotationCarriesGrantsReadsAndAuto(t *testing.T) {
+	t.Setenv("WAKIL_SESSIONS_DIR", t.TempDir())
+	t.Setenv("WAKIL_REPO_STATE_DIR", t.TempDir())
+	srv := sseServer(t, []string{contentChunk("ok")})
+	defer srv.Close()
+
+	var exe exec.Executor = fakeExec{}
+	mgr, err := NewConversationManager(testManagerConfig(t, srv.URL), exe, managerPrincipal())
+	if err != nil {
+		t.Fatalf("NewConversationManager: %v", err)
+	}
+	ctx := context.Background()
+	f1, err := mgr.NewConversation(ctx, managerPrincipal(), nil)
+	if err != nil {
+		t.Fatalf("first NewConversation: %v", err)
+	}
+	wf1 := f1.(*wiringFacade)
+
+	// Before the fix: grants are in-memory only and are dropped — assert
+	// after /new.
+	wf1.app.AddGrant("read_file")
+	wf1.app.AddGrant("write_file")
+	wf1.app.SetAllowReads(true)
+	wf1.app.SetAutoApprove(true)
+	// Persisting /auto the way the /auto handler does — through RepoState.
+	// A direct SetAutoApprove alone does not reach RepoState, and the
+	// manager's restoreRepoState is the only thing that can keep /auto.
+	wf1.app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = true })
+	wf1.app.SetAllowDestructive(true)
+
+	f2, err := mgr.NewConversation(ctx, managerPrincipal(), f1)
+	if err != nil {
+		t.Fatalf("rotated NewConversation: %v", err)
+	}
+	defer func() { _ = mgr.Close(f2) }()
+	wf2 := f2.(*wiringFacade)
+
+	if wf2.app.HasGrant("read_file") {
+		t.Logf("grants survive /new (HasGrant read_file=true)")
+	} else {
+		t.Logf("grants LOST on /new (HasGrant read_file=false) — the carry-over gap (point 6)")
+	}
+	if !wf2.app.HasGrant("read_file") {
+		t.Errorf("grants lost on /new through the real path")
+	}
+	if !wf2.app.HasGrant("write_file") {
+		t.Errorf("grants lost on /new through the real path (write_file)")
+	}
+	if !wf2.app.Consent().AllowReads {
+		t.Errorf("AllowReads lost on /new through the real path")
+	}
+	// /auto: restored from RepoState because the /auto handler persisted it
+	// (SaveRepoState above mirrors saveRepoState). It survives through
+	// restoreRepoState, not through any in-memory carry-over.
+	if !wf2.app.Consent().AutoApprove {
+		t.Errorf("/auto lost on /new — RepoState restore did not re-apply AutoApprove")
+	} else {
+		t.Logf("/auto SURVIVES /new (AutoApprove=true) via RepoState restore")
+	}
+	if wf2.app.Consent().AllowDestructive {
+		t.Errorf("AllowDestructive carried to /new — must never carry")
+	}
+
+	// /resume drives the same newConversation (BuildApp) and then
+	// InstallSession. The carry source is the manager's current App (f2's
+	// App); seed it and persist f2 so the session exists on disk for resume.
+	wf2.app.AddGrant("read_file")
+	wf2.app.SetAllowReads(true)
+	wf2.app.SetAutoApprove(true)
+	wf2.app.SaveRepoState(func(s *agent.RepoState) { s.AutoApprove = true })
+	wf2.app.SetAllowDestructive(true)
+	if mgrC := mgr.(*conversationManager); mgrC != nil {
+		mgrC.current = wf2.app
+	}
+	if wf2.app.Session != nil {
+		wf2.app.Session.Workspace = wf2.app.SessionWorkspace()
+		if err := agent.WriteSession(wf2.app.Session); err != nil {
+			t.Fatalf("WriteSession: %v", err)
+		}
+	}
+	f3, err := mgr.ResumeConversation(ctx, managerPrincipal(), wf2.app.Session.ChatID)
+	if err != nil {
+		t.Fatalf("ResumeConversation: %v", err)
+	}
+	defer func() { _ = mgr.Close(f3) }()
+	wf3 := f3.(*wiringFacade)
+	if !wf3.app.HasGrant("read_file") {
+		t.Errorf("grants lost on /resume through the real path")
+	}
+	if !wf3.app.Consent().AllowReads {
+		t.Errorf("AllowReads lost on /resume through the real path")
+	}
+	if !wf3.app.Consent().AutoApprove {
+		t.Errorf("/auto lost on /resume through the real path")
+	}
+	if wf3.app.Consent().AllowDestructive {
+		t.Errorf("/auto destructive carried to /resume — must never carry")
 	}
 }
 

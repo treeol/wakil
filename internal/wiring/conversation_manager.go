@@ -43,6 +43,13 @@ type conversationManager struct {
 	resources   *AppResources        // the FIRST facade's resources; rotation closes them
 	store       sessionhost.Store    // P1: SQLite-backed event store (nil → MemLog fallback)
 
+	// current is the most recently built conversation's App. Rotation
+	// (/new, /resume) carries standing approvals (grants, reads allowance,
+	// /auto) from it via carryApprovals; /resume takes no current facade, so
+	// this is the only in-process source. Nil until the first conversation
+	// is built in this process.
+	current *agent.App
+
 	// autoUserOverridden is set when the user toggles /auto mid-session. It
 	// clears the AutoExplicit guard so subsequent rotations restore AutoApprove
 	// from RepoState instead of re-seeding from the --auto CLI flag. Process-
@@ -159,6 +166,31 @@ func (cm *conversationManager) restoreRepoState(ctx context.Context, app *agent.
 	return result.Note
 }
 
+// carryApprovals transfers the user's standing approvals from the previous
+// App into a freshly built one on rotation (/new, /resume): session grants
+// and the reads allowance. The /auto destructive grant never carries over.
+//
+// /auto itself already survives rotation through RepoState: the /auto
+// handler persists it (saveRepoState) and restoreRepoState re-applies it on
+// both paths before this runs. Copying it here from the old App would be
+// equivalent for that handler path (the old App already reflects the
+// persisted value) but would also resurrect a programmatic SetAutoApprove
+// that never reached RepoState — so AutoApprove is left to RepoState and
+// never copied directly.
+//
+// Grants go through AddGrant, so eligibility is re-enforced on every tool.
+func carryApprovals(oldApp, newApp *agent.App) {
+	if oldApp == nil || newApp == nil || oldApp == newApp {
+		return
+	}
+	oldConsent := oldApp.Consent()
+	newApp.SetAllowReads(oldConsent.AllowReads)
+	newApp.SetAllowDestructive(false)
+	for _, g := range oldApp.Grants() {
+		newApp.AddGrant(g.Tool)
+	}
+}
+
 // transferDestructive transfers the AllowDestructive grant from the old
 // conversation's consent snapshot to the new App — in-memory only, never
 // persisted to disk. Used exclusively for /handoff proceed: the user already
@@ -267,8 +299,16 @@ func (cm *conversationManager) newConversation(ctx context.Context) (*wiringFaca
 	if cm.resources == nil {
 		cm.resources = res
 	}
+	cm.current = app
 
 	return facade, nil
+}
+
+// oldAppForResume returns the most recently built conversation's App in this
+// process, or nil when there is none (plain --resume at process start — the
+// fresh App then keeps only the RepoState-restored settings).
+func oldAppForResume(cm *conversationManager) *agent.App {
+	return cm.current
 }
 
 // NewConversation creates a fresh session and returns its facade. current is
@@ -280,7 +320,9 @@ func (cm *conversationManager) NewConversation(ctx context.Context, principal co
 	if current != nil { // a rotation, not the first conversation of the process
 		timeline.Enter("/new")
 	}
+	var oldApp *agent.App
 	if wf, ok := current.(*wiringFacade); ok && wf != nil && wf.app != nil {
+		oldApp = wf.app
 		endFin := timeline.Begin("finalize old conversation (history + summary)")
 		cm.finalizeOldConversation(ctx, wf.app)
 		endFin()
@@ -297,6 +339,7 @@ func (cm *conversationManager) NewConversation(ctx context.Context, principal co
 	note := cm.restoreRepoState(ctx, f.app, false)
 	endRestore()
 	appendStartupNote(f.app, note)
+	carryApprovals(oldApp, f.app)
 	return f, nil
 }
 
@@ -334,11 +377,15 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 		return nil, fmt.Errorf("resume: session %q not found", idOrPrefix)
 	}
 
+	// Capture the live conversation's standing approvals BEFORE building the
+	// fresh App — newConversation replaces cm.current. On plain --resume at
+	// process start there is no previous conversation, so the fresh App keeps
+	// only the RepoState-restored settings below.
+	oldApp := oldAppForResume(cm)
 	f, err := cm.newConversation(ctx)
 	if err != nil {
 		return nil, err
 	}
-
 	// Install the loaded session state into the App (the single resume
 	// implementation: transcript, workflow, turn/collapse state, and the
 	// session's own cost rows, replacing any from the previous session, so
@@ -353,6 +400,7 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 	note := cm.restoreRepoState(ctx, f.app, true)
 	endRestoreR()
 	appendStartupNote(f.app, note)
+	carryApprovals(oldApp, f.app)
 
 	// Apply the saved session's model on resume, with an endpoint-match
 	// guard: a model string recorded under one endpoint is meaningless sent

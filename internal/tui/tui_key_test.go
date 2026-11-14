@@ -46,7 +46,7 @@ func TestHandleKeyConfirmGate(t *testing.T) {
 	}
 }
 
-// 'a' on a non-read action and 'g' on a non-grantable tool are swallowed but
+// 'a' on a non-read action and 'g' on a non-grantable call are swallowed but
 // must explain themselves via the flash, leaving the gate pending.
 func TestHandleKeyConfirmGateInapplicableKeyFlash(t *testing.T) {
 	for _, k := range []string{"a", "g"} {
@@ -67,6 +67,28 @@ func TestHandleKeyConfirmGateInapplicableKeyFlash(t *testing.T) {
 		if m2.flash == "" {
 			t.Errorf("%q: expected an explanatory flash", k)
 		}
+	}
+}
+
+// 'g' on a grant-eligible payload answers with the grant outcome — the TUI
+// reads eligibility from the payload, never re-deriving it from the tool name.
+func TestHandleKeyConfirmGateGrantEligible(t *testing.T) {
+	m, f := keyModel(t)
+	m.state = stateConfirm
+	m.pendApproval = &pendingApprovalState{approvalID: "apr_1", toolName: "write_file", readAction: false, grantEligible: true, headline: "h", detail: "d"}
+
+	m2, _, consumed := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("g")})
+	if !consumed {
+		t.Fatal("'g' should be consumed by the confirm gate")
+	}
+	if len(f.responded) != 1 {
+		t.Fatalf("'g' should have answered the gate (responded=%d)", len(f.responded))
+	}
+	if got := f.responded[0].Outcome; got != core.ApprovalGrantTool {
+		t.Errorf("'g' → outcome %v, want %v", got, core.ApprovalGrantTool)
+	}
+	if m2.pendApproval != nil || m2.state != stateStreaming {
+		t.Errorf("after answering, gate should clear and resume streaming; state=%v pend=%v", m2.state, m2.pendApproval)
 	}
 }
 

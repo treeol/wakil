@@ -49,10 +49,11 @@ import (
 // fields the agent's Confirmer receives, so a resolver has everything a
 // synchronous gate sees.
 type ApprovalRequest struct {
-	ToolName   string
-	Headline   string
-	Detail     string
-	ReadAction bool
+	ToolName      string
+	Headline      string
+	Detail        string
+	ReadAction    bool
+	GrantEligible bool
 }
 
 // ApprovalResolution is a resolver's answer to one approval request: the choice
@@ -742,10 +743,10 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		// ("grant for this session") auto-approves the named tool without
 		// prompting again — same as the AutoApprove short-circuit below.
 		// Grants are consulted BEFORE any prompt is shown and before the
-		// ApprovalRequested event. They are session-scoped read-only-tool
-		// grants (AddGrant enforces eligibility), so this cannot auto-approve
-		// a mutating shell or write tool.
-		if app.HasGrant(toolName) {
+		// ApprovalRequested event. A run_shell/run_background grant never
+		// covers a destructive command (GrantEligibleForCall), so a granted
+		// shell tool still prompts for destructive commands.
+		if app.HasGrant(toolName) && agent.GrantEligibleForCall(toolName, detail) {
 			app.SendEvent(agent.SysNoteMsg{
 				Text: "⚡ grant: " + headline + "\n" + agent.Indent(detail),
 			})
@@ -780,14 +781,16 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			emitErr.set(fmt.Errorf("%w: approval ID generation failed: %w", sessionhost.ErrInternal, err))
 			return false
 		}
-		req := ApprovalRequest{ToolName: toolName, Headline: headline, Detail: detail, ReadAction: readAction}
+		eligible := agent.GrantEligibleForCall(toolName, detail)
+		req := ApprovalRequest{ToolName: toolName, Headline: headline, Detail: detail, ReadAction: readAction, GrantEligible: eligible}
 
 		if err := in.Emit.Emit(event.KindApprovalRequested, event.ApprovalRequested{
-			ApprovalID: approvalID,
-			ToolName:   toolName,
-			Headline:   headline,
-			Detail:     detail,
-			ReadAction: readAction,
+			ApprovalID:    approvalID,
+			ToolName:      toolName,
+			Headline:      headline,
+			Detail:        detail,
+			ReadAction:    readAction,
+			GrantEligible: eligible,
 		}); err != nil {
 			emitErr.set(err)
 			return false // no Requested → no Resolved; fail closed

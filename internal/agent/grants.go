@@ -7,10 +7,13 @@ package agent
 // and stored as an immutable *grantsSnapshot in atomic.Value for concurrent
 // safety.
 //
-// Security model: only deterministic, built-in, read-only tools are
-// grant-eligible. Shell commands, mutations, external backends, and all
-// other tools ALWAYS prompt — grants never bypass hard safety gates
-// (SuspendAuto carve-outs for destructive/external remain enforced).
+// Security model: grant-eligible tools are the deterministic, built-in
+// read-only tools plus the per-session write/shell tools below. Deletes,
+// moves, and external-backend egress are never grant-eligible and always
+// prompt. A grant for run_shell/run_background never covers a command that
+// IsDestructiveShell classifies as destructive — those still prompt (see
+// GrantEligibleForCall). Grants never bypass hard safety gates (SuspendAuto
+// carve-outs for destructive/external remain enforced on every path).
 //
 // The grantEligibleTools map mirrors sessionclient.grantEligibleTools — the
 // TUI uses the sessionclient copy (it cannot import agent). Parity is
@@ -28,11 +31,38 @@ var grantEligibleTools = map[string]bool{
 	"lsp_references": true,
 	"lsp_hover":      true,
 	"lsp_symbols":    true,
+	// Write and shell tools grantable per-session. run_shell and
+	// run_background are gated per call by GrantEligibleForCall (destructive
+	// commands are never covered).
+	"write_file":        true,
+	"write_binary_file": true,
+	"edit_file":         true,
+	"run_shell":         true,
+	"run_background":    true,
 }
 
 // IsGrantEligible reports whether a tool name is eligible for session grants.
+// For run_shell and run_background this is necessary but not sufficient —
+// use GrantEligibleForCall to also exclude destructive commands.
 func IsGrantEligible(toolName string) bool {
 	return grantEligibleTools[toolName]
+}
+
+// GrantEligibleForCall reports whether this specific call may be covered by
+// a session grant. It uses the same classification that suspends /auto
+// (IsDestructiveShell via ShellCmdFromDetail), not a second one: a grant for
+// run_shell or run_background never covers a destructive command. All other
+// grant-eligible tools are covered unconditionally.
+func GrantEligibleForCall(toolName, detail string) bool {
+	if !IsGrantEligible(toolName) {
+		return false
+	}
+	switch toolName {
+	case "run_shell", "run_background":
+		return !IsDestructiveShell(ShellCmdFromDetail(detail))
+	default:
+		return true
+	}
 }
 
 // Grant represents a session-scoped approval for a specific tool.

@@ -145,6 +145,10 @@ type ApprovalRequested struct {
 	Headline   string
 	Detail     string
 	ReadAction bool
+	// GrantEligible reports whether this call may be counselled into a
+	// session grant (agent-computed, including the destructive-shell
+	// exclusion). The renderer shows the [g] choice from this field.
+	GrantEligible bool
 }
 
 func (p ApprovalRequested) Validate() error {

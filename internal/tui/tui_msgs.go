@@ -98,11 +98,19 @@ type clipboardImageMsg struct {
 	Err string
 }
 
-// fmtConfirmBlock builds the confirm-prompt display string.
-func fmtConfirmBlock(headline, detail string, readAction bool) string {
+// fmtConfirmBlock builds the confirm-prompt display string. grantEligible
+// (agent-computed, including the destructive-shell exclusion) adds the [g]
+// session-grant choice; it is never re-derived from the tool name here.
+func fmtConfirmBlock(headline, detail string, readAction, grantEligible bool) string {
 	opts := "  [y] proceed   [n] decline"
 	if readAction {
 		opts = "  [y] proceed   [a] allow all reads   [n] decline"
+	}
+	if grantEligible {
+		opts = "  [y] proceed   [g] grant for this session   [n] decline"
+		if readAction {
+			opts = "  [y] proceed   [a] allow all reads   [g] grant for this session   [n] decline"
+		}
 	}
 	return fmt.Sprintf("\n⟂ %s\n%s\n\n%s\n", headline, format.Indent(detail), opts)
 }

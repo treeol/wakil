@@ -558,14 +558,15 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		m.state = stateConfirm
 		m.pendApproval = &pendingApprovalState{
-			approvalID: string(p.ApprovalID),
-			toolName:   p.ToolName,
-			headline:   p.Headline,
-			detail:     p.Detail,
-			readAction: p.ReadAction,
+			approvalID:    string(p.ApprovalID),
+			toolName:      p.ToolName,
+			headline:      p.Headline,
+			detail:        p.Detail,
+			readAction:    p.ReadAction,
+			grantEligible: p.GrantEligible,
 		}
 		m.flushStreaming()
-		m.addItem(iSys, fmtConfirmBlock(p.Headline, p.Detail, p.ReadAction))
+		m.addItem(iSys, fmtConfirmBlock(p.Headline, p.Detail, p.ReadAction, p.GrantEligible))
 		m = m.reflowIfStatusHeightChanged(before)
 
 	case event.KindApprovalResolved:

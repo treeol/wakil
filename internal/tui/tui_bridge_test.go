@@ -29,13 +29,36 @@ func TestProgWriterSendsChunks(t *testing.T) {
 }
 
 func TestFmtConfirmBlockReadActionOption(t *testing.T) {
-	withRead := fmtConfirmBlock("Run it?", "$ ls", true)
+	withRead := fmtConfirmBlock("Run it?", "$ ls", true, false)
 	if !strings.Contains(withRead, "allow all reads") {
 		t.Errorf("read action should offer the [a] option; got %q", withRead)
 	}
-	noRead := fmtConfirmBlock("Write it?", "path=x", false)
+	noRead := fmtConfirmBlock("Write it?", "path=x", false, false)
 	if strings.Contains(noRead, "allow all reads") {
 		t.Errorf("write action must not offer [a]; got %q", noRead)
+	}
+}
+
+// Every grant-eligible prompt shows [g] in its text — including read-only
+// prompts that accept it today without showing it.
+func TestFmtConfirmBlockGrantOption(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		headline   string
+		detail     string
+		readAction bool
+	}{
+		{"read", "Run it?", "$ ls", true},
+		{"write", "Write it?", "path=x", false},
+	} {
+		got := fmtConfirmBlock(c.headline, c.detail, c.readAction, true)
+		if !strings.Contains(got, "[g] grant for this session") {
+			t.Errorf("%s: grant-eligible prompt must show [g]; got %q", c.name, got)
+		}
+		ineligible := fmtConfirmBlock(c.headline, c.detail, c.readAction, false)
+		if strings.Contains(ineligible, "[g]") {
+			t.Errorf("%s: ineligible prompt must not show [g]; got %q", c.name, ineligible)
+		}
 	}
 }
 
