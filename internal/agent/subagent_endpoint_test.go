@@ -394,7 +394,7 @@ func TestChildLimitsOverrideFromMockProps(t *testing.T) {
 // TestChildLimitsProbeFailureFallsBackToByteConstants: probe failure → child
 // CtxLimit stays zero, and activeThresholds() falls through to the
 // byte-constant floor (compact_at/keep_bytes/hard_max from Cfg), never a
-// silently-adopted 131072-token fallback.
+// silently-adopted 128000-token fallback.
 func TestChildLimitsProbeFailureFallsBackToByteConstants(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r) // no /props, no /v1/ilm/limits — probe fails

@@ -210,14 +210,10 @@ func orNone(s string) string {
 }
 
 func canonicalDir(p string) string {
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return p
+	if p == "" {
+		return ""
 	}
-	if real, err := filepath.EvalSymlinks(abs); err == nil {
-		return real
-	}
-	return abs
+	return canonicalWorkspace(p)
 }
 
 func sameDir(a, b string) bool {

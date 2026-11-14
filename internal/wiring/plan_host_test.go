@@ -210,6 +210,7 @@ func TestPlanHostPassWithOracle(t *testing.T) {
 	t.Setenv("TEST_KEY", "fake-key")
 	t.Setenv("TEST_OR_KEY", "fake-key")
 	app.Workflow = &workflow.WorkflowState{Task: "t", Phase: workflow.WFGather, PlanPath: ".wakil/plan.md"}
+	app.GrantBackendConsentForTest("openrouter") // egress consent (Check A): grant so the verdict path is exercised
 
 	code, out := runPlan(t, app, HeadlessOptions{Auto: true})
 	if code != ExitOK {

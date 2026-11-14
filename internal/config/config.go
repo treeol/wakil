@@ -442,7 +442,7 @@ type Config struct {
 	// fetch fails. All token-valued.
 	ReasoningBudgetTokens int `json:"reasoning_budget_tokens,omitempty"` // tokens reserved for extended thinking; default 4096
 	AnswerMarginTokens    int `json:"answer_margin_tokens,omitempty"`    // tokens reserved for the final answer; default 4096
-	ContextTokensFallback int `json:"context_tokens_fallback,omitempty"` // n_ctx assumed when the backend fetch fails; default 131072
+	ContextTokensFallback int `json:"context_tokens_fallback,omitempty"` // n_ctx assumed when the backend fetch fails; default 128000
 	ToolResultCap         int `json:"tool_result_cap"`                   // max chars kept in ctx per tool result; 0 = unlimited; default 8000
 	ToolResultTTL         int `json:"tool_result_ttl"`                   // evict large tool results after N completed turns; -1 = never; default 3
 	// ToolCacheRetentionDays prunes per-chat tool-cache dirs (spilled tool
@@ -1113,14 +1113,25 @@ const (
 // (overrides keys and validation).
 var MashuraToolNames = []string{"review", "debug", "decide", "check"}
 
-// IsMashuraTool reports whether name is one of the override-eligible tools.
-func IsMashuraTool(name string) bool {
+// IsMashuraTool reports whether short is one of the override-eligible tools
+// (short name, e.g. "review"). Use MashuraToolFullName to map a short name
+// to its full tool name ("mashura__review").
+func IsMashuraTool(short string) bool {
 	for _, t := range MashuraToolNames {
-		if t == name {
+		if t == short {
 			return true
 		}
 	}
 	return false
+}
+
+// MashuraToolFullName maps a short counsel name ("review") to the full tool
+// name ("mashura__review"). ok is false for unknown short names.
+func MashuraToolFullName(short string) (string, bool) {
+	if IsMashuraTool(short) {
+		return "mashura__" + short, true
+	}
+	return "", false
 }
 
 // IsMashuraLevel reports whether level is one of off|low|medium|high.
@@ -1490,7 +1501,7 @@ func DefaultConfig() Config {
 
 		ReasoningBudgetTokens:      4096,   // headroom for extended thinking
 		AnswerMarginTokens:         4096,   // headroom for the final answer
-		ContextTokensFallback:      131072, // assumed n_ctx when the backend is unreachable
+		ContextTokensFallback:      128000, // assumed n_ctx when the backend is unreachable (unified with counsel fallback 128000 in 0.8.3)
 		ToolResultCap:              8000,   // keep first 8k chars in ctx; spill the rest to disk
 		ToolResultTTL:              3,      // evict after 3 completed turns (longer window before re-reads are needed)
 		ToolCacheRetentionDays:     30,

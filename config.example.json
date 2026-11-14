@@ -216,7 +216,7 @@
 
   "reasoning_budget_tokens": 4096,
   "answer_margin_tokens": 4096,
-  "context_tokens_fallback": 131072,
+  "context_tokens_fallback": 128000,
 
   "_comment_backend": "Proxy backend routing (ilm-proxy only). backend is the default X-Ilm-Backend. external_backends lists names known to route to external/cloud providers (used by the egress consent gate). aux_model pins the proxy's auxiliary model.",
 

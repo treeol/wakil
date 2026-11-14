@@ -17,7 +17,9 @@ import (
 
 const (
 	// fallbackContextLength is the last-resort assumption when a model's context
-	// length cannot be determined from any source. Deliberately conservative.
+	// length cannot be determined from any source. It is the single context
+	// fallback for counsel calls (see also the config.go default); 128000 is
+	// deliberately conservative.
 	fallbackContextLength = 128_000
 )
 

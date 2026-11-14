@@ -124,10 +124,10 @@ type modelListJSON struct {
 	} `json:"models"`
 }
 
-// FetchModelList attempts to retrieve the model list from the proxy at
-// /v1/ilm/models. Returns (names, true) on success; (nil, false) when the
-// endpoint is absent, returns an unexpected status, or cannot be parsed.
-func FetchModelList(ctx context.Context, httpc *http.Client, baseURL, auth string) ([]string, bool) {
+// fetchModelNames is the shared request helper for the two model-list
+// endpoints. It GETs base+path with the same timeout, auth header and
+// tolerance contract for both, then hands the decoded body to decode.
+func fetchModelNames(ctx context.Context, httpc *http.Client, baseURL, auth, path string) ([]byte, bool) {
 	base := strings.TrimRight(baseURL, "/")
 	if httpc == nil {
 		httpc = http.DefaultClient
@@ -135,7 +135,7 @@ func FetchModelList(ctx context.Context, httpc *http.Client, baseURL, auth strin
 	cctx, cancel := context.WithTimeout(ctx, backendsTimeout)
 	defer cancel()
 
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, base+"/v1/ilm/models", nil)
+	req, err := http.NewRequestWithContext(cctx, http.MethodGet, base+path, nil)
 	if err != nil {
 		return nil, false
 	}
@@ -153,6 +153,17 @@ func FetchModelList(ctx context.Context, httpc *http.Client, baseURL, auth strin
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
+		return nil, false
+	}
+	return body, true
+}
+
+// FetchModelList attempts to retrieve the model list from the proxy at
+// /v1/ilm/models. Returns (names, true) on success; (nil, false) when the
+// endpoint is absent, returns an unexpected status, or cannot be parsed.
+func FetchModelList(ctx context.Context, httpc *http.Client, baseURL, auth string) ([]string, bool) {
+	body, ok := fetchModelNames(ctx, httpc, baseURL, auth, "/v1/ilm/models")
+	if !ok {
 		return nil, false
 	}
 	var parsed modelListJSON
@@ -194,31 +205,8 @@ func FetchModelListForEndpoint(ctx context.Context, httpc *http.Client, cfg conf
 // fetchOpenAIModelList fetches the standard /v1/models list. Same tolerance
 // contract as FetchModelList: (nil, false) on any failure.
 func fetchOpenAIModelList(ctx context.Context, httpc *http.Client, baseURL, auth string) ([]string, bool) {
-	base := strings.TrimRight(baseURL, "/")
-	if httpc == nil {
-		httpc = http.DefaultClient
-	}
-	cctx, cancel := context.WithTimeout(ctx, backendsTimeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(cctx, http.MethodGet, base+"/v1/models", nil)
-	if err != nil {
-		return nil, false
-	}
-	req.Header.Set("Accept", "application/json")
-	if auth != "" {
-		req.Header.Set("Authorization", auth)
-	}
-	resp, err := httpc.Do(req)
-	if err != nil {
-		return nil, false
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
+	body, ok := fetchModelNames(ctx, httpc, baseURL, auth, "/v1/models")
+	if !ok {
 		return nil, false
 	}
 	var parsed openAIModelListJSON

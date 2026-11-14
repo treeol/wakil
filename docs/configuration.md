@@ -241,7 +241,7 @@ reference covering every section below.
 | `effective_ctx_max_chars` | `0` (disabled) | Absolute cap (chars) on effective context for large models. Apply to keep context within a working budget (e.g. `200000`); models with very large advertised context may degrade in practice below their nominal limit. Applied before fractions. Override at runtime with `/maxctx` |
 | `reasoning_budget_tokens` | `4096` | Tokens reserved for extended thinking |
 | `answer_margin_tokens` | `4096` | Tokens reserved for the final answer |
-| `context_tokens_fallback` | `131072` | `n_ctx` assumed when the backend context fetch fails |
+| `context_tokens_fallback` | `128000` | `n_ctx` assumed when the backend context fetch fails |
 | `keep_bytes` | `120000` | Max bytes of verbatim turns kept after compaction (absolute fallback when `n_ctx` unknown) |
 | `summary_bytes` | `20000` | Cap on the running summary; re-summarize if exceeded; `0` = unlimited |
 | `hard_max_bytes` | `160000` | Unconditional context ceiling (absolute fallback); `0` = disabled |

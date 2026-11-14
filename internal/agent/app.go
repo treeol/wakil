@@ -1595,10 +1595,15 @@ func (a *App) RecordFailedStreamCost(before uint64, err error) {
 	a.recordUsage(u)
 }
 
-// recordUsage prices and records one usage value through the shared
-// backend-aware path used by both the success and failed-stream recorders.
-func (a *App) recordUsage(u proxy.UsageStat) {
-	usedBackend := a.Client.LastUsedBackend()
+// priceUsage resolves the priced amount and confidence for one usage value
+// through the shared backend-aware path. client is the client that serviced
+// the call (its last-used backend, model and endpoint host determine the
+// rate). It returns (usd, priced, confidence, source) where source is the
+// cost-series key the caller should record under (the split per-backend key,
+// or the legacy aggregate when no backend is known). Callers apply their own
+// category and, for aux calls, their own sourceKey override.
+func (a *App) priceUsage(client *proxy.Client, u proxy.UsageStat) (usd float64, priced bool, confidence string, source string) {
+	usedBackend := client.LastUsedBackend()
 	// BackendList is replaced under stateMu by the deferred startup probes; read
 	// it under the lock. This function runs on the turn goroutine (and the RPC
 	// path), so the unlocked read races the probe goroutine.
@@ -1620,23 +1625,19 @@ func (a *App) recordUsage(u proxy.UsageStat) {
 	// "openrouter/anthropic/claude-opus-4-8"), strip it so the cost key is
 	// "openrouter/anthropic/claude-opus-4-8" rather than the doubled
 	// "openrouter/openrouter/anthropic/claude-opus-4-8".
-	modelForCost := a.Client.Model
+	modelForCost := client.Model
 	if isExternal && strings.HasPrefix(modelForCost, usedBackend+"/") {
 		modelForCost = strings.TrimPrefix(modelForCost, usedBackend+"/")
 	}
 
-	var source string
+	source = proxy.CostSourceInference // no backend routing; legacy aggregate
 	switch {
-	case usedBackend == "":
-		source = proxy.CostSourceInference // no backend routing; legacy aggregate
-	case isExternal:
+	case usedBackend != "" && isExternal:
 		source = proxy.CostSourceInfPrefix + usedBackend + "/" + modelForCost
-	default:
+	case usedBackend != "":
 		source = proxy.CostSourceInfPrefix + usedBackend
 	}
 
-	var usd float64
-	var priced bool
 	if isExternal {
 		usd, priced = a.externalInferenceCost(usedBackend, modelForCost, u)
 	} else {
@@ -1665,11 +1666,18 @@ func (a *App) recordUsage(u proxy.UsageStat) {
 		priced = true
 		conf = proxy.ConfExact
 	}
+	return usd, priced, conf, source
+}
 
+// recordUsage records one main-loop usage value through priceUsage with the
+// main (or subagent) category. Used by the success and failed-stream
+// recorders.
+func (a *App) recordUsage(u proxy.UsageStat) {
 	cat := proxy.CostCatMain
 	if a.IsSubagent {
 		cat = proxy.CostCatSubagent
 	}
+	usd, priced, conf, source := a.priceUsage(a.Client, u)
 	a.Costs.RecordCategorized(source, cat, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
 		CachedTok:     u.CachedTok,
 		CacheWriteTok: u.CacheWriteTok,
@@ -1721,48 +1729,11 @@ func (a *App) RecordAuxInferenceCost(client *proxy.Client, sourceKey string, err
 	}
 	// Resolve pricing like RecordInferenceCost, but from the servicing
 	// client's last-used backend / model / endpoint host.
-	usedBackend := c.LastUsedBackend()
-	backendList := a.BackendListLocked()
-	isExternal := usedBackend != "" && IsExternalBackend(backendList, a.Cfg, usedBackend)
-	directOR := usedBackend == "" && isOpenRouterHost(a.Cfg.ActiveEndpoint().BaseURL)
-	if directOR {
-		usedBackend = "openrouter"
-		isExternal = true
-	}
-	modelForCost := c.Model
-	if isExternal && strings.HasPrefix(modelForCost, usedBackend+"/") {
-		modelForCost = strings.TrimPrefix(modelForCost, usedBackend+"/")
-	}
+	usd, priced, conf, resolved := a.priceUsage(c, u)
 	// Keep the caller's source key unless it is the bare aggregate and we
 	// resolved a more specific per-backend key (mirrors RecordInferenceCost).
-	if source == proxy.CostSourceInference && usedBackend != "" {
-		if isExternal {
-			source = proxy.CostSourceInfPrefix + usedBackend + "/" + modelForCost
-		} else {
-			source = proxy.CostSourceInfPrefix + usedBackend
-		}
-	}
-	var usd float64
-	var priced bool
-	if isExternal {
-		usd, priced = a.externalInferenceCost(usedBackend, modelForCost, u)
-	} else {
-		usd, priced = a.Cfg.Costs.InferenceCost(u.InputTok + u.OutputTok)
-	}
-	conf := proxy.ConfModeled
-	if isExternal {
-		if u.Exact {
-			conf = proxy.ConfExact
-		} else {
-			conf = proxy.ConfApprox
-		}
-	} else if !u.Exact {
-		conf = proxy.ConfApprox
-	}
-	if u.HasProviderCost {
-		usd = u.ProviderCostUSD
-		priced = true
-		conf = proxy.ConfExact
+	if source == proxy.CostSourceInference {
+		source = resolved
 	}
 	a.Costs.RecordCategorized(source, proxy.CostCatAux, u.InputTok, u.OutputTok, usd, priced, conf, config.TokenDetail{
 		CachedTok:     u.CachedTok,
@@ -2361,14 +2332,17 @@ func dedupToolAllowed(name string) bool {
 	return ok
 }
 
-// stateChangingTool reports whether an executed tool can change local or
+// clearsToolCache reports whether an executed tool can change local or
 // external state whose read results a ToolCache entry may describe. A
 // state-changing call clears the whole cache when handleToolCall finishes,
 // whether it succeeded or failed: a failed shell command may still have
 // changed files, and a failed write may have partially changed or created
 // one. This conservative clear is what prevents a cached read from serving
 // stale file state after the filesystem changed.
-func stateChangingTool(name string) bool {
+//
+// The name describes the cache effect, not the data classification: the
+// policy has no state-change concept beyond this list.
+func clearsToolCache(name string) bool {
 	switch name {
 	case "write_file", "write_binary_file", "edit_file", "delete_file", "move_file",
 		"run_shell", "run_background":
@@ -2704,7 +2678,7 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 	// mutation is not supposed to clear before a later read anyway: the
 	// executing call must not have been dedup-blocked (it is not allowlisted),
 	// and a later read of the same path must execute to see the new state.
-	if stateChangingTool(name) {
+	if clearsToolCache(name) {
 		a.clearToolCache()
 	}
 	return result

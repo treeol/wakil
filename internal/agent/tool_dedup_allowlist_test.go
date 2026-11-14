@@ -183,8 +183,8 @@ func TestDedupAllowlistAndStateChangingClassification(t *testing.T) {
 		"trello__get_boards",
 	}
 	for _, name := range mutating {
-		if !stateChangingTool(name) {
-			t.Errorf("stateChangingTool(%q) = false, want true", name)
+		if !clearsToolCache(name) {
+			t.Errorf("clearsToolCache(%q) = false, want true", name)
 		}
 	}
 	nonMutating := []string{
@@ -192,8 +192,8 @@ func TestDedupAllowlistAndStateChangingClassification(t *testing.T) {
 		"mashura__review", "dispatch_subagent", "math_eval",
 	}
 	for _, name := range nonMutating {
-		if stateChangingTool(name) {
-			t.Errorf("stateChangingTool(%q) = true, want false", name)
+		if clearsToolCache(name) {
+			t.Errorf("clearsToolCache(%q) = true, want false", name)
 		}
 	}
 }

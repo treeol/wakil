@@ -99,15 +99,15 @@ func TestResolveContextLimitFallback(t *testing.T) {
 
 	cfg := config.DefaultConfig()
 	cfg.BaseURL = srv.URL
-	cfg.ContextTokensFallback = 131072
+	cfg.ContextTokensFallback = 128000
 	var out bytes.Buffer
 	lim := agent.ResolveContextLimit(context.Background(), http.DefaultClient, cfg, &out)
 
 	if lim.FromBackend() {
 		t.Fatalf("expected fallback source, got %q", lim.Source)
 	}
-	if lim.NCtx != 131072 {
-		t.Errorf("fallback NCtx = %d, want 131072", lim.NCtx)
+	if lim.NCtx != 128000 {
+		t.Errorf("fallback NCtx = %d, want 128000", lim.NCtx)
 	}
 	if !strings.Contains(out.String(), "⚠ using fallback context limit") {
 		t.Errorf("missing loud fallback note; got: %q", out.String())

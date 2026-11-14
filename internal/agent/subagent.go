@@ -1239,7 +1239,7 @@ func (c *subagentLimitsCache) resolve(key string, fn func() ContextLimit) Contex
 // — that tag is deliberately NOT propagated to the child: this function
 // returns the zero ContextLimit instead, so the child falls through to the
 // hardcoded byte-constant floor exactly as before, rather than silently
-// adopting an unresolved 131072-token fallback as if it were known-good.
+// adopting an unresolved 128000-token fallback as if it were known-good.
 func (a *App) resolveChildCtxLimit(ctx context.Context, view subagentEndpointView, backend string, inherited bool) ContextLimit {
 	if inherited {
 		return a.CtxLimit

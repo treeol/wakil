@@ -41,6 +41,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/treeol/wakil/internal/sandbox"
+
 	_ "modernc.org/sqlite"
 )
 
@@ -499,33 +501,11 @@ func isWithinWorkspace(root, target string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-// resolveExistingAncestor resolves symlinks in the deepest existing ancestor of
-// an absolute cleaned path and re-joins the non-existent remainder. A dangling
-// symlink on the path is an error (its target is unknown). Mirrors
-// exec.resolveExistingAncestor; the resolution strategy stays per layer.
+// resolveExistingAncestor is the memory-layer wrapper over sandbox
+// ResolveExistingAncestor: it keeps the raw error (no wrapping) so callers
+// that match on the inner error keep their behaviour.
 func resolveExistingAncestor(path string) (string, error) {
-	dir, rest := path, ""
-	for {
-		if _, err := os.Lstat(dir); err == nil {
-			break
-		} else if !os.IsNotExist(err) {
-			return "", err
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return path, nil
-		}
-		rest = filepath.Join(filepath.Base(dir), rest)
-		dir = parent
-	}
-	resolved, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "", err
-	}
-	if rest == "" {
-		return resolved, nil
-	}
-	return filepath.Join(resolved, rest), nil
+	return sandbox.ResolveExistingAncestor(path)
 }
 
 // checkAnchorStaleness recomputes hashes for the stored anchors and returns

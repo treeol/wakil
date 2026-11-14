@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/treeol/wakil/internal/core/format"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 )
@@ -18,14 +19,7 @@ const charsPerToken = 4
 
 // transcriptSize is a cheap proxy for context size (chars of content + args).
 func TranscriptSize(conv []proxy.Message) int {
-	n := 0
-	for _, m := range conv {
-		n += len(DerefStr(m.Content))
-		for _, tc := range m.ToolCalls {
-			n += len(tc.Function.Arguments)
-		}
-	}
-	return n
+	return format.TranscriptSize(conv)
 }
 
 // protectedStart returns the index in conv of the first message of the

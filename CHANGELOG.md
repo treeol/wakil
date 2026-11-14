@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed behaviour
 
+- **Context fallback unified at 128000 tokens.** The config default for `context_tokens_fallback` was 131072 while the counsel fallback was 128000; both now use 128000. Budgets derived from the fallback shrink by 3072 tokens for sessions whose backend fetch failed; sessions with a resolved limit are unaffected.
+
 - **Automatic Mashūra rounds respect egress consent.** Sessions whose main
   backend is not OpenRouter ask before the first panel call sends to
   OpenRouter: the ask uses the same external-backend Confirm surface, records

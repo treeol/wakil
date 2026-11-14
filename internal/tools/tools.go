@@ -2,6 +2,7 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/treeol/wakil/internal/proxy"
 )
@@ -520,13 +521,18 @@ func IsEditTool(name string) bool {
 	return false
 }
 
-// IsMashuraTool reports whether name is one of the mashūra counsel tools (the
-// mashura__* family). Every such tool goes through the confirm gate
+// IsMashuraTool reports whether name is one of the mashūra counsel tools
+// (the mashura__* family). Every such tool goes through the confirm gate
 // (auto-approved in /auto mode with a visible ⚡ auto note), and its response
-// is kept in full (capOrStub never truncates it).
+// is kept in full (capOrStub never truncates it). The short-name counterpart
+// is config.IsMashuraTool / config.MashuraToolFullName.
 func IsMashuraTool(name string) bool {
-	switch name {
-	case "mashura__review", "mashura__debug", "mashura__decide", "mashura__check":
+	short, found := strings.CutPrefix(name, "mashura__")
+	if !found {
+		return false
+	}
+	switch short {
+	case "review", "debug", "decide", "check":
 		return true
 	}
 	return false

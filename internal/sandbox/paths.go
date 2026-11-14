@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -33,10 +34,41 @@ func WithinLexical(root, p string) bool {
 	return p == root || strings.HasPrefix(p, strings.TrimSuffix(root, "/")+"/")
 }
 
+// ResolveExistingAncestor resolves symlinks in the deepest existing ancestor
+// of a cleaned absolute path and re-joins the non-existent remainder. A
+// dangling symlink anywhere on the path is an error: its target is unknown,
+// so writing through it could land outside the workspace. Shared by exec
+// and memory (A4); callers wrap the raw error in their own message.
+func ResolveExistingAncestor(path string) (string, error) {
+	dir, rest := path, ""
+	for {
+		if _, err := os.Lstat(dir); err == nil {
+			break
+		} else if !os.IsNotExist(err) {
+			return "", err
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return path, nil
+		}
+		rest = filepath.Join(filepath.Base(dir), rest)
+		dir = parent
+	}
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", err
+	}
+	if rest == "" {
+		return resolved, nil
+	}
+	return filepath.Join(resolved, rest), nil
+}
+
 // PathMap is the path model shared by backends. Two namespaces exist:
 //
 //   - execution paths: anything the sandbox resolves (workspace, grants, the
 //     private temp dir);
+//
 //   - host paths: what Wakil itself may open with os.*.
 //
 // Sandbox-private paths are NEVER identity-mapped to the host: session /tmp/x

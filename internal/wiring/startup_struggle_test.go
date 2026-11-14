@@ -212,8 +212,10 @@ func TestStrugglePathThroughRealStartup(t *testing.T) {
 			t.Fatalf("/mashura %s: not handled", level)
 		}
 		// Auto-approve so the panel can run without a human confirmer,
-		// as /auto does.
+		// as /auto does. The egress consent gate (Check A) still asks
+		// through the same external_backend surface — grant it here.
 		f.SetAutoApprove(true)
+		app.GrantBackendConsentForTest("openrouter")
 
 		// Drive the turn through the delivered event stream (TestBootstrapTUIFresh
 		// pattern): StartEventPump streams through deliver; SubmitInput starts
