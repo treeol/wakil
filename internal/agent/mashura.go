@@ -1562,36 +1562,10 @@ func (a *App) counselCapIsDefault() bool {
 }
 
 // mashuraAvailable reports whether mashura counsel tools are available.
-// Single predicate: the effective level is not off AND the effective member
-// list is non-empty AND the OpenRouter key the panel will need is present.
-// The fallback member counts (A4), resolved lazily via resolvePanel.
+// It is the same predicate BuildTools uses to offer the tools in the tool
+// list (mcp_manager.go: mashuraOffered): offered == available when called.
 func (a *App) mashuraAvailable() bool {
-	// New config block: level + members gate (key via mashuraPanelKeys).
-	if a.Cfg.Mashura != nil {
-		if level, members, _ := a.effectiveMashura("review"); level == config.MashuraLevelOff {
-			return false
-		} else if len(members) == 0 {
-			return false
-		}
-		_, panel, ok := a.resolvePanel("", "")
-		if !ok {
-			return false
-		}
-		_, err := a.mashuraPanelKeys(panel)
-		return err == nil
-	}
-	if !a.Cfg.OracleEnabled {
-		return false
-	}
-	// Check that the resolved default panel's keys are actually present.
-	// This fixes the bug where tools were advertised when ANY key was set,
-	// but the fallback always required the Anthropic key.
-	_, panel, ok := a.resolvePanel("", "")
-	if !ok {
-		return false
-	}
-	_, err := a.mashuraPanelKeys(panel)
-	return err == nil
+	return mashuraOffered(a.Cfg, a.MashuraLevelOverride)
 }
 
 // effectiveMashura returns the effective (level, members, source) for a tool

@@ -906,43 +906,46 @@ func isMCPToolName(name string, servers []string) bool {
 // threads through because cfg alone cannot see RepoState, which is restored
 // after App construction — and /mcp reconnect rebuilds with app.Cfg.
 
-// mashuraGateEnabled reports the level half of the unified gate: the
-// effective level is not off. With no new block, the legacy oracle_enabled
-// flag is the level (off when false).
-func mashuraGateEnabled(cfg config.Config, repoLevel string) bool {
+// mashuraOffered is the single predicate that decides whether the Mashūra
+// counsel tools are offered to the model (BuildTools) and whether they are
+// available when called (App.mashuraAvailable). Three halves:
+//
+//   - level: with the new block, the effective level is not off; without it,
+//     the legacy oracle_enabled flag is the level (off when false, i.e. when
+//     absent — exactly as in v0.8.1).
+//   - members: with the new block, an empty members list still counts because
+//     the built-in fallback member resolves lazily (MashuraFallbackModel, else
+//     OracleModel) — exactly what resolvePanel's fallback path yields. With no
+//     block, the legacy default panel (or that same fallback) is the member
+//     set, so members are always counted.
+//   - key: an API key the panel needs is present. New block path: the
+//     OpenRouter key (named by openrouter_api_key_env) — exactly what
+//     mashuraPanelKeys requires at call time. Legacy path: either key, as in
+//     v0.8.1 (mcp_manager.go:935). A legacy config with oracle_enabled:true
+//     and only an Anthropic key therefore still offers the tools (0.8.1
+//     parity); the call itself then fails loudly with "mashūra API key not
+//     set", naming the OpenRouter key env var.
+func mashuraOffered(cfg config.Config, repoLevel string) bool {
 	if cfg.Mashura != nil {
 		level, _, _ := cfg.ResolveEffective("review", repoLevel)
-		return level != config.MashuraLevelOff
+		if level == config.MashuraLevelOff {
+			return false
+		}
+		// Members never block here: an empty members list resolves lazily
+		// through fallbackModel (MashuraFallbackModel → OracleModel → the
+		// OpenRouter default model), exactly as resolvePanel's fallback path
+		// yields — see the comment on mashuraOffered.
+	} else if !cfg.OracleEnabled {
+		return false
 	}
-	return cfg.OracleEnabled
+	return keyPresentForMashura(cfg)
 }
 
-// memberNonEmpty reports the members half of the unified gate. With the new
-// block present, an empty members list means the built-in fallback member
-// (exactly what resolvePanel's fallback path yields — OracleModel default or
-// MashuraFallbackModel), which counts always. With no block, the legacy
-// default panel (or that same fallback) is the member set.
-func memberNonEmpty(cfg config.Config, repoLevel string) bool {
-	if cfg.Mashura != nil {
-		_, members, _ := cfg.ResolveEffective("review", repoLevel)
-		if len(members) > 0 {
-			return true
-		}
-		// Lazy fallback member (fallbackModel logic cannot live here — it
-		// reads env and config only, exactly as in resolvePanel's fallback).
-		if cfg.MashuraFallbackModel != "" {
-			return true
-		}
-		return cfg.OracleModel != "" || cfg.Mashura != nil
-	}
-	return true
-}
-
-// keyPresent reports whether any API key the panel needs is present.
+// keyPresentForMashura reports whether any API key the panel needs is present.
 // New block path: the OpenRouter key (named by openrouter_api_key_env) —
 // exactly what mashuraPanelKeys will require at call time. Legacy path:
 // either key, as before.
-func keyPresent(cfg config.Config) bool {
+func keyPresentForMashura(cfg config.Config) bool {
 	if cfg.Mashura != nil {
 		return os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
 	}
@@ -978,12 +981,9 @@ func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string
 	if mcp != nil {
 		t = append(t, mcp.OpenAITools()...)
 	}
-	// Group 4: oracle (conditional). Unified predicate: effective level !=
-	// off AND effective members non-empty AND the OpenRouter key (named by
-	// openrouter_api_key_env) is present. No separate oracle_api_key_env
-	// gate — one predicate shared with mashuraAvailable.
-	if memberNonEmpty(cfg, repoLevel) && mashuraGateEnabled(cfg, repoLevel) &&
-		keyPresent(cfg) {
+	// Group 4: oracle (conditional). One predicate shared with
+	// mashuraAvailable (mashura.go): offered == available when called.
+	if mashuraOffered(cfg, repoLevel) {
 		t = append(t, mashuraToolDefs()...)
 	}
 	// Group 5: LSP (conditional).
