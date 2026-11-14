@@ -313,6 +313,36 @@ func TestBudgetStateArithmetic(t *testing.T) {
 	}
 }
 
+// TestBudgetStateSessionCostCountsPanelOnce is Check B: with a $1.00 session
+// cap and panel calls of $0.30 each, the stop must fire when the SESSION
+// TOTAL reaches the cap — the panel spend is already inside the session
+// cost, so it must not be counted a second time against the cap.
+func TestBudgetStateSessionCostCountsPanelOnce(t *testing.T) {
+	// External spend base 0.00; each panel call adds $0.30 to both
+	// BudgetState.spent (via add) and the session cost total (via
+	// RecordOracleCostFor, mirrored here by `total`).
+	var total float64
+	bs := newBudgetState(PanelCallConfig{
+		SessionBudgetUSD: 1.0,
+		SessionCostFunc:  func() float64 { return total },
+	})
+	const callCost = 0.30
+	// three calls → total 0.90, still under the cap.
+	for i := 0; i < 3; i++ {
+		bs.add(OracleUsage{InputTokens: 1, OutputTokens: 1, HasProviderCost: true, ProviderCostUSD: callCost})
+		total += callCost
+		if _, stop := bs.shouldStop(); stop {
+			t.Fatalf("stopped after %d calls (total %.2f < 1.00) — panel spend double-counted", i+1, total)
+		}
+	}
+	// fourth call → total 1.20 ≥ cap → stop fires at the configured cap.
+	bs.add(OracleUsage{InputTokens: 1, OutputTokens: 1, HasProviderCost: true, ProviderCostUSD: callCost})
+	total += callCost
+	if _, stop := bs.shouldStop(); !stop {
+		t.Fatalf("should stop at total %.2f ≥ 1.00 cap", total)
+	}
+}
+
 // TestVoidCauseClassifier covers voidCauseFrom's classes directly, plus the
 // split error-type Error() lines and the reasoningSpecString shapes.
 func TestVoidCauseClassifier(t *testing.T) {

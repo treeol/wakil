@@ -309,7 +309,11 @@ func (b *BudgetState) shouldStop() (string, bool) {
 	}
 	if b.sessionBudget > 0 {
 		if b.sessionCost != nil {
-			if (b.sessionCost()-b.sessionBase)+b.spent >= b.sessionBudget {
+			// The session cost (SessionCostTotal for the agent paths) already
+			// includes every panel call recorded so far; adding b.spent to it
+			// would count the panel's own spend twice. Count the session
+			// total directly.
+			if b.sessionCost() >= b.sessionBudget {
 				b.stopped, b.reason = true, budgetReachedReason
 				return b.reason, true
 			}
