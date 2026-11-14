@@ -164,11 +164,13 @@ func (p ApprovalRequested) Validate() error {
 // ApprovalResolved is the payload for KindApprovalResolved.
 type ApprovalResolved struct {
 	ApprovalID ApprovalID
-	// Outcome is one of "approved" | "declined" | "allowed_reads".
+	// Outcome is one of "approved" | "declined" | "allowed_reads" | "granted".
+	// "granted" records a session-grant approval (the tool is approved this
+	// once and granted for the rest of the session).
 	Outcome string
 	// Reason carries the resolver's human-readable rationale on a decline (e.g.
 	// "destructive command declined: rm -rf …", "blocked by policy: …"). Optional:
-	// empty for approved/allowed_reads resolutions. It is data (D6) — a decline
+	// empty for approved/allowed_reads/granted resolutions. It is data (D6) — a decline
 	// reason must not be reconstructed by the consumer from ToolName, because the
 	// real reason is dynamic (command text, policy rule names, flag state).
 	Reason string
@@ -184,7 +186,7 @@ func (p ApprovalResolved) Validate() error {
 		return err
 	}
 	switch p.Outcome {
-	case "approved", "declined", "allowed_reads":
+	case "approved", "declined", "allowed_reads", "granted":
 	default:
 		return fmt.Errorf("ApprovalResolved: invalid outcome %q", p.Outcome)
 	}

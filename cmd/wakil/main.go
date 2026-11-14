@@ -246,6 +246,22 @@ func main() {
 	// than the retention window — its transcript still points at them.
 	wiring.SweepToolCacheOnce(cfg.ToolCacheRetentionDays, resumeID)
 
+	if code := runTUI(cfg, resumeID, tuiHooks{}); code != 0 {
+		os.Exit(code)
+	}
+}
+
+// tuiHooks lets a caller add program options and observe the Bubble Tea
+// program. The zero value is the production behaviour.
+type tuiHooks struct {
+	programOptions []tea.ProgramOption
+	onProgram      func(*tea.Program)
+}
+
+// runTUI runs the interactive TUI for a loaded, sandbox-resolved config and
+// returns the process exit code. It owns the stderr redirect, the async
+// bootstrap, the program loop and the teardown.
+func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 	// Redirect os.Stderr to a temp file so any fmt.Fprintln(os.Stderr, ...)
 	// during the async bootstrap (NewExecutor, BuildApp, BootstrapTUI) cannot
 	// garble the alt-screen terminal. The temp file contents are copied into
@@ -253,7 +269,7 @@ func main() {
 	stderrFile, err := os.CreateTemp("", "wakil-stderr-*.log")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "startup error: cannot create stderr redirect:", err)
-		os.Exit(1)
+		return 1
 	}
 	origStderr := os.Stderr
 	os.Stderr = stderrFile
@@ -463,12 +479,13 @@ func main() {
 		loadingStatus = "resuming session…"
 	}
 	loading := tui.NewLoadingModel(loadingStatus, bootstrapCmd, swapFn)
-	prog := tea.NewProgram(loading,
-		tea.WithAltScreen(),
-		tea.WithMouseCellMotion(),
-	)
+	opts := append([]tea.ProgramOption{tea.WithAltScreen(), tea.WithMouseCellMotion()}, hooks.programOptions...)
+	prog := tea.NewProgram(loading, opts...)
 	progRef = prog
 	tui.SetProgramSend(prog.Send)
+	if hooks.onProgram != nil {
+		hooks.onProgram(prog)
+	}
 	timeline.Event("tui program starting (alt screen)")
 
 	if _, err := prog.Run(); err != nil {
@@ -481,7 +498,7 @@ func main() {
 			_ = postRunExeClose()
 		}
 		_ = os.Remove(stderrFile.Name())
-		os.Exit(1)
+		return 1
 	}
 
 	// prog.Run() returned. If the swap function ran, postRunCleanup is set.
@@ -526,7 +543,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "startup aborted — a container may still be starting (Docker cannot be cancelled)")
 		}
 		_ = os.Remove(stderrFile.Name())
-		os.Exit(1)
+		return 1
 	}
 
 	// Normal teardown: close the facade (host session, pump, detached jobs)
@@ -569,6 +586,7 @@ func main() {
 			}
 		}
 	}
+	return 0
 }
 
 // panelsUseOpenRouter reports whether any configured mashura panel or the

@@ -179,9 +179,9 @@ type TurnInput struct {
 // made or ctx is cancelled (7b2 D25). The adapter's confirmer calls it after
 // emitting ApprovalRequested. The decision is received via RespondToApproval;
 // a ctx cancellation yields a forced decline. Returns the outcome
-// ("approved"/"declined"/"allowed_reads"), a reason (non-empty on decline),
-// and the resolver's UserID (who actually answered, D4 — may differ from the
-// turn submitter when a different authorized user responds).
+// ("approved"/"declined"/"allowed_reads"/"granted"), a reason (non-empty on
+// decline), and the resolver's UserID (who actually answered, D4 — may differ
+// from the turn submitter when a different authorized user responds).
 type ApprovalParkFunc func(ctx context.Context, approvalID event.ApprovalID) (outcome string, reason string, resolver event.UserID)
 
 // hostReservedKinds are the kinds the HOST owns (finalization and lifecycle):
@@ -922,7 +922,7 @@ type pendingApproval struct {
 
 // approvalDecision is the internal representation of a client's answer.
 type approvalDecision struct {
-	outcome  string // "approved" | "declined" | "allowed_reads"
+	outcome  string // "approved" | "declined" | "allowed_reads" | "granted"
 	reason   string
 	resolver event.UserID // who actually answered (D4 identity)
 }

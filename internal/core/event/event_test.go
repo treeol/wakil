@@ -226,6 +226,17 @@ func TestPayloadEnumValidation(t *testing.T) {
 	}
 }
 
+func TestApprovalResolvedOutcomeValidation(t *testing.T) {
+	for _, outcome := range []string{"approved", "declined", "allowed_reads", "granted"} {
+		if err := validDraft(KindApprovalResolved, ApprovalResolved{ApprovalID: "apr_1", Outcome: outcome}).ValidateDraft(); err != nil {
+			t.Errorf("outcome %q should be valid: %v", outcome, err)
+		}
+	}
+	if err := validDraft(KindApprovalResolved, ApprovalResolved{ApprovalID: "apr_1", Outcome: "bogus"}).ValidateDraft(); err == nil {
+		t.Fatal("unknown approval outcome should be rejected")
+	}
+}
+
 func TestUnknownKindRejected(t *testing.T) {
 	e := validDraft(Kind("bogus"), TurnStarted{TurnID: "trn_1", TurnIndex: 1})
 	if err := e.ValidateDraft(); err == nil {

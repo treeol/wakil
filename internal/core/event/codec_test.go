@@ -96,6 +96,23 @@ func TestUnmarshalPayloadRejectsInvalidPayload(t *testing.T) {
 	}
 }
 
+// TestCodecRoundTripApprovalResolvedGranted verifies that an
+// ApprovalResolved with outcome "granted" round-trips.
+func TestCodecRoundTripApprovalResolvedGranted(t *testing.T) {
+	want := ApprovalResolved{ApprovalID: "apr_test1", Outcome: "granted", Resolver: "usr_local"}
+	data, err := MarshalPayload(KindApprovalResolved, want)
+	if err != nil {
+		t.Fatalf("MarshalPayload: %v", err)
+	}
+	got, err := UnmarshalPayload(KindApprovalResolved, data)
+	if err != nil {
+		t.Fatalf("UnmarshalPayload: %v", err)
+	}
+	if !payloadsEqual(KindApprovalResolved, want, got) {
+		t.Fatalf("round-trip mismatch\nwant: %#v\ngot:  %#v", want, got)
+	}
+}
+
 // TestUnmarshalPayloadReturnsValueNotPointer verifies that the decoded payload
 // is a value, not a pointer — matching MemLog's in-memory representation.
 func TestUnmarshalPayloadReturnsValueNotPointer(t *testing.T) {

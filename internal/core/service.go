@@ -269,7 +269,10 @@ const (
 	// ApprovalAllowReadsOnce allows read-only execution this one time.
 	ApprovalAllowReadsOnce ApprovalOutcome = "allow_reads_once"
 	// ApprovalGrantTool allows the tool call and grants future calls to the
-	// same tool for the rest of the session (read-only tools only).
+	// same tool for the rest of the session. It covers the grant-eligible
+	// tools (read-only tools plus write_file, write_binary_file, edit_file,
+	// run_shell, run_background); a grant for run_shell/run_background never
+	// covers a destructive shell command.
 	ApprovalGrantTool ApprovalOutcome = "grant_tool"
 )
 
