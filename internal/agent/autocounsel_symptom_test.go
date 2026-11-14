@@ -12,11 +12,12 @@ import (
 
 // TestAutoCounselOnePerSymptom drives the real turn loop (streamTurn with
 // the scripted fake model) through four identical writes at level high:
-// the rewrites rule fires at the third write and would fire again at the
-// fourth, but one automatic round per symptom per turn (rule 4) holds the
-// second one back — the panel is hit once, and the withheld round is
-// explainable through bare /counsel's diagnostics. A different symptom
-// (a different target) in the same turn fires a second round.
+// the rewrites rule fires at the third write and must not fire again at
+// the fourth (one automatic round per symptom per turn, rule 4). The
+// cap test below proves the cap: four writes produce at most two rounds
+// total, and — discriminatingly — the survivor set pins the rewrites
+// symptom fired exactly once. A different symptom (a different target)
+// in the same turn may still fire a second round.
 func TestAutoCounselOnePerSymptom(t *testing.T) {
 	t.Setenv("MASHURA_TEST_OR_KEY", "x")
 	t.Setenv("MASHURA_TEST_KEY", "x")
@@ -43,6 +44,10 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 		app.Cfg.OracleModel = "test-model"
 		app.IsSubagent = false
 		app.SetAutoApprove(true)
+		// High cap so the per-turn cap cannot mask rule 4: one round
+		// per symptom must hold even with room to fire.
+		app.CounselMaxSet = true
+		app.MaxCounsel = 5
 		out := new(strings.Builder)
 		app.Out = out
 		// prepareTurn is what Send runs before the loop; the real loop
@@ -55,39 +60,33 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 		return app, out, count
 	}
 
-	// Four identical writes: the rewrites rule fires after the third write
-	// (one round) and must not fire again for the fourth (same symptom).
-	// The second trace of the level's struggle sequence is the failing
-	// check, so "repeated failures" also fires — one round per symptom,
-	// counted against the two-member cap of 2, so the four writes produce
-	// at most two rounds total. counselServer counts per-member HTTP
-	// calls (2 per round), so divide by the member count.
-	_, out, n := run(t, []string{"same", "same", "same", "same"}, "./check.sh")
-	if *n/2 != 2 {
-		t.Fatalf("four identical writes: panel fired %d rounds, want 2 (cap)", *n/2)
+	// Pure rewrites (no failing check): a third write fires the rewrites
+	// rule once; a fourth write of the same file is the same symptom and
+	// must not re-fire, even with the cap at 5.
+	_, out, n := run(t, []string{"same", "same", "same", "same"}, "true")
+	if *n/2 != 1 {
+		t.Fatalf("pure rewrites: panel fired %d rounds, want exactly 1", *n/2)
 	}
-	if strings.Count(out.String(), "starting mashura debug") != 2 {
-		t.Fatalf("four identical writes: announce lines = %d, want 2; out=%q",
+	if strings.Count(out.String(), "starting mashura debug") != 1 {
+		t.Fatalf("pure rewrites: announce lines = %d, want 1; out=%q",
 			strings.Count(out.String(), "starting mashura debug"), out.String())
 	}
 	// The header is present exactly once per round in what was injected:
-	// count it in the conversation projection (two rounds at the cap).
-	app4, _, _ := run(t, []string{"same", "same", "same", "same"}, "./check.sh")
+	// count it in the conversation projection.
+	app4, _, _ := run(t, []string{"same", "same", "same", "same"}, "true")
 	hdr := 0
 	for _, m := range app4.contextProjection() {
 		if m.Content != nil {
 			hdr += strings.Count(*m.Content, autoCounselResultHeader)
 		}
 	}
-	if hdr != 2 {
-		t.Fatalf("four identical writes: header present %d times in the projection, want 2", hdr)
+	if hdr != 1 {
+		t.Fatalf("pure rewrites: header present %d times in the projection, want 1", hdr)
 	}
 
 	// Bare /counsel shows the withheld reason after the run: the last
-	// recorded evaluation names the rule and the withheld round. After a
-	// single-symptom run the last evaluation is the one-round-per-symptom
-	// withholding itself.
-	app4b, _, _ := run(t, []string{"same", "same", "same"}, "./check.sh")
+	// recorded evaluation is the one-round-per-symptom withholding itself.
+	app4b, _, _ := run(t, []string{"same", "same", "same", "same"}, "true")
 	handled, _, cmd := HandleTUICommand("/counsel", app4b)
 	if !handled {
 		t.Fatal("/counsel not handled")
@@ -100,9 +99,12 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 		t.Fatalf("bare /counsel must show the withheld round after a repeat symptom:\n%s", msg)
 	}
 
-	// A different symptom (different target) fires a second round: rule
-	// "rewrites" on answer.txt, then rule "repeated failures" on a failing
-	// shell command, both in one turn.
+	// A different symptom (different target) fires a second round: rewrites
+	// on answer.txt, then repeated failures on a failing shell command,
+	// both in one turn. The "repeat" rule also fires on the second
+	// identical ./check.sh — a third, distinct symptom, which is allowed
+	// (rule 4 only withholds the same symptom). All three are within the
+	// cap of 5.
 	frames := [][]string{
 		toolCallFrames("w1", "write_file", `{"path":"answer.txt","content":"same"}`),
 		toolCallFrames("w2", "write_file", `{"path":"answer.txt","content":"same"}`),
@@ -126,6 +128,8 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 	appD.Cfg.OracleModel = "test-model"
 	appD.IsSubagent = false
 	appD.SetAutoApprove(true)
+	appD.CounselMaxSet = true
+	appD.MaxCounsel = 5
 	outD := new(strings.Builder)
 	appD.Out = outD
 	appD.prepareTurn()
@@ -133,11 +137,11 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 	if _, _, err := appD.streamTurn(context.Background(), "write answer", nil, &traceToolCalls); err != nil {
 		t.Fatalf("streamTurn (two symptoms): %v", err)
 	}
-	if *count2/2 != 2 {
-		t.Fatalf("two different symptoms: panel fired %d rounds, want 2", *count2/2)
+	if *count2/2 != 3 {
+		t.Fatalf("distinct symptoms: panel fired %d rounds, want 3", *count2/2)
 	}
-	if strings.Count(outD.String(), "starting mashura debug") != 2 {
-		t.Fatalf("two different symptoms: announce lines = %d, want 2; out=%q",
+	if strings.Count(outD.String(), "starting mashura debug") != 3 {
+		t.Fatalf("distinct symptoms: announce lines = %d, want 3; out=%q",
 			strings.Count(outD.String(), "starting mashura debug"), outD.String())
 	}
 }

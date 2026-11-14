@@ -50,10 +50,10 @@ func TestHandoffKeepsTaskTextVerbatim(t *testing.T) {
 	}
 	old.app.Session = &agent.Session{ChatID: old.app.Client.ChatID}
 	old.app.SetWorkflow(&workflow.WorkflowState{
-		Task:     taskText,
-		PlanPath: "/work/.wakil/plan.md",
-		Phase:    workflow.WFImplement,
-		StepIdx:  2,
+		Task:      taskText,
+		PlanPath:  "/work/.wakil/plan.md",
+		Phase:     workflow.WFImplement,
+		StepIdx:   2,
 		StepCount: 5,
 	})
 	t.Setenv("WAKIL_SESSIONS_DIR", t.TempDir())

@@ -1466,7 +1466,7 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bo
 			results = append(results, struct {
 				symptom string
 				rule    string
-			}{fmt.Sprintf("rewrote %q %d times — the fix may not be landing", path, n), "rewrites"})
+			}{fmt.Sprintf("rewrote %q at least 3 times — the fix may not be landing", path), "rewrites"})
 			break
 		}
 	}
@@ -1737,10 +1737,9 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 	}
 	// One automatic round per symptom per turn (rule 4): a round already
 	// fired for this rule with this exact symptom withholds a second one
-	// even though the trace keeps growing (the symptom text carries the
-	// count, so a re-fire can only be the same struggle). A different
-	// symptom — different rule, or a different target — is a different
-	// symptom and is not withheld here.
+	// even though the trace keeps growing. A different symptom —
+	// different rule, or a different target — is a different symptom and
+	// is not withheld here.
 	if a.autoCounselRulesDone != nil {
 		if done, ok := a.autoCounselRulesDone[eval.RuleMatched]; ok && done == symptom {
 			eval.ActionTaken = "nothing shown: automatic round already fired for this symptom this turn"
@@ -1880,15 +1879,21 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		// Start+Done here around the (already-completed) panel, marked as
 		// started by Wakil. Cost was already recorded once — runMashuraCore's
 		// sync branch — and the tab events are display-only, so no second
-		// cost recording happens here.
+		// cost recording happens here. The OpID is op-<turn>-<counselCalls>:
+		// counselCalls resets every turn, so a bare counter would collide
+		// with the previous turn's tab; the turn sequence is monotonic.
+		// The panel is synchronous, so Start and Done both follow the
+		// completed panel — the tab is terminal on arrival, never "live".
+		// Declined and blocked rounds emit nothing (no round to show).
+		opID := fmt.Sprintf("op-%d-%d", a.turnSeq, a.counselCalls)
 		a.sendEvent(AsyncJobStartMsg{
-			OpID:         fakeTC.ID,
+			OpID:         opID,
 			Label:        fmt.Sprintf("automatic mashura__debug (started by wakil): %s", symptom),
 			ToolName:     "mashura__debug (automatic — started by wakil)",
 			OriginChatID: a.chatID(),
 		})
 		a.sendEvent(AsyncJobDoneMsg{
-			OpID:         fakeTC.ID,
+			OpID:         opID,
 			Label:        fmt.Sprintf("automatic mashura__debug (started by wakil): %s", symptom),
 			ToolName:     "mashura__debug (automatic — started by wakil)",
 			Result:       result,

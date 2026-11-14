@@ -22,14 +22,23 @@ func diagRedirect(w interface{ Write([]byte) (int, error) }) {
 	diag.Redirect(w)
 }
 
+// diagSink forwards to the current diag destination, exactly like
+// wiring's diagWriter: the session log while the TUI runs.
+type diagSink struct{}
+
+func (diagSink) Write(p []byte) (int, error) { return diag.Write(p) }
+
 // TestTUIIgnoresOutOfBandStdio pins Group C rule 2: while the TUI is
 // running, nothing writes to stdout or stderr outside the render loop.
-// The TUI model is built through the same construction path the real
-// program uses (newBaseModel, as NewTUIModelWithFacade does), with
-// os.Stdout and os.Stderr replaced by pipes. Producer goroutines are
-// simulated — agent notices and probe notices that go through the
-// App's Out sink go through the same sink the turn uses. No bytes may
-// arrive on the pipes.
+// The probes write through the diag sink (the session log), never
+// through os.Stdout/os.Stderr: a stray fmt.Fprintln(os.Stderr, ...) is
+// the bug being pinned. The test redirects os.Stdout/os.Stderr to pipes,
+// runs the TUI model's Update through the real construction path
+// (newBaseModel, as NewTUIModelWithFacade does), and runs the real
+// context-limit probe through the real diag-writer wiring
+// (agent.ResolveContextLimit with the diag sink — the same sink the
+// App's probe paths use). No bytes may arrive on the pipes while the
+// probe's sentence lands in the session log.
 func TestTUIIgnoresOutOfBandStdio(t *testing.T) {
 	oldOut, oldErr := os.Stdout, os.Stderr
 	rOut, wOut, _ := os.Pipe()
@@ -38,21 +47,23 @@ func TestTUIIgnoresOutOfBandStdio(t *testing.T) {
 	t.Cleanup(func() { os.Stdout, os.Stderr = oldOut, oldErr })
 
 	m := newBaseModel()
-	// Run the model's Update to render a frame through the tea path.
-	_ = step(m, context.Background())
+	_ = step(m, tea.WindowSizeMsg{Width: 80, Height: 30})
 
-	// Probe notices go through the diag sink (the session log), never
-	// through os.Stderr: a stray fmt.Fprintln(os.Stderr, ...) is the bug
-	// being pinned.
+	// The diag sink stands in for the session log the TUI redirects to
+	// (diag.OpenSessionLog, main.go:434). Every producer goroutine that
+	// used to write the probe line to os.Stderr now writes through it.
 	var log strings.Builder
 	diagRedirect(&log)
 	t.Cleanup(func() { diagRedirect(nil) })
-	buf := new(strings.Builder)
-	_ = agent.ResolveContextLimit(context.Background(), nil, config.DefaultConfig(), buf)
-	if buf.Len() == 0 {
-		t.Fatal("probe produced no output at all — the sentence must go somewhere")
+	// The probe that bootstrap runs after the first prompt (runProbes)
+	// and that /new and /resume re-run: its notice goes through the
+	// diag sink — here, the redirect — never through the pipes.
+	_ = agent.ResolveContextLimit(context.Background(), nil, config.DefaultConfig(), diagSink{})
+	if !strings.Contains(log.String(), "context limit") {
+		t.Fatalf("probe sentence missing from the session log: %q", log.String())
 	}
-	// The probe sentence must never reach the terminal pipes.
+	// Drain the pipes with a deadline: close the write ends first (no
+	// more writes can arrive), then read to EOF.
 	wOut.Close()
 	wErr.Close()
 	outBytes := make([]byte, 4096)

@@ -246,12 +246,19 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	seenWrite, seenRead := map[string]bool{}, map[string]bool{}
 
 	for _, m := range w {
+		// Automatic Mashūra rounds arrive as a user message from Wakil
+		// (never as a tool call the model made) and carry the header
+		// line: count them on their own line, not among the model's
+		// tool calls.
+		if m.Role == "user" && m.Content != nil && strings.Contains(*m.Content, autoCounselResultHeader) {
+			autoRounds++
+		}
 		for _, tc := range m.ToolCalls {
 			name := tc.Function.Name
-			// Synthetic automatic Mashūra rounds are attributed to Wakil,
-			// not to the model: they are no longer counted among the
-			// model's tool calls and are reported on their own line.
-			if strings.HasPrefix(tc.ID, magicToolCallPrefix) {
+			// Sessions resumed from before 0.8.3 may still carry a
+			// synthetic auto-counsel tool call ("auto-counsel-N"): do not
+			// hand it back to the model as its own tool call.
+			if strings.HasPrefix(tc.ID, magicToolCallPrefix) || strings.HasPrefix(tc.ID, "auto-counsel-") {
 				autoRounds++
 				continue
 			}
@@ -802,6 +809,10 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 
 	var out []proxy.Message
 	emittedTurn := map[int]bool{}
+	// uMsgAppended tracks, per turn, whether the partial checkpoint has
+	// already been appended to that turn's task message — it is appended
+	// ONCE.
+	uMsgAppended := map[int]bool{}
 	// Tier-2 degrade: in long-session mode, the ContextTailTurns most recent
 	// collapsed turns stay at full size (U + A + note); older collapsed turns
 	// degrade to a pointer line. Ranking is among collapsed turns only —
@@ -843,15 +854,37 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 				out = append(out, m)
 				continue
 			}
-			// The checkpoint is appended to the user-role task message of
-			// the turn (the first user message at/after s.first): the
-			// preamble may also carry this Turn, and the task text must
-			// survive verbatim as the message's first bytes.
-			if idx == s.first && m.Role != "user" {
-				out = append(out, m)
-				continue
-			}
+			// The checkpoint is appended ONCE, to the task message: the
+			// first user-role message of the turn at/after s.first that
+			// is not the auto-counsel injection. Any later user-role
+			// message in the elided prefix (another automatic round's
+			// diagnosis, or the system's own injected user prompts) is
+			// elided like the rest of the prefix — never re-emitted with
+			// a second checkpoint.
 			if m.Role == "user" {
+				if strings.Contains(DerefStr(m.Content), autoCounselResultHeader) {
+					// An automatic round's diagnosis inside the
+					// elided prefix: drop it like the rest of the
+					// prefix; the checkpoint already carries the
+					// archived working set.
+					if idx >= s.first+1 && idx < bIdx {
+						continue
+					}
+					out = append(out, m)
+					continue
+				}
+				if idx == s.first && m.Role != "user" {
+					out = append(out, m)
+					continue
+				}
+				// The first user message of the turn (the task text,
+				// possibly with only the checkpoint appended to it).
+				// Subsequent user messages inside the elided prefix
+				// are dropped above via the boundary check.
+				if idx > s.first && idx < bIdx && !uMsgAppended[m.Turn] {
+					out = append(out, m)
+					continue
+				}
 				uMsg := m
 				cpBlock := buildPartialCheckpointBlock(rec)
 				if uMsg.Content != nil && *uMsg.Content != "" {
@@ -861,6 +894,7 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 					uMsg.Content = &cpBlock
 				}
 				out = append(out, uMsg)
+				uMsgAppended[m.Turn] = true
 				continue
 			}
 			if idx > s.first && idx < bIdx {
@@ -1587,7 +1621,17 @@ func (a *App) collapseMidTurnPrefix() {
 
 	_, _, hardMax := a.activeThresholds()
 	ceiling := a.midTurnCollapseCeiling()
-	// Either threshold crossing fires; whichever comes first.
+	// Already partially collapsed at this boundary? Do not re-archive,
+	// re-index or reprint for the same boundary (rule E-f).
+	a.stateMu.RLock()
+	existingRec, existingOk := a.collapsed[a.curTurn]
+	a.stateMu.RUnlock()
+	existing := existingOk && existingRec.Partial
+	// Either threshold crossing fires; whichever comes first. The
+	// projection is the measure: after a partial collapse it already
+	// excludes the archived prefix, so a call that left the request
+	// still over the threshold advances the boundary instead of
+	// re-collapsing the same prefix.
 	projected := a.sentSize(a.contextProjection())
 	if projected <= hardMax && (ceiling <= 0 || projected <= ceiling) {
 		return
@@ -1628,6 +1672,16 @@ func (a *App) collapseMidTurnPrefix() {
 		a.convMu.RUnlock()
 		return
 	}
+	// Already collapsed at this boundary? (The previous record's
+	// BoundaryCallID resolves to this same batch.) Then this call would
+	// only re-archive, re-index and reprint — do nothing.
+	if existing {
+		prevIdx := findBoundaryAssistantIdx(a.Conv, s, existingRec.BoundaryCallID)
+		if prevIdx == boundaryIdx {
+			a.convMu.RUnlock()
+			return
+		}
+	}
 	w := make([]proxy.Message, 0, boundaryIdx-(taskIdx+1))
 	wSize := 0
 	for i := taskIdx + 1; i < boundaryIdx; i++ {
@@ -1667,7 +1721,9 @@ func (a *App) collapseMidTurnPrefix() {
 		_ = os.Remove(archive)
 		return
 	}
+	a.stateMu.RLock()
 	prevKey := a.collapsed[a.curTurn].MemoryKey
+	a.stateMu.RUnlock()
 	rec.MemoryKey = prevKey
 	if newKey := a.indexCollapsedInMemory(rec, buildPartialCheckpointBlock(rec)); newKey != "" {
 		rec.MemoryKey = newKey

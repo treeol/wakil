@@ -1223,22 +1223,22 @@ func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
 		MaxCounsel:  cap,
 	}
 
-	// Fire maybeSuggestDebug more times than the cap with distinct symptoms.
+	// Fire maybeSuggestDebug more times than the cap with distinct rules.
 	// Group B rule 4 (one automatic round per symptom per turn) means the
-	// per-turn cap is exercised with distinct RULES — distinct symptoms of
-	// the same rule no longer re-fire. The two firing rules with the
-	// strongest traces are "rewrites" and "repeated failures": feed each
-	// twice (the first fire per rule) and confirm the cap still holds.
+	// per-turn cap is exercised with the two firing rules ("rewrites" and
+	// "repeated failures") alternating. The rule-4 record is what stops a
+	// true repeat of the same symptom for the same rule; the cap stops the
+	// third distinct rule from firing.
 	rewriteTraces := []ToolTraceEntry{
 		{Abbrev: "write", Command: "answer.txt"},
 		{Abbrev: "write", Command: "answer.txt"},
 		{Abbrev: "write", Command: "answer.txt"},
 	}
 	for _, traces := range [][]ToolTraceEntry{rewriteTraces, buildStruggleTraces(), rewriteTraces, buildStruggleTraces(), rewriteTraces} {
-		// Each round needs the per-symptom dedup cleared so the rule is
-		// seen; the rule-4 record is what blocks a true repeat.
+		// Each round starts a fresh per-symptom dedup so the rule is seen;
+		// the rule-4 record (autoCounselRulesDone) is intentionally NOT
+		// cleared — a true same-symptom repeat must stay silent on its own.
 		app.struggleSuggested = nil
-		app.autoCounselRulesDone = nil
 		app.recentTraces = traces
 		app.maybeSuggestDebug(context.Background())
 	}
@@ -1447,7 +1447,6 @@ func TestCounselAutoFiresUpToCapThenReverts(t *testing.T) {
 	}
 	for _, traces := range [][]ToolTraceEntry{rewriteTraces, buildStruggleTraces(), rewriteTraces, buildStruggleTraces()} {
 		app.struggleSuggested = nil
-		app.autoCounselRulesDone = nil
 		app.recentTraces = traces
 		app.maybeSuggestDebug(context.Background())
 	}

@@ -481,11 +481,27 @@ func BuildContinuationPrompt(payload HandoffPayload, oldChatID, workspace string
 	b.WriteString("Prior session: " + ShortID(oldChatID) + "  workspace: " + formatWorkspace(workspace) + "\n\n")
 	// Verbatim user task texts (original first, then every later user
 	// message) precede the summaries: they are what the continuation is
-	// for, never re-summarised.
-	for _, t := range handoffTaskTexts(payload.ConvAtHandoff) {
-		b.WriteString(t)
-		b.WriteString("\n\n")
+	// for, never re-summarised. They are bounded separately from the
+	// summarised budgets (a long session must not oversize the new
+	// session's first request), but the original task text always fits
+	// whole: only later texts are dropped when over budget.
+	verbatim := handoffTaskTexts(payload.ConvAtHandoff)
+	var verbatimBuf strings.Builder
+	if len(verbatim) > 0 {
+		first := verbatim[0]
+		verbatimBuf.WriteString(first)
+		verbatimBuf.WriteString("\n\n")
+		total := len(first)
+		for _, t := range verbatim[1:] {
+			if total+len(t) > handoffTotalByteCap {
+				break
+			}
+			verbatimBuf.WriteString(t)
+			verbatimBuf.WriteString("\n\n")
+			total += len(t) + 2
+		}
 	}
+	b.WriteString(verbatimBuf.String())
 	if payload.PlanPath != "" {
 		b.WriteString("Plan/progress file for the old session: " + payload.PlanPath + "\n\n")
 	}
@@ -518,7 +534,23 @@ func handoffTaskTexts(conv []proxy.Message) []string {
 		if m.Content == nil || *m.Content == "" {
 			continue
 		}
+		// Automatic Mashūra rounds are Role:"user" messages from
+		// Wakil, carrying the header line: they are assistant work, not
+		// user-authored text, and must never be seeded as one.
+		if strings.Contains(*m.Content, autoCounselResultHeader) {
+			continue
+		}
+		// The envelope is delimited and marked untrusted — a quoted
+		// handoff block is not a task either.
+		if strings.HasPrefix(*m.Content, handoffBlockHeader) {
+			continue
+		}
 		texts = append(texts, *m.Content)
+	}
+	// Neutralize anything every caller stores so the marker cannot be
+	// spoofed out of the envelope.
+	for i := range texts {
+		texts[i] = neutralizeHandoffMarker(texts[i])
 	}
 	return texts
 }
@@ -539,12 +571,28 @@ func BuildHandoffContext(payload HandoffPayload, oldChatID, workspace string) st
 	b.WriteString(handoffBlockHeader)
 	b.WriteString("Prior session: " + ShortID(oldChatID) + "  workspace: " + formatWorkspace(workspace) + "\n\n")
 	// Verbatim user task texts (original first, then every later user
-	// message). They are the user's own words; a summariser must never
-	// paraphrase or truncate them into the context.
-	for _, t := range handoffTaskTexts(payload.ConvAtHandoff) {
-		b.WriteString(t)
-		b.WriteString("\n\n")
+	// message) precede the summaries: they are what the continuation is
+	// for, never re-summarised. They are bounded separately from the
+	// summarised budgets (a long session must not oversize the new
+	// session's first request), but the original task text always fits
+	// whole: only later texts are dropped when over budget.
+	verbatim := handoffTaskTexts(payload.ConvAtHandoff)
+	var verbatimBuf strings.Builder
+	if len(verbatim) > 0 {
+		first := verbatim[0]
+		verbatimBuf.WriteString(first)
+		verbatimBuf.WriteString("\n\n")
+		total := len(first)
+		for _, t := range verbatim[1:] {
+			if total+len(t) > handoffTotalByteCap {
+				break
+			}
+			verbatimBuf.WriteString(t)
+			verbatimBuf.WriteString("\n\n")
+			total += len(t) + 2
+		}
 	}
+	b.WriteString(verbatimBuf.String())
 	// The plan/progress file path, when one exists.
 	if payload.PlanPath != "" {
 		b.WriteString("Plan/progress file for the old session: " + payload.PlanPath + "\n\n")

@@ -223,11 +223,13 @@ func TestStrugglePathThroughRealStartup(t *testing.T) {
 	}
 
 	// Group B rule 4 through the real startup path: four identical writes
-	// produce exactly two rounds (cap 2), never three or four.
+	// produce exactly one round (the rewrites symptom; the fourth write
+	// is the same symptom and stays silent), at the default cap of 2 with
+	// the repeated-failure trace absorbed by the rewrites rule.
 	out, n, delivered, apps := runHighCapture(t)
 	_ = out
-	if n/2 != 2 {
-		t.Fatalf("four identical writes: panel fired %d rounds, want 2 (cap)", n/2)
+	if n/2 != 1 {
+		t.Fatalf("four identical writes: panel fired %d rounds, want 1", n/2)
 	}
 	// Group B rule 2: the automatic round reaches the Mashūra tab as an
 	// async-job event, marked as started by Wakil.
@@ -243,8 +245,8 @@ func TestStrugglePathThroughRealStartup(t *testing.T) {
 			dones++
 		}
 	}
-	if starts != 2 || dones != 2 {
-		t.Fatalf("async-job events: starts=%d dones=%d, want 2/2 (one per automatic round)", starts, dones)
+	if starts != 1 || dones != 1 {
+		t.Fatalf("async-job events: starts=%d dones=%d, want 1/1 (one per automatic round)", starts, dones)
 	}
 	// Group B rule 3: the outgoing payload holds no assistant mashura tool
 	// call for the automatic rounds, and the header is present once per
@@ -264,8 +266,8 @@ func TestStrugglePathThroughRealStartup(t *testing.T) {
 			}
 		}
 	}
-	if hdr != 2 {
-		t.Fatalf("automatic-round header present %d times in the projection, want 2 (once per round)", hdr)
+	if hdr != 1 {
+		t.Fatalf("automatic-round header present %d times in the projection, want 1 (once per round)", hdr)
 	}
 
 	runLevel := func(t *testing.T, level string) (string, int) {

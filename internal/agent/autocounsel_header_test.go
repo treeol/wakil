@@ -156,20 +156,25 @@ func TestAutoCounselTabEvents(t *testing.T) {
 
 // TestCollapseNoteSeparatesAutoRounds pins Group B rule 3, second half:
 // the collapse note does not count an automatic round among the model's
-// tool calls; it lists it separately.
+// tool calls; it lists it separately. Automatic rounds now arrive as a
+// user message from Wakil (carrying the header line), and sessions
+// resumed from before 0.8.3 may still carry the old synthetic
+// auto-counsel tool call — both are listed separately, never counted
+// as the model's tool calls.
 func TestCollapseNoteSeparatesAutoRounds(t *testing.T) {
 	w := []proxy.Message{
 		tcMsg("c1", "write_file", `{"path":"answer.txt"}`),
 		trMsg("c1", "write_file", "ok"),
-		tcMsg("wakil-auto-1", "mashura__debug", `{"symptom":"auto-counsel: rewrote"}`),
-		trMsg("wakil-auto-1", "mashura__debug", autoCounselResultHeader+"diagnosis"),
+		{Role: "user", Content: StrPtr(autoCounselResultHeader + "diagnosis")},
+		tcMsg("auto-counsel-1", "mashura__debug", `{"symptom":"auto-counsel: rewrote"}`),
+		trMsg("auto-counsel-1", "mashura__debug", autoCounselResultHeader+"diagnosis"),
 	}
 	note := buildCollapseNote(1, w, "/fake/archive")
 	if strings.Contains(note, "mashura__debug×1") {
 		t.Fatalf("collapse note counts the automatic round as a model tool call:\n%s", note)
 	}
-	if !strings.Contains(note, "automatic mashura rounds (started by wakil): 1") {
-		t.Fatalf("collapse note must list the automatic round separately:\n%s", note)
+	if !strings.Contains(note, "automatic mashura rounds (started by wakil): 2") {
+		t.Fatalf("collapse note must list the automatic rounds separately:\n%s", note)
 	}
 	if !strings.Contains(note, "write_file×1") {
 		t.Fatalf("model tool calls still counted:\n%s", note)
