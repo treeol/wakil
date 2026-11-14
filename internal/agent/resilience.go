@@ -112,7 +112,6 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 	// Retry-After still waits the 15 s minimum), not from a nil slot.
 	lastErr := err
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		delay := retryBackoff(attempt-1, app.RetryDelay)
 		suffix := ""
 		if app.NearContextLimit() {
 			suffix = " (near context limit)"
@@ -120,9 +119,8 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 		// Per-attempt line naming the reason and the wait: rate-limited and
 		// overloaded (429/529) back off longer than other transient errors
 		// and honour Retry-After (see retryWait).
-		wait := retryWait(attempt, lastErr, app)
-		backendNote(app, fmt.Sprintf("⚠ %s — retrying in %s, attempt %d of %d%s", retryReason(lastErr), wait, attempt, maxRetries, suffix))
-		delay = wait
+		delay := retryWait(attempt, lastErr, app)
+		backendNote(app, fmt.Sprintf("⚠ %s — retrying in %s, attempt %d of %d%s", retryReason(lastErr), delay, attempt, maxRetries, suffix))
 
 		select {
 		case <-ctx.Done():
