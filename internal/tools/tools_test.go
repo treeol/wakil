@@ -76,13 +76,13 @@ func TestDefaultTools_CwdInDescription(t *testing.T) {
 
 // TestGatedTool verifies which tools require human confirmation.
 func TestGatedTool(t *testing.T) {
-	gated := []string{"run_shell", "write_file", "write_binary_file", "edit_file", "delete_file", "move_file", "run_background", "kill_process"}
+	gated := []string{"run_shell", "write_file", "write_binary_file", "edit_file", "delete_file", "move_file", "run_background", "kill_process", "open_url"}
 	for _, name := range gated {
 		if !GatedTool(name) {
 			t.Errorf("GatedTool(%q) = false, want true", name)
 		}
 	}
-	ungated := []string{"read_file", "read_file_full", "list_dir", "search_files", "find_files", "read_process_log", "open_url"}
+	ungated := []string{"read_file", "read_file_full", "list_dir", "search_files", "find_files", "read_process_log"}
 	for _, name := range ungated {
 		if GatedTool(name) {
 			t.Errorf("GatedTool(%q) = true, want false", name)

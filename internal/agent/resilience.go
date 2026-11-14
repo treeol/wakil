@@ -107,7 +107,10 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 	}
 
 	allStreamErrors := true // false if any retry produces a non-stream error
-	var lastErr error
+	// The initial error is the first failure being amortised over: the
+	// first attempt's line and its wait are computed from it (a 429 with no
+	// Retry-After still waits the 15 s minimum), not from a nil slot.
+	lastErr := err
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		delay := retryBackoff(attempt-1, app.RetryDelay)
 		suffix := ""
@@ -133,7 +136,12 @@ func HandleStreamError(ctx context.Context, app *App, err error) error {
 			return nil // recovered
 		}
 		if !errors.Is(rerr, proxy.ErrBackendStream) {
+			// Fatal (4xx) or non-stream error reached during a retry: stop
+			// looping (e.g. a 500 followed by a 400) and surface it; the
+			// exhausted message below still names the last status.
 			allStreamErrors = false
+			lastErr = rerr
+			break
 		}
 		lastErr = rerr
 	}
@@ -216,7 +224,9 @@ const RateLimitDefaultWait = 15 * time.Second
 // retryWait returns the pause before retry attempt n. A Retry-After header
 // the proxy saw is honoured up to RetryAfterCap (60 s) whenever it is
 // present; 429/529 failures wait at least RateLimitDefaultWait (15 s);
-// everything else uses the exponential backoff schedule.
+// everything else uses the exponential backoff schedule. An explicit
+// RetryDelay override (tests) still shortens the wait — noDelay(n) 0s
+// beats the 429 minimum so test-time retries never block on a real second.
 func retryWait(n int, lastErr error, app *App) time.Duration {
 	if d := app.Client.RetryAfter(); d > 0 {
 		if d > RetryAfterCap {
@@ -225,6 +235,9 @@ func retryWait(n int, lastErr error, app *App) time.Duration {
 		return d
 	}
 	if IsRateLimitOrOverload(lastErr) {
+		if app.RetryDelay != nil {
+			return retryBackoff(n-1, app.RetryDelay)
+		}
 		if d := retryBackoff(n-1, app.RetryDelay); d > RateLimitDefaultWait {
 			return d
 		}

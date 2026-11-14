@@ -1473,6 +1473,11 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		resp, err = c.HTTP.Do(req2)
 	}
 	if err != nil {
+		// A transport error carries no Retry-After: clear any value a
+		// previous response stored so later retries do not wait stale.
+		c.retryAfterMu.Lock()
+		c.retryAfter = 0
+		c.retryAfterMu.Unlock()
 		// A cancelled context surfaces from Do as a wrapped ctx.Err() — the
 		// user aborted before any response arrived. Never wrap it retryable:
 		// the retry loop would re-issue a turn the user deliberately killed.

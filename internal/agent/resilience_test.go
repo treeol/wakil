@@ -263,3 +263,72 @@ func (w *writerAdapter) Write(p []byte) (int, error) { return w.b.Write(p) }
 
 // Compile-time interface check.
 var _ io.Writer = (*writerAdapter)(nil)
+
+// TestHandleStreamError_FirstAttemptUsesInitialError pins the
+// post-review fix: the first retry's line and wait are computed from the
+// INITIAL error, not from a nil slot — an initial 429 with no Retry-After
+// still prints "rate limited" on attempt 1 and computes the 15s minimum.
+// The wall is kept off the test clock via a short-deadline ctx (the wait
+// selects ctx.Done), so the real 15s never elapses.
+func TestHandleStreamError_FirstAttemptUsesInitialError(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	}))
+	defer srv.Close()
+
+	var out strings.Builder
+	app := newResilienceApp(srv.URL)
+	app.RetryDelay = nil
+	app.SetAutoApprove(false)
+	app.Cfg.BackendMaxRetries = 1
+	app.Out = &writerAdapter{&out}
+
+	_, err := app.Send(context.Background(), "hi")
+	if !errors.Is(err, proxy.ErrBackendStream) {
+		t.Fatalf("first Send should return ErrBackendStream; got: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+	_ = HandleStreamError(ctx, app, err)
+
+	note := out.String()
+	if !strings.Contains(note, "rate limited") {
+		t.Errorf("first attempt line must name rate limited; got: %q", note)
+	}
+}
+
+// TestHandleStreamError_FatalMidRetryStopsLoop pins the post-review fix: a
+// retry returning a fatal error (500 → 400) stops the loop — no third
+// request.
+func TestHandleStreamError_FatalMidRetryStopsLoop(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		if n == 1 {
+			http.Error(w, "boom", http.StatusInternalServerError)
+			return
+		}
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}))
+	defer srv.Close()
+
+	// noDelay override keeps the retry loop fast (waits are 0s); the
+	// fatal-stop assertion is about the loop breaking, not the timing.
+	app := newResilienceApp(srv.URL)
+	app.SetAutoApprove(true)
+	app.Cfg.BackendMaxRetries = 3
+
+	_, err := app.Send(context.Background(), "task")
+	if !errors.Is(err, proxy.ErrBackendStream) {
+		t.Fatalf("first Send should be ErrBackendStream; got: %v", err)
+	}
+	result := HandleStreamError(context.Background(), app, err)
+	if !errors.Is(result, proxy.ErrBackendFatal) {
+		t.Errorf("fatal mid-retry should surface ErrBackendFatal; got: %v", result)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Errorf("500 → 400 must make exactly 2 calls (no third request); made %d", got)
+	}
+}
