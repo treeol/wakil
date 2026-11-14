@@ -466,7 +466,10 @@ func TestWorkflowStepFailure(t *testing.T) {
 
 	var capturedDetail string
 	exec := newFakeExecutor()
-	app := newTestApp(srv.URL, exec, func(_, _, detail string, _ bool) bool {
+	app := newTestApp(srv.URL, exec, func(name, _, detail string, _ bool) bool {
+		if name == "external_backend" {
+			return true // egress consent (Check A) granted for the test
+		}
 		capturedDetail = detail
 		return false // decline oracle
 	})
@@ -893,7 +896,12 @@ func wfImplementApp(t *testing.T, sseURL string, nSteps int) *agent.App {
 	t.Helper()
 	exec := newFakeExecutor()
 	exec.files[".wakil/plan.md"] = planContent2Steps
-	app := newTestApp(sseURL, exec, func(_, _, _ string, _ bool) bool { return true })
+	app := newTestApp(sseURL, exec, func(name, _, _ string, _ bool) bool {
+		if name == "external_backend" {
+			return true // egress consent (Check A) granted for the test
+		}
+		return true
+	})
 	app.Workflow = &workflow.WorkflowState{
 		Task:      "my task",
 		Phase:     workflow.WFImplement,
@@ -2109,7 +2117,13 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 
 	exec := newFakeExecutor()
 	exec.files[".wakil/plan.md"] = "## Task\n\nt\n\n## Plan\n\n1. fix it\n"
-	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool { return true })
+	app := newTestApp(srv.URL, exec, func(name, _, _ string, _ bool) bool {
+		// The headless confirmer replaces this before the loop starts and
+		// drives the panel verdict; this stub never decides anything
+		// (it is superseded by headlessConfirmer below).
+		_ = name
+		return true
+	})
 	app.Cfg.OracleEnabled = true
 	app.Cfg.OracleAPIKeyEnv = "TEST_KEY"
 	app.Cfg.OpenRouterAPIKeyEnv = "WAKIL_TEST_OR_KEY"
@@ -2126,6 +2140,11 @@ func TestRunHeadlessDefaultInvokesOracle(t *testing.T) {
 		PlanPath:  ".wakil/plan.md",
 		StepCount: 1,
 	}
+	// Headless mode: the egress consent ask for the workflow panel now
+	// declines without --allow-external (headlessDecision's external_backend
+	// case). Pre-grant the session consent so the headless confirmer's own
+	// verdict path is what is exercised here, unchanged.
+	app.GrantBackendConsentForTest("openrouter")
 	app.Confirm = headlessConfirmer(app, RunFlags{Auto: true}, new(string))
 	app.Out = io.Discard
 
@@ -3518,7 +3537,10 @@ func TestReviewRetryOnTurnCompletion(t *testing.T) {
 
 	exec := newFakeExecutor()
 	exec.files[".wakil/plan.md"] = planContent2Steps
-	app := newTestApp(srv.URL, exec, func(_, _, _ string, _ bool) bool {
+	app := newTestApp(srv.URL, exec, func(name, _, _ string, _ bool) bool {
+		if name == "external_backend" {
+			return true // egress consent (Check A) granted for the test
+		}
 		oracleCallCount++
 		return true // approve oracle
 	})

@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Mashūra review budget counts panel spend once.** With `SessionBudgetUSD = 1.00`, calls of `$0.30` fired the stop once the session total reached the cap; before, it fired after two calls (0.60 < 1.00) because `BudgetState.shouldStop` added the session total (already panel-inclusive) to `BudgetState.spent` (the same calls again). The session total is now the single measure.
+
 - **Retry classification is now one rule: HTTP 408, 429, 529 and 5xx are retryable, for the main loop and for Mashūra alike.** The two predicates disagreed (the main loop retried 408/529 where Mashūra failed once) — see `proxy.IsRetryableStatus`. Interactive sessions retry too (previously only auto/headless), each attempt prints the reason and the wait, and `Retry-After` is honoured up to 60 seconds.
 - **`backend_max_retries: 0` now really means no retries.** It restores the field's documented contract (`BackendMaxRetries int // 0 disables retries`): the retry budget derivation turned a 0 into the default of 3. `DefaultConfig` supplies 3, so configs that load normally are unaffected.
 - **The tools are no longer offered when only an Anthropic key is configured.** The direct Anthropic path was removed in 0.8.0 and every Mashūra call needs the OpenRouter key — but v0.8.1 and v0.8.2 advertised the tools for legacy `oracle_enabled: true` configs carrying only an Anthropic key, and those tools could not run. They now read not-offered and not-available, for legacy configs and for the `mashura` block alike. The Mashūra tool gate is now one predicate used both for the tool list and for the call (`mashuraOffered`), so "offered" always equals "available when called".
@@ -16,6 +18,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed behaviour
 
+- **Automatic Mashūra rounds respect egress consent.** Sessions whose main
+  backend is not OpenRouter ask before the first panel call sends to
+  OpenRouter: the ask uses the same external-backend Confirm surface, records
+  the grant for the session, blocks the send when declined, and stays
+  out of /auto mode's skip (Egress Consent consults the grants first, as the
+  `external_backend` carve-out documents). Auto-counsel, the model-callable
+  tools, and workflow-triggered panels all go through this one check.
+- **The same consent is now asked for every workflow-triggered panel**
+  (`/plan review`, `/plan approve`). Previously a workflow-triggered review
+  sent without any egress prompt. Headless runs without `--allow-external`
+  see the same decline — with the reason named — instead of a silent send.
 - **Injected automatic Mashūra rounds say that Wakil started them.** The result given to the model after an automatic debug round now begins with one line stating Wakil started the round automatically and the model did not call it, so a model can no longer claim "I called `mashura__debug` myself".
 - **`open_url` asks first.** `docs/tools.md` said `open_url` requires confirmation but the tool was ungated in code (and a test pinned the ungated state). It is now gated like the other host-affecting tools.
 

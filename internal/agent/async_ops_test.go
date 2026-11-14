@@ -537,6 +537,7 @@ func TestAsyncMashuraDeclineStartsNothing(t *testing.T) {
 	}
 	SetOracleEndpointHook(srv.URL + "/v1/messages")
 	t.Cleanup(func() { SetOracleEndpointHook("") })
+	app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) pre-granted
 	app.Confirm = func(_, _, _ string, _ bool) bool { return false }
 
 	got := app.handleMashura(context.Background(), "mashura__review", tcArgs("mashura__review", `{"focus":"x"}`))

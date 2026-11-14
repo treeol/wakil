@@ -201,6 +201,7 @@ func TestMashuraGateDeclineShortCircuits(t *testing.T) {
 	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
 
+	app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) pre-granted
 	var gated []string
 	app.Confirm = func(toolName, _, _ string, _ bool) bool {
 		gated = append(gated, toolName)
@@ -241,8 +242,13 @@ func TestMashuraFailsClosed(t *testing.T) {
 	os.Setenv("MASHURA_TEST_OR_KEY", "x")
 	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 	app, _ := mashuraTestApp(t, "f", "p", "s")
-	app.Confirm = func(_, _, _ string, _ bool) bool {
-		t.Fatal("gate must not fire when required intent is missing")
+	app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) pre-granted; if the
+	// egress grant were ever revoked this Confirm would see external_backend
+	// asks, so fail loudly only on unexpected surfaces.
+	app.Confirm = func(name, _, _ string, _ bool) bool {
+		if name == "external_backend" {
+			return false
+		}
 		return false
 	}
 	cases := map[string]string{
@@ -520,6 +526,7 @@ func TestSourcesBadPathErrorsPreAPI(t *testing.T) {
 	defer os.Unsetenv("MASHURA_TEST_OR_KEY")
 
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) pre-granted before egress check
 	app.Confirm = func(_, _, _ string, _ bool) bool {
 		t.Fatal("gate must not fire when path is bad")
 		return false
@@ -700,7 +707,12 @@ func TestPanelSingleGateForWholePanel(t *testing.T) {
 	t.Cleanup(func() { SetOracleEndpointHook("") })
 
 	confirmCount := 0
-	app.Confirm = func(_, _, _ string, _ bool) bool {
+	app.Confirm = func(name, _, _ string, _ bool) bool {
+		if name == "external_backend" {
+			confirmCount++
+			app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) granted
+			return true
+		}
 		confirmCount++
 		return true // approve
 	}
@@ -708,8 +720,9 @@ func TestPanelSingleGateForWholePanel(t *testing.T) {
 	got := app.handleMashura(context.Background(), "mashura__review",
 		tcArgs("mashura__review", `{"focus":"check it"}`))
 
-	// Gate fires exactly once for the whole panel.
-	if confirmCount != 1 {
+	// Gate fires exactly once for the whole panel AND the egress grant ask
+	// fires once too (Check A) — two confirms total, in that order.
+	if confirmCount != 2 {
 		t.Errorf("confirm count = %d, want 1 (single gate for panel)", confirmCount)
 	}
 	// the tool call now returns a placeholder immediately; the
@@ -884,7 +897,11 @@ func TestPanelPerCallOverride(t *testing.T) {
 	t.Cleanup(func() { SetOracleEndpointHook("") })
 
 	var capturedDetail string
-	app.Confirm = func(_, _, detail string, _ bool) bool {
+	app.Confirm = func(name, _, detail string, _ bool) bool {
+		if name == "external_backend" {
+			app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) granted
+			return true
+		}
 		capturedDetail = detail
 		return false // decline — we just want to inspect the detail
 	}
@@ -1033,6 +1050,7 @@ func TestPanelPreflightSuccessPerformsSourceReads(t *testing.T) {
 	t.Setenv("MASHURA_TEST_KEY", "x")
 	t.Setenv("MASHURA_TEST_OR_KEY", "x")
 	app, fe := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) pre-granted so preflight reaches source reads
 	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
 		"default": {Models: []string{"anthropic:m1"}, Mode: "panel"},
 	}
@@ -1052,6 +1070,7 @@ func TestNilConfirmFailsClosed(t *testing.T) {
 	t.Setenv("MASHURA_TEST_KEY", "x")
 	t.Setenv("MASHURA_TEST_OR_KEY", "x")
 	app, _ := mashuraTestApp(t, "f", "1. do it", "[step 1] done")
+	app.grantBackendConsent(mashuraEgressHost) // egress consent (Check A) pre-granted
 	app.Confirm = nil
 
 	result := app.runMashuraCore(context.Background(), "mashura__review",

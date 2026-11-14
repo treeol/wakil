@@ -237,6 +237,64 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 // mashura__debug myself, which broke your rule".
 const autoCounselResultHeader = "[automatic mashura round — Wakil started this round automatically; you did not call it]\n\n"
 
+// mashuraEgressHost is the consent key for the Mashūra host. Every Mashūra
+// call targets OpenRouter (transportClient, mashura.go:40-53).
+const mashuraEgressHost = "openrouter"
+
+// mashuraEgressAllowed reports whether a Mashūra send to its host is allowed
+// under the session's egress consent model: has the user already consented,
+// this session, to send to the external host named "openrouter"?
+//
+// Consent is shaped like the main loop's external-backend gate
+// (checkEgressConsent): it is never auto-approved and it is exempt from the
+// /auto skip (SuspendAuto's external_backend carve-out, commands.go:30).
+// Subagent Apps are exempt: child Apps cannot prompt and inherit the
+// parent's consent snapshot; blocking their Mashūra calls would break the
+// delegation capability the workflow depends on.
+func (a *App) mashuraEgressAllowed() bool {
+	if a.IsSubagent {
+		return true
+	}
+	return a.hasBackendConsent(mashuraEgressHost)
+}
+
+// mashuraEgressConsent asks the user for consent to send to the Mashūra
+// host, through the same "external_backend" Confirm surface the main loop's
+// egress gate uses. It records consent in the session set on approval and
+// returns whether sending is allowed. The prompt always fires — even in
+// /auto mode — so an un-consented send can never slip through silently.
+func (a *App) mashuraEgressConsent() bool {
+	if a.mashuraEgressAllowed() {
+		return true
+	}
+	if a.Confirm == nil {
+		return false
+	}
+	detail := fmt.Sprintf(
+		"A Mashūra panel call will send task, plan and evidence from this session "+
+			"to the external AI host %q. Proceed?", mashuraEgressHost)
+	if !a.Confirm("external_backend",
+		"⚠ Send session context to external AI host "+mashuraEgressHost+"?",
+		detail, false) {
+		return false
+	}
+	a.grantBackendConsent(mashuraEgressHost)
+	return true
+}
+
+// GrantBackendConsentForTest is a test bridge: grants session consent for a
+// backend without going through the Confirm surface.
+func (a *App) GrantBackendConsentForTest(backend string) {
+	a.grantBackendConsent(backend)
+}
+
+// mashuraEgressBlockedMessage is the model-visible answer when a Mashūra
+// send is declined at the egress gate (entering the second call site).
+func (a *App) mashuraEgressBlockedMessage() string {
+	return "no consent to send to external host " + mashuraEgressHost +
+		" in this session — /mashura needs an OpenRouter consent first"
+}
+
 // runMashuraCore is the shared mashūra execution path. sync=true runs the
 // panel inline and returns the formatted result (auto-counsel, registry-full
 // fallback, subagents); sync=false enqueues the panel on the async registry
@@ -275,6 +333,16 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	apiKeys, keyErr := a.mashuraPanelKeys(panel)
 	if keyErr != nil {
 		return "ERROR: " + a.mashuraKeyErrorMessage(name, panelName, keyErr)
+	}
+
+	// Egress consent: the Mashūra send goes to OpenRouter (transportClient).
+	// A session whose main backend is not OpenRouter must not send there
+	// without explicit consent — even in /auto mode (the gate asks on
+	// approval surface and records the grant; a declined prompt blocks the
+	// send with the reason). The check runs before any source reads so a
+	// blocked send costs no evidence gathering.
+	if !a.mashuraEgressConsent() {
+		return "ERROR: " + a.mashuraEgressBlockedMessage()
 	}
 
 	var question, briefing string
@@ -1668,6 +1736,14 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			// means members or key — say so, never stay silent.
 			eval.ActionTaken = ""
 			suggestNote("no panel members or key")
+			return
+		}
+		// Egress consent (Check A): no session consent for the Mashūra host
+		// means the round must not run, even in /auto mode. The suggest note
+		// carries the reason (and in headless mode the ask itself declines).
+		if !a.mashuraEgressConsent() {
+			eval.ActionTaken = ""
+			suggestNote("no consent in this session to send to external host " + mashuraEgressHost)
 			return
 		}
 		if a.counselCalls >= capMax {
