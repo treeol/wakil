@@ -226,6 +226,24 @@ func renderWorkingSet(w []proxy.Message) string {
 // writes alone fill the budget). One budget, not one per category.
 const maxNotePaths = 12
 
+// countAutoRounds counts automatic Mashura rounds in msgs: a user-role
+// message carrying the auto-counsel header, or a legacy tool call whose id
+// carries the magic or auto-counsel prefix.
+func countAutoRounds(w []proxy.Message) int {
+	autoRounds := 0
+	for _, m := range w {
+		if m.Role == "user" && m.Content != nil && strings.Contains(*m.Content, autoCounselResultHeader) {
+			autoRounds++
+		}
+		for _, tc := range m.ToolCalls {
+			if strings.HasPrefix(tc.ID, magicToolCallPrefix) || strings.HasPrefix(tc.ID, "auto-counsel-") {
+				autoRounds++
+			}
+		}
+	}
+	return autoRounds
+}
+
 // buildCollapseNote builds the deterministic note appended to A in the
 // projection. It reports tool counts and paths, split into "write targets:"
 // (calls to write-class file tools — evidence of intent, not of a completed
@@ -240,26 +258,18 @@ const maxNotePaths = 12
 // spend bytes exactly where the cap is trying to save them.
 func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	toolCounts := map[string]int{}
-	autoRounds := 0
+	autoRounds := countAutoRounds(w)
 	writeTargets := []string{}
 	reads := []string{}
 	seenWrite, seenRead := map[string]bool{}, map[string]bool{}
 
 	for _, m := range w {
-		// Automatic Mashūra rounds arrive as a user message from Wakil
-		// (never as a tool call the model made) and carry the header
-		// line: count them on their own line, not among the model's
-		// tool calls.
-		if m.Role == "user" && m.Content != nil && strings.Contains(*m.Content, autoCounselResultHeader) {
-			autoRounds++
-		}
 		for _, tc := range m.ToolCalls {
 			name := tc.Function.Name
 			// Sessions resumed from before 0.8.3 may still carry a
 			// synthetic auto-counsel tool call ("auto-counsel-N"): do not
 			// hand it back to the model as its own tool call.
 			if strings.HasPrefix(tc.ID, magicToolCallPrefix) || strings.HasPrefix(tc.ID, "auto-counsel-") {
-				autoRounds++
 				continue
 			}
 			toolCounts[name]++
@@ -1244,6 +1254,9 @@ func aggregateToolResults(msgs []proxy.Message) map[string]int {
 	counts := map[string]int{}
 	for _, m := range msgs {
 		if m.Role == "tool" && m.Name != "" {
+			if strings.HasPrefix(m.ToolCallID, magicToolCallPrefix) || strings.HasPrefix(m.ToolCallID, "auto-counsel-") {
+				continue
+			}
 			counts[m.Name]++
 		}
 	}
@@ -1299,6 +1312,9 @@ func formatCollapseNotice(turn, priorBytes, sentBytes int, dropped []proxy.Messa
 		if len(toolAgg) > 0 {
 			fmt.Fprintf(&b, ", %s", formatToolAggregation(toolAgg))
 		}
+		if n := countAutoRounds(dropped); n > 0 {
+			fmt.Fprintf(&b, ", automatic mashura rounds (started by wakil): %d", n)
+		}
 		b.WriteString(")")
 	}
 	if archive != "" {
@@ -1328,10 +1344,78 @@ func stashFailureReason(rec CollapseRecord) string {
 	}
 }
 
+// collapseTailStart returns the start index of the kept tail of whole tool
+// rounds immediately before before: the most recent assistant batch before
+// before plus earlier batches kept while their combined size stays within
+// 30 percent of the mid-turn ceiling. It returns before when there is no
+// completed round before before.
+func (a *App) collapseTailStart(s span, taskIdx, before int) int {
+	boundaryIdx := -1
+	for i := before - 1; i > taskIdx; i-- {
+		if a.Conv[i].Role == "assistant" && len(a.Conv[i].ToolCalls) > 0 {
+			boundaryIdx = i
+			break
+		}
+	}
+	if boundaryIdx < 0 {
+		return before
+	}
+	roundEnd := func(idx int) int {
+		end := idx
+		for j := idx + 1; j <= s.last && j < len(a.Conv) && a.Conv[j].Role == "tool"; j++ {
+			end = j
+		}
+		return end
+	}
+	roundSize := func(from, to int) int {
+		n := 0
+		for i := from; i <= to; i++ {
+			n += messageSize(a.Conv[i])
+		}
+		return n
+	}
+	tailStart := boundaryIdx
+	// A zero ceiling disables the size walk: tailCap would be 0 and the
+	// first round alone would exceed it. Return the first kept round
+	// itself when it leaves a non-empty archive, else the legacy anchor at
+	// before so the working set stays archived.
+	if a.midTurnCollapseCeiling() <= 0 {
+		if boundaryIdx <= taskIdx+1 {
+			return before
+		}
+		return boundaryIdx
+	}
+	tailCap := a.midTurnCollapseCeiling() * 30 / 100
+	tailBytes := roundSize(boundaryIdx, roundEnd(boundaryIdx))
+	for i := boundaryIdx - 1; i > taskIdx; i-- {
+		if a.Conv[i].Role != "assistant" || len(a.Conv[i].ToolCalls) == 0 {
+			continue
+		}
+		gs := roundSize(i, roundEnd(i))
+		if tailBytes+gs > tailCap {
+			break
+		}
+		tailStart = i
+		tailBytes += gs
+	}
+	return tailStart
+}
+
 // handleCollapseContext implements the collapse_context tool: sweeps any
 // newly-eligible finished prior turns via collapseFinishedTurns(), then
-// archives and collapses the completed prefix of the current turn (s.first+1
-// .. curAsstIdx-1) into a partial CollapseRecord anchored at tc.ID.
+// archives and collapses the completed prefix of the current turn into a
+// partial CollapseRecord. Explicit selection, distinct from the automatic
+// writer (collapseMidTurnPrefix): this path archives the model's own
+// completed work w = s.first+1 .. curAsstIdx-1, keeps the tail anchored at
+// the collapse_context call itself (tailStart := curAsstIdx,
+// boundaryCallID := tc.ID), and does NOT apply the automatic retention
+// budget (collapseTailStart) — an explicit user/model collapse need not
+// retain recent rounds for the automatic ceiling. Both writers anchor the
+// record at the first kept assistant message, so the projection elides
+// exactly the archived range and the task text is never modified. The
+// collapse_context assistant message itself is never archived: it sits at
+// tailStart, and its result follows it, so call and result stay paired in
+// the kept tail.
 func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	if !a.IsLongSession() {
 		return "collapse_context: no-op in standard mode (use /mode long-session to enable context collapse)"

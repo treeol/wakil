@@ -1236,7 +1236,7 @@ func TestAutoCounselRespectsMaxCounsel(t *testing.T) {
 	}
 	for _, traces := range [][]ToolTraceEntry{rewriteTraces, buildStruggleTraces(), rewriteTraces, buildStruggleTraces(), rewriteTraces} {
 		// Each round starts a fresh per-symptom dedup so the rule is seen;
-		// the rule-4 record (autoCounselRulesDone) is intentionally NOT
+		// the rule-4 record (autoCounselDone) is intentionally NOT
 		// cleared — a true same-symptom repeat must stay silent on its own.
 		app.struggleSuggested = nil
 		app.recentTraces = traces

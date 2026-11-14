@@ -99,12 +99,14 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 		t.Fatalf("bare /counsel must show the withheld round after a repeat symptom:\n%s", msg)
 	}
 
-	// A different symptom (different target) fires a second round: rewrites
-	// on answer.txt, then repeated failures on a failing shell command,
-	// both in one turn. The "repeat" rule also fires on the second
-	// identical ./check.sh — a third, distinct symptom, which is allowed
-	// (rule 4 only withholds the same symptom). All three are within the
-	// cap of 5.
+	// A different symptom fires a second round: rewrites on answer.txt,
+	// then a failing shell command, both in one turn. The "repeated
+	// failures" and "repeat" rules now share one command identity, so a
+	// failing command counts once however many of its rules fire: the
+	// first round fires for the rewrite identity, the third write is the
+	// same identity and stays silent, and the command fires once (at its
+	// first failing run via "repeated failures", with its later match
+	// withheld). Both are within the cap of 5.
 	frames := [][]string{
 		toolCallFrames("w1", "write_file", `{"path":"answer.txt","content":"same"}`),
 		toolCallFrames("w2", "write_file", `{"path":"answer.txt","content":"same"}`),
@@ -137,11 +139,44 @@ func TestAutoCounselOnePerSymptom(t *testing.T) {
 	if _, _, err := appD.streamTurn(context.Background(), "write answer", nil, &traceToolCalls); err != nil {
 		t.Fatalf("streamTurn (two symptoms): %v", err)
 	}
-	if *count2/2 != 3 {
-		t.Fatalf("distinct symptoms: panel fired %d rounds, want 3", *count2/2)
+	if *count2/2 != 2 {
+		t.Fatalf("distinct symptoms: panel fired %d rounds, want 2", *count2/2)
 	}
-	if strings.Count(outD.String(), "starting mashura debug") != 3 {
-		t.Fatalf("distinct symptoms: announce lines = %d, want 3; out=%q",
+	if strings.Count(outD.String(), "starting mashura debug") != 2 {
+		t.Fatalf("distinct symptoms: announce lines = %d, want 2; out=%q",
 			strings.Count(outD.String(), "starting mashura debug"), outD.String())
+	}
+}
+
+// TestStruggleKeyIdentity pins the struggle identity keys: writes to one
+// file share one rewrite identity at any count, while a failing command
+// shares one command identity across its rules.
+func TestStruggleKeyIdentity(t *testing.T) {
+	w := ToolTraceEntry{Abbrev: "write", Command: "answer.txt"}
+	for _, n := range []int{2, 3, 4} {
+		traces := make([]ToolTraceEntry, n)
+		for i := range traces {
+			traces[i] = w
+		}
+		_, d, _, k := detectStruggleScan(traces)
+		if !d || k != "rewrite:answer.txt" {
+			t.Fatalf("%d writes: got detected=%v key=%q, want rewrite:answer.txt", n, d, k)
+		}
+	}
+	other := ToolTraceEntry{Abbrev: "write", Command: "other.txt"}
+	if _, d, _, k := detectStruggleScan([]ToolTraceEntry{other, other}); !d || k != "rewrite:other.txt" {
+		t.Fatalf("other.txt: got detected=%v key=%q, want rewrite:other.txt", d, k)
+	}
+	f := ToolTraceEntry{Abbrev: "shell", Command: "./check.sh", ExitErr: true, FirstLine: "FAIL"}
+	if _, d, _, k := detectStruggleScan([]ToolTraceEntry{f, f}); !d || k != "command:shell:./check.sh" {
+		t.Fatalf("failing check: got detected=%v key=%q, want command:shell:./check.sh", d, k)
+	}
+	if _, d, _, _ := detectStruggleScan([]ToolTraceEntry{f, f}, func(_, k string) bool { return k == "command:shell:./check.sh" }); d {
+		t.Fatal("skipping the command identity must withhold both of its rules")
+	}
+	// A withheld identity must not starve a different one.
+	traces := []ToolTraceEntry{w, w, w, f, f}
+	if _, d, _, k := detectStruggleScan(traces, func(_, k string) bool { return k == "rewrite:answer.txt" }); !d || k != "command:shell:./check.sh" {
+		t.Fatalf("withheld rewrite: got detected=%v key=%q, want command:shell:./check.sh", d, k)
 	}
 }

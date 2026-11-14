@@ -433,12 +433,12 @@ func TestDetectStruggleScanMasking(t *testing.T) {
 	// fire on the same traces.
 	fail := ToolTraceEntry{Abbrev: "shell", Command: "go test ./...", ExitErr: true, FirstLine: "FAIL"}
 	traces := []ToolTraceEntry{fail, fail}
-	s1, d1, r1 := detectStruggleScan(traces)
+	s1, d1, r1, _ := detectStruggleScan(traces)
 	if !d1 || r1 != "repeated failures" {
 		t.Fatalf("no predicate: got (%q, %v, %q), want repeated failures", s1, d1, r1)
 	}
 	// With the first symptom marked shown, the second rule must surface.
-	s2, d2, r2 := detectStruggleScan(traces, func(s string) bool { return s == s1 })
+	s2, d2, r2, _ := detectStruggleScan(traces, func(s, _ string) bool { return s == s1 })
 	if !d2 || r2 != "repeat" {
 		t.Fatalf("shown first symptom: got (%q, %v, %q), want repeat", s2, d2, r2)
 	}
@@ -446,7 +446,7 @@ func TestDetectStruggleScanMasking(t *testing.T) {
 		t.Fatalf("shown symptom resurfaced: %q", s2)
 	}
 	// With both marked shown, nothing fires.
-	_, d3, r3 := detectStruggleScan(traces, func(s string) bool { return s == s1 || s == s2 })
+	_, d3, r3, _ := detectStruggleScan(traces, func(s, _ string) bool { return s == s1 || s == s2 })
 	if d3 || r3 != "none" {
 		t.Fatalf("both shown: got (%v, %q), want none", d3, r3)
 	}

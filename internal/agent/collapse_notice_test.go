@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // --- A1: truthful collapse-notice sizes ------------------------------------
@@ -160,6 +162,27 @@ func TestCollapseNoticeSmallTurnZeroK(t *testing.T) {
 	want := fmt.Sprintf("→ %d sent", projected/charsPerToken)
 	if !strings.Contains(out.String(), want) {
 		t.Errorf("small-turn notice mismatch: want %q in %q", want, out.String())
+	}
+}
+
+// TestCollapseNoticeStatesAutoRounds: the notice states the auto-round count
+// when dropped messages hold an automatic Mashura round, and stays silent
+// otherwise.
+func TestCollapseNoticeStatesAutoRounds(t *testing.T) {
+	withAuto := func() []proxy.Message {
+		return []proxy.Message{
+			{Role: "user", Content: StrPtr(autoCounselResultHeader + "diagnosis")},
+			trMsg("tc1", "read_file", bigContent),
+		}
+	}
+	got := formatCollapseNotice(1, 8000, 1000, withAuto(), 2, "")
+	if !strings.Contains(got, "automatic mashura rounds (started by wakil): 1") {
+		t.Errorf("notice with one auto round missing count: %q", got)
+	}
+	without := []proxy.Message{trMsg("tc1", "read_file", bigContent)}
+	got = formatCollapseNotice(1, 8000, 1000, without, 2, "")
+	if strings.Contains(got, "automatic mashura rounds") {
+		t.Errorf("notice without auto rounds must not state a count: %q", got)
 	}
 }
 

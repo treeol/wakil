@@ -1406,6 +1406,22 @@ func displayAbbrev(abbrev string) string {
 	return abbrev
 }
 
+// struggleKey returns the identity of a struggle symptom: the behaviour
+// family plus its target. Rules "repeat" (for write/edit) and "rewrites"
+// share one identity per path, so repeated writes to one file count as one
+// symptom however many rules the trace fires.
+func struggleKey(rule string, last ToolTraceEntry, path string) string {
+	switch rule {
+	case "rewrites":
+		return "rewrite:" + path
+	case "repeat":
+		if last.Abbrev == "write" || last.Abbrev == "edit" {
+			return "rewrite:" + last.Command
+		}
+	}
+	return "command:" + last.Abbrev + ":" + last.Command
+}
+
 // detectStruggleScan is the shared scanner behind DetectStruggle and the
 // /counsel evaluation dump. The bool is whether a rule fired; rule names the
 // rule ("none" when nothing fired).
@@ -1413,11 +1429,11 @@ func displayAbbrev(abbrev string) string {
 // The rules are evaluated in order and every rule's result is collected: a
 // rule that already fired this turn (its symptom was already shown) must not
 // hide a different rule that also fires — the first NOT-yet-shown rule wins.
-// alreadyShown is a predicate on the symptom string; nil means nothing was
-// shown, so the first matching rule wins as before.
-func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bool) (symptom string, detected bool, rule string) {
+// alreadyShown is a predicate on the symptom and its identity key; nil
+// means nothing was shown, so the first matching rule wins as before.
+func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, key string) bool) (symptom string, detected bool, rule string, key string) {
 	if len(traces) < 2 {
-		return "", false, "none"
+		return "", false, "none", ""
 	}
 	n := len(traces)
 	last := traces[n-1]
@@ -1426,6 +1442,7 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bo
 	var results []struct {
 		symptom string
 		rule    string
+		key     string
 	}
 	// EXIT≠0 streak: the two most recent calls both failed.
 	if last.ExitErr && prev.ExitErr {
@@ -1436,14 +1453,16 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bo
 		results = append(results, struct {
 			symptom string
 			rule    string
-		}{s, "repeated failures"})
+			key     string
+		}{s, "repeated failures", struggleKey("repeated failures", last, "")})
 	}
 	// Same command twice in a row with no intervening progress.
 	if last.Command != "" && last.Command == prev.Command && last.Abbrev == prev.Abbrev {
 		results = append(results, struct {
 			symptom string
 			rule    string
-		}{fmt.Sprintf("ran %s %q twice with no progress", displayAbbrev(last.Abbrev), last.Command), "repeat"})
+			key     string
+		}{fmt.Sprintf("ran %s %q twice with no progress", displayAbbrev(last.Abbrev), last.Command), "repeat", struggleKey("repeat", last, "")})
 	}
 	// Repeated rewrites of the same file across the window. The symptom
 	// names the file and the rule, not the running count: the count grows
@@ -1466,16 +1485,17 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bo
 			results = append(results, struct {
 				symptom string
 				rule    string
-			}{fmt.Sprintf("rewrote %q at least 3 times — the fix may not be landing", path), "rewrites"})
+				key     string
+			}{fmt.Sprintf("rewrote %q at least 3 times — the fix may not be landing", path), "rewrites", struggleKey("rewrites", last, path)})
 			break
 		}
 	}
 	for _, r := range results {
-		if len(alreadyShown) == 0 || !alreadyShown[0](r.symptom) {
-			return r.symptom, true, r.rule
+		if len(alreadyShown) == 0 || !alreadyShown[0](r.symptom, r.key) {
+			return r.symptom, true, r.rule, r.key
 		}
 	}
-	return "", false, "none"
+	return "", false, "none", ""
 }
 
 // detectStruggle scans recent tool traces for a deterministic struggle signal and,
@@ -1484,7 +1504,7 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(string) bo
 // same file written/edited three or more times in the window. It only offers — the
 // caller never auto-calls the tool, and the human gate always applies.
 func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
-	symptom, detected, _ = detectStruggleScan(traces)
+	symptom, detected, _, _ = detectStruggleScan(traces)
 	return symptom, detected
 }
 
@@ -1532,18 +1552,24 @@ func (a *App) resolveCounselMode() (mode string, source string) {
 // resolved mode and its source, and the level. It does not mutate state.
 func (a *App) struggleEvaluationSnapshot() struggleEvaluation {
 	eval := struggleEvaluation{TraceWindow: formatTraceWindow(a.recentTraces)}
-	symptom, detected, rule := detectStruggleScan(a.recentTraces, func(s string) bool {
-		return a.struggleSuggested[s]
+	symptom, detected, rule, key := detectStruggleScan(a.recentTraces, func(s, k string) bool {
+		if a.struggleSuggested[s] {
+			return true
+		}
+		_, fired := a.autoCounselDone[k]
+		return fired
 	})
 	if detected {
 		eval.RuleMatched = rule
 		eval.Symptom = symptom
+		eval.SymptomKey = key
 	} else {
 		// Every firing rule was already shown this turn: report the first
 		// rule so the diagnostics do not claim "none" matched.
-		if s, ok, r := detectStruggleScan(a.recentTraces); ok {
+		if s, ok, r, k := detectStruggleScan(a.recentTraces); ok {
 			eval.RuleMatched = r
 			eval.Symptom = s
+			eval.SymptomKey = k
 			eval.ActionTaken = "nothing shown: symptom already suggested this turn"
 		} else {
 			eval.RuleMatched = "none"
@@ -1641,12 +1667,12 @@ func (a *App) CounselCapIsDefault() bool { return a.counselCapIsDefault() }
 // cross-package callers/tests.
 func (a *App) ResolveCounselMode() (string, string) { return a.resolveCounselMode() }
 
-// AutoCounselRuleDone reports the symptom an automatic round already
-// fired for rule in this turn, if any (rule 4: one round per symptom).
-// Read-only, for the bare /counsel withheld-round explanation.
-func (a *App) AutoCounselRuleDone(rule string) (string, bool) {
-	s, ok := a.autoCounselRulesDone[rule]
-	return s, ok
+// AutoCounselDoneFor reports the rule of the automatic round already fired
+// for the identity key in this turn, if any (rule 4: one round per
+// identity). Read-only, for the bare /counsel withheld-round explanation.
+func (a *App) AutoCounselDoneFor(key string) (rule string, ok bool) {
+	rule, ok = a.autoCounselDone[key]
+	return rule, ok
 }
 
 // counselCapIsDefault reports whether the effective cap is the built-in
@@ -1735,13 +1761,16 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		eval.ActionTaken = "nothing shown: symptom already suggested this turn"
 		return
 	}
-	// One automatic round per symptom per turn (rule 4): a round already
-	// fired for this rule with this exact symptom withholds a second one
-	// even though the trace keeps growing. A different symptom —
-	// different rule, or a different target — is a different symptom and
-	// is not withheld here.
-	if a.autoCounselRulesDone != nil {
-		if done, ok := a.autoCounselRulesDone[eval.RuleMatched]; ok && done == symptom {
+	// One automatic round per identity per turn (rule 4): a round already
+	// fired for this identity key withholds a second one even though the
+	// trace keeps growing. A different identity is not withheld here.
+	// A round without a key is recorded under its rule (see below).
+	doneKey := eval.SymptomKey
+	if doneKey == "" {
+		doneKey = eval.RuleMatched
+	}
+	if a.autoCounselDone != nil {
+		if _, ok := a.autoCounselDone[doneKey]; ok {
 			eval.ActionTaken = "nothing shown: automatic round already fired for this symptom this turn"
 			return
 		}
@@ -1908,14 +1937,14 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		}
 		// Mark shown only after the lines above were printed.
 		a.struggleSuggested[symptom] = true
-		// One automatic round per symptom per turn (rule 4): record this
-		// symptom against its rule so a later evaluation for the same rule
-		// and the same symptom stays silent, while a different target (or a
-		// different rule) may still fire, up to the per-turn cap.
-		if a.autoCounselRulesDone == nil {
-			a.autoCounselRulesDone = map[string]string{}
+		// One automatic round per identity per turn (rule 4): record this
+		// identity key against its rule so a later evaluation for the same
+		// identity stays silent, while a different identity may still fire,
+		// up to the per-turn cap.
+		if a.autoCounselDone == nil {
+			a.autoCounselDone = map[string]string{}
 		}
-		a.autoCounselRulesDone[eval.RuleMatched] = symptom
+		a.autoCounselDone[doneKey] = eval.RuleMatched
 		if !void {
 			eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (%d/%d)", a.counselCalls, capMax)
 		}

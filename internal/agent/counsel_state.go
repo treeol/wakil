@@ -14,12 +14,12 @@ type counselState struct {
 	// CounselMode is set.
 	counselCalls int
 
-	// autoCounselRulesDone records, per struggle rule, the symptom of the
-	// automatic round already fired for that rule this turn. Rule 4: one
-	// automatic round per symptom per turn — a second round is allowed only
-	// for a different symptom (different rule or different target). Reset
-	// with struggleSuggested in prepareTurn.
-	autoCounselRulesDone map[string]string
+	// autoCounselDone records, per struggle identity key (see struggleKey),
+	// the rule of the automatic round already fired for that identity this
+	// turn. Rule 4: one automatic round per identity per turn — a second
+	// round is allowed only for a different identity. Reset with
+	// struggleSuggested in prepareTurn.
+	autoCounselDone map[string]string
 
 	// autoCounselSkipGate, when true, tells the next handleMashura call to
 	// bypass the a.Confirm gate. Set immediately before an auto-counsel fire
@@ -49,6 +49,9 @@ type struggleEvaluation struct {
 	RuleMatched string
 	// Symptom is the detector symptom when a rule fired.
 	Symptom string
+	// SymptomKey is the identity key of the symptom (see struggleKey): the
+	// behaviour family plus target. One automatic round fires per key.
+	SymptomKey string
 	// ResolvedMode is the effective mode from resolveCounselMode (explicit
 	// choice, or the level when no choice is set).
 	ResolvedMode string
