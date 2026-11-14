@@ -53,6 +53,14 @@ Older transcript:
 type HandoffPayload struct {
 	CoarseSummary string // summarized older block (bounded); may be ""
 	RecentTail    string // high-fidelity recent prose (bounded); may be ""
+	// ConvAtHandoff is the full old-session conversation (preamble
+	// stripped, as generateHandoffPayload receives it). Its verbatim user
+	// messages are carried into the new session's seed — the original
+	// task text and every later user message — never re-summarised.
+	ConvAtHandoff []proxy.Message
+	// PlanPath is the old session's workflow plan/progress file path when
+	// one exists (ToolTrace's plan path); "" when there is none.
+	PlanPath string
 }
 
 // Handoff payload byte budgets. These are deliberately INDEPENDENT of
@@ -330,7 +338,10 @@ func generateHandoffPayload(ctx context.Context, app *App) (HandoffPayload, erro
 
 	older, tail := splitHandoffConv(conv)
 
-	payload := HandoffPayload{}
+	payload := HandoffPayload{ConvAtHandoff: conv}
+	if wf := app.WorkflowCopy(); wf != nil {
+		payload.PlanPath = wf.PlanPath
+	}
 	// Render the recent tail (high-fidelity prose) — never summarized. Truncate
 	// from the FRONT (keep the newest bytes) so a recency tail never evicts the
 	// most recent content, which is exactly what it exists to preserve.
@@ -468,6 +479,16 @@ func BuildContinuationPrompt(payload HandoffPayload, oldChatID, workspace string
 	var b strings.Builder
 	b.WriteString(handoffBlockHeader)
 	b.WriteString("Prior session: " + ShortID(oldChatID) + "  workspace: " + formatWorkspace(workspace) + "\n\n")
+	// Verbatim user task texts (original first, then every later user
+	// message) precede the summaries: they are what the continuation is
+	// for, never re-summarised.
+	for _, t := range handoffTaskTexts(payload.ConvAtHandoff) {
+		b.WriteString(t)
+		b.WriteString("\n\n")
+	}
+	if payload.PlanPath != "" {
+		b.WriteString("Plan/progress file for the old session: " + payload.PlanPath + "\n\n")
+	}
 	if strings.TrimSpace(payload.CoarseSummary) != "" {
 		b.WriteString("## Coarse summary of the earlier part of the session\n")
 		b.WriteString(neutralizeHandoffMarker(payload.CoarseSummary))
@@ -483,6 +504,25 @@ func BuildContinuationPrompt(payload HandoffPayload, oldChatID, workspace string
 	return b.String()
 }
 
+// handoffTaskTexts extracts the verbatim user-authored text of the old
+// session for the seed of the new session: the original task text first
+// (the first user message), then every later user message, in order. The
+// preamble (a leading system message) is skipped. Tool-call and
+// tool-result content is not included — only user-authored text.
+func handoffTaskTexts(conv []proxy.Message) []string {
+	var texts []string
+	for _, m := range conv {
+		if m.Role != "user" {
+			continue
+		}
+		if m.Content == nil || *m.Content == "" {
+			continue
+		}
+		texts = append(texts, *m.Content)
+	}
+	return texts
+}
+
 // BuildHandoffContext constructs the pinned context message for stop-mode
 // handoff. Unlike BuildContinuationPrompt, it does NOT instruct the model to
 // "proceed with the next action" — the user will provide the next instruction.
@@ -490,10 +530,25 @@ func BuildContinuationPrompt(payload HandoffPayload, oldChatID, workspace string
 // markers. Note: stop-mode context is injected as a SYSTEM message (not
 // indexed), so the feedback-loop strip is not required for it, but the same
 // envelope framing is used for consistency and spoof-mitigation.
+//
+// The verbatim user task texts are prepended (original task first, then
+// every later user message) so the model sees the task it must continue
+// — never re-summarised, never truncated.
 func BuildHandoffContext(payload HandoffPayload, oldChatID, workspace string) string {
 	var b strings.Builder
 	b.WriteString(handoffBlockHeader)
 	b.WriteString("Prior session: " + ShortID(oldChatID) + "  workspace: " + formatWorkspace(workspace) + "\n\n")
+	// Verbatim user task texts (original first, then every later user
+	// message). They are the user's own words; a summariser must never
+	// paraphrase or truncate them into the context.
+	for _, t := range handoffTaskTexts(payload.ConvAtHandoff) {
+		b.WriteString(t)
+		b.WriteString("\n\n")
+	}
+	// The plan/progress file path, when one exists.
+	if payload.PlanPath != "" {
+		b.WriteString("Plan/progress file for the old session: " + payload.PlanPath + "\n\n")
+	}
 	if strings.TrimSpace(payload.CoarseSummary) != "" {
 		b.WriteString("## Coarse summary of the earlier part of the session\n")
 		b.WriteString(neutralizeHandoffMarker(payload.CoarseSummary))
