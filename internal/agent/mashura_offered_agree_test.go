@@ -13,6 +13,10 @@ import (
 // offered in the tool list" (BuildTools) must always equal "the tools are
 // available when called" (App.mashuraAvailable). Both go through
 // mashuraOffered.
+//
+// The direct Anthropic path was removed in 0.8.0 and every Mashūra call
+// needs the OpenRouter key, so the "anthropic_only" rows must read
+// not-offered AND not-available for both the legacy and block shapes.
 func TestMashuraOfferedAvailableAgree(t *testing.T) {
 	t.Setenv("TEST_OR_KEY", "x")
 	t.Setenv("TEST_ANTH_KEY", "x")
@@ -78,6 +82,11 @@ func TestMashuraOfferedAvailableAgree(t *testing.T) {
 				available := app.mashuraAvailable()
 				if offered != available {
 					t.Errorf("offered=%v available=%v: predicates disagree", offered, available)
+				}
+				// Anthropic key alone never suffices (direct Anthropic path
+				// removed in 0.8.0; every Mashūra call needs OpenRouter).
+				if kc.name == "anthropic_only" && (offered || available) {
+					t.Errorf("anthropic_only/%s: offered=%v available=%v, want both false", s.name, offered, available)
 				}
 			})
 		}

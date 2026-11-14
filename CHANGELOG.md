@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Retry classification is now one rule: HTTP 408, 429, 529 and 5xx are retryable, for the main loop and for Mashūra alike.** The two predicates disagreed (the main loop retried 408/529 where Mashūra failed once) — see `proxy.IsRetryableStatus`. Interactive sessions retry too (previously only auto/headless), each attempt prints the reason and the wait, and `Retry-After` is honoured up to 60 seconds.
+- **`backend_max_retries: 0` now really means no retries.** It restores the field's documented contract (`BackendMaxRetries int // 0 disables retries`): the retry budget derivation turned a 0 into the default of 3. `DefaultConfig` supplies 3, so configs that load normally are unaffected.
+- **The tools are no longer offered when only an Anthropic key is configured.** The direct Anthropic path was removed in 0.8.0 and every Mashūra call needs the OpenRouter key — but v0.8.1 and v0.8.2 advertised the tools for legacy `oracle_enabled: true` configs carrying only an Anthropic key, and those tools could not run. They now read not-offered and not-available, for legacy configs and for the `mashura` block alike. The Mashūra tool gate is now one predicate used both for the tool list and for the call (`mashuraOffered`), so "offered" always equals "available when called".
+- **Automatic Mashūra rounds printed by their real origin** (see the matching entry under Changed behaviour: Injected rounds are labelled automatic).
+
+### Changed behaviour
+
+- **Injected automatic Mashūra rounds say that Wakil started them.** The result given to the model after an automatic debug round now begins with one line stating Wakil started the round automatically and the model did not call it, so a model can no longer claim "I called `mashura__debug` myself".
+- **`open_url` asks first.** `docs/tools.md` said `open_url` requires confirmation but the tool was ungated in code (and a test pinned the ungated state). It is now gated like the other host-affecting tools.
+
 ## [0.8.2] - 2026-11-14
 
 ### Changed behaviour

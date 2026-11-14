@@ -918,13 +918,13 @@ func isMCPToolName(name string, servers []string) bool {
 //     OracleModel) — exactly what resolvePanel's fallback path yields. With no
 //     block, the legacy default panel (or that same fallback) is the member
 //     set, so members are always counted.
-//   - key: an API key the panel needs is present. New block path: the
-//     OpenRouter key (named by openrouter_api_key_env) — exactly what
-//     mashuraPanelKeys requires at call time. Legacy path: either key, as in
-//     v0.8.1 (mcp_manager.go:935). A legacy config with oracle_enabled:true
-//     and only an Anthropic key therefore still offers the tools (0.8.1
-//     parity); the call itself then fails loudly with "mashūra API key not
-//     set", naming the OpenRouter key env var.
+//   - key: the OpenRouter API key the panel will need at call time (named
+//     by openrouter_api_key_env) is present. Every Mashūra member routes
+//     through OpenRouter (mashuraPanelKeys); the direct Anthropic path was
+//     removed in 0.8.0, so an Anthropic key alone never suffices. v0.8.1
+//     and v0.8.2 advertised the tools for legacy configs with only an
+//     Anthropic key (the tools then could not run); that was corrected
+//     here — such configs now report not-offered AND not-available.
 func mashuraOffered(cfg config.Config, repoLevel string) bool {
 	if cfg.Mashura != nil {
 		level, _, _ := cfg.ResolveEffective("review", repoLevel)
@@ -941,15 +941,13 @@ func mashuraOffered(cfg config.Config, repoLevel string) bool {
 	return keyPresentForMashura(cfg)
 }
 
-// keyPresentForMashura reports whether any API key the panel needs is present.
-// New block path: the OpenRouter key (named by openrouter_api_key_env) —
-// exactly what mashuraPanelKeys will require at call time. Legacy path:
-// either key, as before.
+// keyPresentForMashura reports whether the API key the panel needs is
+// present: the OpenRouter key (openrouter_api_key_env). The direct Anthropic
+// path was removed and every member routes through OpenRouter
+// (mashuraPanelKeys), so an Anthropic key alone never counts — legacy or
+// block.
 func keyPresentForMashura(cfg config.Config) bool {
-	if cfg.Mashura != nil {
-		return os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
-	}
-	return os.Getenv(cfg.OracleAPIKeyEnv) != "" || os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
+	return os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
 }
 
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string) []proxy.Tool {
