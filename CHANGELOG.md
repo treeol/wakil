@@ -45,6 +45,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`/resume`, `/remember` and `/compact` failures say what to try next.** A failed `/compact` (history summary failure) says it will be retried at the next `/compact`.
 - **Release notes come from the changelog.** A release body is now the matching section of `CHANGELOG.md`, not the auto-generated git log.
 - **README rewritten for a first-time reader.** It now describes what Wakil is and how to start, with the full tool catalogue in `docs/tools.md`.
+- **Sessions can now carry grants, costs and consent across `/new` and `/resume`.** Grant approvals, the reads allowance and (via the saved state) `/auto` survive both rotations; costs on resume now replace rather than merge, and headless resume now clears checkpoints and resets backend consent like the interactive path. See the grants entry above.
+- **Long turns collapse mid-turn now.** When the projected request passes the hard-max ceiling (95% of the effective context) or a new absolute ceiling `context_collapse_ceiling_tokens` (default 200000 tokens, `0` disables), the completed prefix of the current turn collapses between tool calls — always keeping the task message, the system prompt, pinned content, the subagent task instruction and tool-call/tool-result pairs intact. It prints the same "collapsed request" line, marked mid-turn. Used to be that only the model could collapse a turn mid-flight by calling `collapse_context` itself.
+- **`/handoff` now keeps the task text.** The new session's first request carries the original task text verbatim, every later user message verbatim, and the plan/progress file path when one exists, ahead of the summary — instead of only a summary that paraphrased the task away.
 
 ## [0.8.2] - 2026-11-14
 
