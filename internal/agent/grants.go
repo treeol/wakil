@@ -100,25 +100,18 @@ func (a *App) AddGrant(tool string) {
 	}
 }
 
-// ClearGrants removes all session-scoped grants.
-func (a *App) ClearGrants() {
-	a.grants.Store(&grantsSnapshot{})
-}
-
-// HasGrant reports whether a session grant exists for the given tool.
+// HasGrant reports whether a session-scoped grant covers tool. Safe from
+// any goroutine.
 func (a *App) HasGrant(tool string) bool {
-	v := a.grants.Load()
-	if v == nil {
-		return false
-	}
-	s, ok := v.(*grantsSnapshot)
-	if !ok || s == nil {
-		return false
-	}
-	for _, g := range s.grants {
+	for _, g := range a.Grants() {
 		if g.Tool == tool {
 			return true
 		}
 	}
 	return false
+}
+
+// ClearGrants removes all session-scoped grants.
+func (a *App) ClearGrants() {
+	a.grants.Store(&grantsSnapshot{})
 }

@@ -1040,7 +1040,12 @@ func (a *App) NewConversation(chatID string) {
 
 // InstallSession atomically installs a loaded session into the App under
 // stateMu.Lock. It replaces Conv, Session, Workflow, Client.ChatID, and
-// resets per-session state (consent grants, consentedBackends, preambleDay).
+// resets per-session state (checkpoints, consentedBackends, preambleDay).
+// Approvals that are active in the running Wakil carry over into the
+// resumed session: auto mode, read access and tool grants stay active; only
+// the destructive grant (/auto destructive) does not carry over, so it is
+// cleared (it must never outlive the session it was granted for —
+// EnableDestructiveIfAuto then drops it when auto is off).
 // The caller (LoadSession handler) must run this inside a coordinator
 // transition so it doesn't race with an in-flight turn.
 //
@@ -1052,8 +1057,9 @@ func (a *App) InstallSession(s *Session) {
 	defer a.stateMu.Unlock()
 
 	a.clearCheckpoints()
-	a.RevokeAuto()
-	a.SetAllowReads(false)
+	// Approvals carry over into the resumed session except the destructive
+	// grant, which never travels across sessions.
+	a.SetAllowDestructive(false)
 
 	a.setChatID(s.ChatID)
 
@@ -1067,11 +1073,12 @@ func (a *App) InstallSession(s *Session) {
 	a.restoreTurnStateLocked(s)
 
 	a.Session = s
-	// Restore persisted cost totals (B6 persist half). The tracker is
-	// independently mutex-guarded; RestoreRows is nil-safe and merges, so
-	// this is safe outside any tracker lock.
-	if a.Costs != nil && len(s.CostRows) > 0 {
-		a.Costs.RestoreRows(s.CostRows)
+	// Restore persisted cost totals as the resumed session's own rows,
+	// REPLACED (not merged, not carried over from the session before it).
+	// The tracker is independently mutex-guarded; ReplaceRows is nil-safe
+	// and safe outside any tracker lock.
+	if a.Costs != nil {
+		a.Costs.ReplaceRows(s.CostRows)
 	}
 	a.resetStyleGuides()
 	a.resetBackendConsent()
@@ -1144,8 +1151,10 @@ func (a *App) NewConversationTransition(chatID string) {
 		Created:      time.Now(),
 		Workspace:    a.SessionWorkspace(),
 	}
-	a.RevokeAuto()
-	a.SetAllowReads(false)
+	// Approvals that are active in the running Wakil carry over into the
+	// new session: auto mode, read access and tool grants stay active; only
+	// the destructive grant (/auto destructive) does not carry over.
+	a.SetAllowDestructive(false)
 	a.resetBackendConsent()
 }
 

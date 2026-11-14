@@ -102,17 +102,13 @@ func fetchModelListCmd(app *App) Cmd {
 	}
 }
 
-// ResumeSessionMsg applies a resumed session's state onto app (transcript,
-// chat_id, workflow) and builds the NewConvMsg the TUI uses to rebuild its
-// viewport. Shared by /resume's direct-id path and the resume picker's Enter
-// action (internal/tui) so both apply the exact same mutation.
+// ResumeSessionMsg installs a resumed session onto app via InstallSession
+// (so the /resume direct-id path, the resume picker's Enter action
+// (internal/tui) and the headless ResumeConversation all apply the exact
+// same mutation) and builds the NewConvMsg the TUI uses to rebuild its
+// viewport.
 func ResumeSessionMsg(app *App, s *Session) Msg {
-	app.convMu.Lock()
-	app.Conv = s.Conv
-	app.convMu.Unlock()
-	app.SetChatID(s.ChatID)
-	app.Session = s
-	app.SetWorkflow(s.SavedWorkflow)
+	app.InstallSession(s)
 	msg := "resumed session " + ShortID(s.ChatID)
 	if s.Label != "" {
 		msg += " [" + s.Label + "]"

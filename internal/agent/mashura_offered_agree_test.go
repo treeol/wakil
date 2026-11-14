@@ -20,11 +20,11 @@ func TestMashuraOfferedAvailableAgree(t *testing.T) {
 	members := []string{"openrouter:test-model-a", "openrouter:test-model-b"}
 
 	keyConfs := []struct {
-		name       string
-		orEnv      string // env var name that holds the OR key, "" = unset
-		orSet      bool
-		anthEnv    string // env var name that holds the Anthropic key, "" = unset
-		anthSet    bool
+		name    string
+		orEnv   string // env var name that holds the OR key, "" = unset
+		orSet   bool
+		anthEnv string // env var name that holds the Anthropic key, "" = unset
+		anthSet bool
 	}{
 		{"or_only", "TEST_OR_KEY", true, "", false},
 		{"anthropic_only", "", false, "TEST_ANTH_KEY", true},

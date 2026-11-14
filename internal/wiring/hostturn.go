@@ -737,6 +737,21 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 			}
 		}
 
+		// ── Session tool grants ───────────────────────────────────────────
+		// A grant the user recorded earlier with the `g` approval choice
+		// ("grant for this session") auto-approves the named tool without
+		// prompting again — same as the AutoApprove short-circuit below.
+		// Grants are consulted BEFORE any prompt is shown and before the
+		// ApprovalRequested event. They are session-scoped read-only-tool
+		// grants (AddGrant enforces eligibility), so this cannot auto-approve
+		// a mutating shell or write tool.
+		if app.HasGrant(toolName) {
+			app.SendEvent(agent.SysNoteMsg{
+				Text: "⚡ grant: " + headline + "\n" + agent.Indent(detail),
+			})
+			return true
+		}
+
 		// ── AutoApprove short-circuit (parity with tuiConfirmer) ──────────
 		// When /auto is on and SuspendAuto does not carve out this tool,
 		// auto-approve without parking. No ApprovalRequested/ApprovalResolved
@@ -844,6 +859,9 @@ func newHostConfirmer(ctx context.Context, app *agent.App, in sessionhost.TurnIn
 		// the authoritative audit; consent mutation follows it, not precedes it.
 		if res.Choice == agent.ChoiceAllowReads {
 			app.SetAllowReads(true)
+		}
+		if res.Choice == agent.ChoiceGrantTool {
+			app.AddGrant(toolName)
 		}
 		// 7c control latch: record the first explicit decline so the after-turn
 		// workflow resolver terminates the workflow instead of continuing

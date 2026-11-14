@@ -349,6 +349,55 @@ func (t *CostTracker) ExportRows() []CostRow {
 	return rows
 }
 
+// ReplaceRows replaces the tracker's rows with rows — the semantics /resume
+// needs, where the snapshot belongs to the resumed session and nothing from
+// the session before it carries over. Empty rows (legacy sessions) replace
+// the tracker with empty. Replacing is idempotent: restored rows are never
+// double-counted.
+func (t *CostTracker) ReplaceRows(rows []CostRow) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(rows) == 0 {
+		t.src = map[string]*costEntry{}
+		return
+	}
+	t.src = map[string]*costEntry{}
+	for _, r := range rows {
+		e := &costEntry{Calls: r.Calls, InputTok: r.InputTok, OutputTok: r.OutputTok, CachedTok: r.CachedTok, CacheWriteTok: r.CacheWriteTok, CostUSD: r.CostUSD, ProviderUSD: r.ProviderUSD, ProviderPriced: r.ProviderPriced, EstimatedUSD: r.EstimatedUSD, Category: r.Category, Priced: r.Priced, Confidence: r.Confidence, UnpricedCalls: r.UnpricedCalls}
+		if e.Category == "" {
+			e.Category = CategoryForSource(r.Source)
+		}
+		e.CatUSD = nil
+		if r.Priced {
+			mergeCatUSD(e, r.CatUSD, e.Category, r.CostUSD)
+		}
+		if existing := t.src[r.Source]; existing != nil {
+			mergeCatUSD(existing, e.CatUSD, e.Category, 0)
+			existing.Calls += e.Calls
+			existing.InputTok += e.InputTok
+			existing.OutputTok += e.OutputTok
+			existing.CachedTok += e.CachedTok
+			existing.CacheWriteTok += e.CacheWriteTok
+			existing.CostUSD += e.CostUSD
+			existing.ProviderUSD += e.ProviderUSD
+			existing.EstimatedUSD += e.EstimatedUSD
+			existing.UnpricedCalls += e.UnpricedCalls
+			if e.Priced {
+				existing.Priced = true
+			}
+			if e.ProviderPriced {
+				existing.ProviderPriced = true
+			}
+			existing.Confidence = WeakerConfidence(existing.Confidence, e.Confidence)
+		} else {
+			t.src[r.Source] = e
+		}
+	}
+}
+
 // RestoreRows merges rows into the tracker: rows with matching keys are
 // added (calls, tokens, cost), new keys are inserted. Used on resume; empty
 // = no-op. Restoring the same rows twice double-counts — callers must pass

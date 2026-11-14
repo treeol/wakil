@@ -339,14 +339,11 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 		return nil, err
 	}
 
-	// Restore the loaded session's state into the App.
-	f.app.SetChatID(s.ChatID)
-	f.app.Conv = s.Conv
-	f.app.Session = s
-	f.app.SetWorkflow(s.SavedWorkflow)
-
-	// Restore long-session collapse state so the projection survives resume.
-	f.app.RestoreTurnState(s)
+	// Install the loaded session state into the App (the single resume
+	// implementation: transcript, workflow, turn/collapse state, and the
+	// session's own cost rows, replacing any from the previous session, so
+	// headless resume yields the same state as the in-process paths).
+	f.app.InstallSession(s)
 
 	// Restore endpoint-independent settings from RepoState (AutoApprove,
 	// /counsel, /mashura, etc.) — resume=true so model/backend are NOT
