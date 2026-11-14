@@ -100,8 +100,10 @@ func TestCollapseStandardModeIdentity(t *testing.T) {
 	if len(proj) != len(app.Conv) {
 		t.Fatalf("standard mode: want %d msgs, got %d", len(app.Conv), len(proj))
 	}
-	if &proj[0] != &app.Conv[0] {
-		t.Error("standard mode: projection should be the same slice (identity)")
+	for i := range proj {
+		if proj[i].Role != app.Conv[i].Role || DerefStr(proj[i].Content) != DerefStr(app.Conv[i].Content) {
+			t.Errorf("standard mode: message %d changed in the snapshot", i)
+		}
 	}
 }
 
