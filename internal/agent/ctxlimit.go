@@ -147,8 +147,8 @@ func resolveContextLimit(ctx context.Context, httpc *http.Client, cfg config.Con
 	if res.contextSource != "" {
 		csNote = fmt.Sprintf(", source=%s", res.contextSource)
 	}
-	fmt.Fprintf(out, "context limit: n_ctx=%d%s, usable_ctx=%d (from %s%s); usable=%d (−%d reasoning −%d answer)\n",
-		res.nCtx, trainNote, res.usableCtx, res.path, csNote, lim.Usable(), lim.ReasoningBudget, lim.AnswerMargin)
+	fmt.Fprintf(out, "context limit: n_ctx=%d%s (from %s%s); usable=%d (−%d reasoning −%d answer)\n",
+		res.nCtx, trainNote, res.path, csNote, lim.Usable(), lim.ReasoningBudget, lim.AnswerMargin)
 	if lim.ModelUnresolved {
 		fb := res.fallbackModel
 		if fb == "" {

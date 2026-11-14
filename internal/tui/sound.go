@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"os"
 	"os/exec"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -34,7 +33,12 @@ func playFinishSound() tea.Cmd {
 				return nil
 			}
 		}
-		_, _ = os.Stdout.WriteString("\a")
+		// No terminal-bell fallback: writing "\a" to stdout from a tea.Cmd
+		// goroutine interleaves with the alt-screen renderer (Fact 4's
+		// doubling) — the same direct-stdout write as the context-limit
+		// line. When no native player is installed the chime is simply
+		// skipped; there is no other output path worth corrupting the
+		// frame for.
 		return nil
 	}
 }

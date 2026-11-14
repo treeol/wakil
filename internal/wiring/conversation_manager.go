@@ -23,6 +23,7 @@ import (
 	"github.com/treeol/wakil/internal/core/sessionclient"
 	"github.com/treeol/wakil/internal/core/sessionhost"
 	"github.com/treeol/wakil/internal/core/sessionhost/sqlstore"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/timeline"
@@ -157,7 +158,13 @@ func (cm *conversationManager) restoreRepoState(ctx context.Context, app *agent.
 		if (result.Model != "" || result.Backend != "") && app.Client != nil && app.Client.HTTP != nil {
 			endCl := timeline.Begin("context-limit probe after repo-state restore (network)")
 			probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			cl := agent.ResolveContextLimitForBackendModel(probeCtx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, os.Stderr)
+			// The probe notice goes to the session log only (diag): while
+			// the TUI is running, nothing may write to stdout/stderr
+			// outside the render loop. Headless/run mode never enters this
+			// path through a manager? It does (headless uses BuildApp
+			// directly and resolves the limit there with os.Stderr) —
+			// only the TUI and its rotations come through here.
+			cl := agent.ResolveContextLimitForBackendModel(probeCtx, app.Client.HTTP, app.Cfg, result.Backend, result.Model, diagWriter{})
 			cancel()
 			app.SetCtxLimit(cl)
 			endCl()
@@ -418,7 +425,7 @@ func (cm *conversationManager) ResumeConversation(ctx context.Context, principal
 			if f.app.Client != nil && f.app.Client.HTTP != nil {
 				endCl := timeline.Begin("context-limit probe for the saved model (network)")
 				probeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-				cl := agent.ResolveContextLimitForBackendModel(probeCtx, f.app.Client.HTTP, f.app.Cfg, f.app.SelectedBackend, s.Model, os.Stderr)
+				cl := agent.ResolveContextLimitForBackendModel(probeCtx, f.app.Client.HTTP, f.app.Cfg, f.app.SelectedBackend, s.Model, diagWriter{})
 				cancel()
 				f.app.SetCtxLimit(cl)
 				endCl()
@@ -558,3 +565,13 @@ func (cm *conversationManager) SetModelUserOverridden() {
 func WorkspaceIDFromConfig(cfg config.Config) event.WorkspaceID {
 	return event.WorkspaceID(agent.SessionHostWorkspaceID(agent.ProjectDir(cfg)))
 }
+
+// diagWriter routes a probe notice to the diagnostic sink (diag): the
+// session log when the TUI has redirected it, os.Stderr otherwise. While
+// the TUI is running, nothing may write to stdout/stderr outside the
+// render loop — every probe that runs on the TUI path (startup probes,
+// /new and /resume re-probes) goes through here, never through os.Stderr
+// directly.
+type diagWriter struct{}
+
+func (diagWriter) Write(p []byte) (int, error) { return diag.Write(p) }

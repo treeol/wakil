@@ -211,12 +211,16 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		go func() {
 			defer wg.Done()
 			defer timeline.BeginConcurrent("provider probe: context limit")()
-			ctxLimit = agent.ResolveContextLimit(probeCtx, client.HTTP, cfg, os.Stderr)
+			// Probe notice to the session log only while the TUI is
+			// running (diag): nothing may write to stdout/stderr outside
+			// the render loop. Headless/run mode keeps printing it
+			// (headless calls runProbes synchronously before any TUI).
+			ctxLimit = agent.ResolveContextLimit(probeCtx, client.HTTP, cfg, diagWriter{})
 		}()
 		go func() {
 			defer wg.Done()
 			defer timeline.BeginConcurrent("provider probe: backend list")()
-			backendList = agent.FetchBackendListWithFallback(probeCtx, client.HTTP, cfg, os.Stderr)
+			backendList = agent.FetchBackendListWithFallback(probeCtx, client.HTTP, cfg, diagWriter{})
 		}()
 		go func() {
 			defer wg.Done()
