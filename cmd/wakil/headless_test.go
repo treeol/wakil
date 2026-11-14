@@ -176,8 +176,10 @@ func TestParseRunArgs_AutoCounselDefault(t *testing.T) {
 	if !flags.AutoCounsel {
 		t.Error("AutoCounsel should be true")
 	}
-	if flags.MaxCounsel != 3 {
-		t.Errorf("MaxCounsel = %d, want 3 (default)", flags.MaxCounsel)
+	// No default is baked into the flags: --max-counsel 0 means "not set"
+	// and the default applies at use time.
+	if flags.MaxCounsel != 0 {
+		t.Errorf("MaxCounsel = %d, want 0 (not set; default applies at use time)", flags.MaxCounsel)
 	}
 }
 

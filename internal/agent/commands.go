@@ -1182,11 +1182,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 					// actually happen, not just the mode name.
 					if !app.mashuraAvailable() {
 						eval.ActionTaken = "would show: suggest hint (auto not run: no panel members or key)"
-					} else if cap := app.autoCounselCap(); app.counselCalls >= cap {
-						eval.ActionTaken = fmt.Sprintf("would show: suggest hint (auto not run: cap %d/%d reached)", app.counselCalls, cap)
+					} else if cap := app.autoCounselCap(); app.CounselCallsCount() >= cap {
+						eval.ActionTaken = fmt.Sprintf("would show: suggest hint (auto not run: cap %d/%d reached)", app.CounselCallsCount(), cap)
 					} else {
 						_, members, _ := app.effectiveMashura("debug")
-						eval.ActionTaken = fmt.Sprintf("would show: auto-counsel fires mashura__debug (level %s, %d members, single pass, round %d of %d)", eval.Level, len(members), app.counselCalls+1, cap)
+						eval.ActionTaken = fmt.Sprintf("would show: auto-counsel fires mashura__debug (level %s, %d members, single pass, round %d of %d)", eval.Level, len(members), app.CounselCallsCount()+1, cap)
 					}
 				default:
 					eval.ActionTaken = "would show: " + eval.ResolvedMode
@@ -1231,13 +1231,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 			}
 			cap := app.autoCounselCap()
 			app.SetCounselModeValue("auto", cap)
-			app.stateMu.Lock()
-			app.CounselMaxSet = true
-			app.stateMu.Unlock()
 			app.saveRepoState(func(s *RepoState) {
 				s.CounselMode = "auto"
-				s.MaxCounsel = cap
-				s.MaxCounselCapSet = true
+				// A bare /counsel auto keeps the cap's existing source:
+				// the default stays the default (not user-set), so the
+				// default remains visible in /counsel and /mashura.
 			})
 			return true, false, note(fmt.Sprintf("counsel mode: auto (cap: %d/turn)", cap))
 		case "suggest":

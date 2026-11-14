@@ -334,8 +334,12 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 	models, mode := panel.Models, panel.Mode
 	// With the new block present, debate is chosen by the level (high only);
 	// the panel's legacy mode is ignored there. An automatic struggle round
-	// (forceSinglePass) never debates, at any level.
-	if a.Cfg.Mashura != nil && !forceSinglePass {
+	// (forceSinglePass) never debates, at any level: pin mode to a single
+	// pass so a legacy debate panel cannot debate while the announcement
+	// says "single pass".
+	if forceSinglePass {
+		mode = "panel"
+	} else if a.Cfg.Mashura != nil {
 		if level, _, _ := a.effectiveMashura(strings.TrimPrefix(name, "mashura__")); config.LevelDebate(level) {
 			mode = "debate"
 		}
@@ -1441,7 +1445,15 @@ func (a *App) struggleEvaluationSnapshot() struggleEvaluation {
 		eval.RuleMatched = rule
 		eval.Symptom = symptom
 	} else {
-		eval.RuleMatched = "none"
+		// Every firing rule was already shown this turn: report the first
+		// rule so the diagnostics do not claim "none" matched.
+		if s, ok, r := detectStruggleScan(a.recentTraces); ok {
+			eval.RuleMatched = r
+			eval.Symptom = s
+			eval.ActionTaken = "nothing shown: symptom already suggested this turn"
+		} else {
+			eval.RuleMatched = "none"
+		}
 	}
 	eval.ResolvedMode, eval.ModeSource = a.resolveCounselMode()
 	if a.Cfg.Mashura != nil {
@@ -1612,12 +1624,11 @@ func (a *App) effectiveMashura(tool string) (string, []string, string) {
 // sees the suggest note plus the reason. The single exception is mode off:
 // a user-chosen off, or level off, stays silent.
 // A symptom is marked as shown only after a line was printed for it, so a
-// A symptom is marked as shown only after a line was printed for it, so a
 // silent exit can never suppress it for the rest of the turn.
-// Symptom masking (A3): detectStruggleScan already skips symptoms shown
-// this turn, so a shown symptom cannot hide a different rule. If every
-// firing rule was already shown, the snapshot reports "none" and we stay
-// silent below.
+// Symptom masking (A3): detectStruggleScan skips symptoms already shown this
+// turn, so a shown symptom cannot hide a different rule. When every firing
+// rule was already shown the snapshot reports the first rule as matched with
+// the action "already shown", so bare /counsel does not report "none".
 func (a *App) maybeSuggestDebug(ctx context.Context) {
 	// Record the evaluation as the detector sees it, even when this call stays
 	// silent, so bare /counsel can explain a silent run afterwards. The
@@ -1638,6 +1649,9 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		eval.ActionTaken = "nothing shown: mode off"
 		return
 	}
+	// The snapshot's detection already skips symptoms shown this turn, so a
+	// shown symptom here means every firing rule was already shown. Stay
+	// silent with the recorded reason.
 	if a.struggleSuggested == nil {
 		a.struggleSuggested = map[string]bool{}
 	}
@@ -1679,7 +1693,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			eval.ActionTaken = ""
 			reason := fmt.Sprintf("cap %d/%d reached", a.counselCalls, capMax)
 			if capMax <= 0 {
-				reason = "no auto-counsel cap set"
+				reason = "cap set to 0 — automatic rounds disabled"
 			}
 			suggestNote(reason)
 			return
@@ -1720,6 +1734,8 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		// VOID replies are not a counsel round: give the call back so the
 		// per-turn cap counts only real reviews. captureVoid deltas the count
 		// back only if this call incremented it, so it can never run twice.
+		// A VOID round is still a paid panel call; it is not counted against
+		// the round cap, and the cap is unchanged.
 		void := false
 		captureVoid := func() {
 			if void {
