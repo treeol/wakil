@@ -1565,6 +1565,39 @@ func legacyMashuraKeysPresent(c Config) []string {
 	return names
 }
 
+// legacyMashuraKeysSuperseded returns only the legacy keys that have NO
+// effect when the new mashura block is present (their behaviour is owned by
+// the block). These are the only keys the load notice may call ignored —
+// every other legacy key (max tokens, timeout, review budget, fallback
+// model, counsel caps, workflow keys) is still a valid setting with no block
+// equivalent and keeps working with the block present.
+func legacyMashuraKeysSuperseded(c Config) []string {
+	def := DefaultConfig()
+	var names []string
+	add := func(name string, differs bool) {
+		if differs {
+			names = append(names, name)
+		}
+	}
+	add("oracle_enabled", c.OracleEnabled != def.OracleEnabled)
+	add("oracle_api_key_env", c.OracleAPIKeyEnv != def.OracleAPIKeyEnv)
+	add("mashura_roles", len(c.MashuraRoles) > 0)
+	add("mashura_panels", len(c.MashuraPanels) > 0)
+	add("mashura_tool_panels", len(c.MashuraToolPanels) > 0)
+	return names
+}
+
+// legacyMashuraDerivedNoticeText is the notice printed when the mashura
+// block was derived from legacy keys (B1). It must tell the user that
+// reviewer reasoning budgets now follow the level (service default: medium
+// effort over a derived token budget), which replaces the old minutes-era
+// default of a fixed 8192-token medium-effort reasoning budget.
+func legacyMashuraDerivedNoticeText() string {
+	return "mashura settings were derived from old keys; run /mashura to see the new config block. " +
+		"reviewer reasoning budgets follow the mashura level now (level default medium, derived budget 4096 tokens) " +
+		"instead of the old fixed default (medium effort with 8192 tokens)."
+}
+
 // deriveMashuraFromLegacy builds the new block from old keys (B1):
 //   - members: the panel the review tool points to; if there is no tool
 //     mapping, the default panel.
@@ -1884,7 +1917,7 @@ func LoadConfig(argv []string) (Config, error) {
 	// from them (B1). When both are present, the block wins and one notice
 	// lists the ignored old keys (B2).
 	if cfg.Mashura != nil {
-		if names := legacyMashuraKeysPresent(cfg); len(names) > 0 {
+		if names := legacyMashuraKeysSuperseded(cfg); len(names) > 0 {
 			mashuraDerivedNoticeOnce.Do(func() {
 				fmt.Fprintln(os.Stderr, "mashura block present; ignoring old keys: "+strings.Join(names, ", "))
 			})
@@ -1892,7 +1925,7 @@ func LoadConfig(argv []string) (Config, error) {
 	} else if names := legacyMashuraKeysPresent(cfg); len(names) > 0 {
 		cfg.Mashura = deriveMashuraFromLegacy(cfg)
 		mashuraDerivedNoticeOnce.Do(func() {
-			fmt.Fprintln(os.Stderr, "mashura settings were derived from old keys; run /mashura to see the new config block")
+			fmt.Fprintln(os.Stderr, legacyMashuraDerivedNoticeText())
 		})
 	}
 
