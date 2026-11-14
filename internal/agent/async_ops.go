@@ -86,14 +86,6 @@ const (
 	// with build verification, but finite so a lost child doesn't run forever.
 	defaultSubagentSyncTimeoutSeconds = 600
 
-	// defaultMashuraTimeoutSeconds is kept for the explicit-0 probe path and
-	// as the documented fallback when OracleTimeoutSeconds is positive and
-	// mis-typed; the effective unset default is now idle+total (see
-	// mashuraTimeout). An explicit 0 also selects the documented idle+total
-	// semantics: the watchdog uses the idle timeout (last byte) with a
-	// 30-minute total cap.
-	defaultMashuraTimeoutSeconds = 300
-
 	// mashuraIdleTotalCap is the total cap for the explicit-0 timeout: an
 	// idle (silent) stream is cut by the idle timeout; a streaming reply may
 	// run up to this total.
