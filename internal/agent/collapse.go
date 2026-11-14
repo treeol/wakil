@@ -843,8 +843,15 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 				out = append(out, m)
 				continue
 			}
-			if idx == s.first {
-				// Emit U with the partial checkpoint block appended to a shallow copy.
+			// The checkpoint is appended to the user-role task message of
+			// the turn (the first user message at/after s.first): the
+			// preamble may also carry this Turn, and the task text must
+			// survive verbatim as the message's first bytes.
+			if idx == s.first && m.Role != "user" {
+				out = append(out, m)
+				continue
+			}
+			if m.Role == "user" {
 				uMsg := m
 				cpBlock := buildPartialCheckpointBlock(rec)
 				if uMsg.Content != nil && *uMsg.Content != "" {
@@ -1542,6 +1549,140 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		fmt.Fprintf(&b, "\nNOTE: memory index refresh failed — entry %s may be stale (older archive reference); archive is current at %s.", rec.MemoryKey, archive)
 	}
 	return b.String()
+}
+
+// midTurnCollapseCeiling returns the absolute ceiling (chars) for the
+// mid-turn collapse of the current turn's completed prefix. It is the
+// new config key ContextCollapseCeilingTokens converted with the codebase
+// token estimate (chars per token); 0 disables the absolute ceiling.
+func (a *App) midTurnCollapseCeiling() int {
+	if a.Cfg.ContextCollapseCeilingTokens <= 0 {
+		return 0
+	}
+	return a.Cfg.ContextCollapseCeilingTokens * charsPerToken
+}
+
+// collapseMidTurnPrefix collapses the completed prefix of the current
+// turn when the projected request exceeds the ceiling.
+//
+// It is evaluated between tool calls inside streamTurn (besides the
+// in-loop pruneCheck) — the only automatic mid-turn collapse there ever
+// is. The completed prefix is everything between the task message
+// (s.first, never removed) and the assistant tool batch that started the
+// round that just finished. The boundary anchors at that batch's tool
+// call, so tool-call/tool-result pairs stay intact, and the record is a
+// partial CollapseRecord with the same semantics as the model's own
+// collapse_context call. Surfaced with the same "collapsed request"
+// line, marked mid-turn.
+func (a *App) collapseMidTurnPrefix() {
+	if !a.IsLongSession() || a.curTurn <= 0 {
+		return
+	}
+	a.stateMu.RLock()
+	_, kept := a.keep[a.curTurn]
+	a.stateMu.RUnlock()
+	if kept {
+		return
+	}
+
+	_, _, hardMax := a.activeThresholds()
+	ceiling := a.midTurnCollapseCeiling()
+	// Either threshold crossing fires; whichever comes first.
+	projected := a.sentSize(a.contextProjection())
+	if projected <= hardMax && (ceiling <= 0 || projected <= ceiling) {
+		return
+	}
+
+	a.convMu.RLock()
+	spans := turnSpansFromSlice(a.Conv)
+	s, ok := spans[a.curTurn]
+	if !ok {
+		a.convMu.RUnlock()
+		return
+	}
+	// s.first may be the system preamble (which also carries this turn's
+	// Turn number, stamped by appendConv). The task message is the first
+	// user-role message of the turn: find it and never remove it (or
+	// anything before it) — rule f.
+	taskIdx := s.first
+	for taskIdx <= s.last && a.Conv[taskIdx].Role != "user" {
+		taskIdx++
+	}
+	if taskIdx > s.last {
+		a.convMu.RUnlock()
+		return
+	}
+	// The boundary is the most recent assistant message with tool calls
+	// in the current turn: the batch that started the round which has
+	// just completed.
+	boundaryIdx := -1
+	var boundaryID string
+	for i := s.last; i > taskIdx; i-- {
+		if a.Conv[i].Role == "assistant" && len(a.Conv[i].ToolCalls) > 0 {
+			boundaryIdx = i
+			boundaryID = a.Conv[i].ToolCalls[0].ID
+			break
+		}
+	}
+	if boundaryIdx <= taskIdx+1 {
+		a.convMu.RUnlock()
+		return
+	}
+	w := make([]proxy.Message, 0, boundaryIdx-(taskIdx+1))
+	wSize := 0
+	for i := taskIdx + 1; i < boundaryIdx; i++ {
+		w = append(w, a.Conv[i])
+		wSize += messageSize(a.Conv[i])
+	}
+	a.convMu.RUnlock()
+	minBytes := a.Cfg.ContextCollapseMinBytes
+	if minBytes > 512 {
+		minBytes = 512
+	}
+	if wSize < minBytes {
+		return
+	}
+	archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("turn-%d-part", a.curTurn), renderWorkingSet(w))
+	if archive == "" {
+		if !a.collapseArchiveFailed {
+			a.collapseArchiveFailed = true
+			fmt.Fprintln(a.Out, Yellow("⚠ collapse: archive write failed for turn "+fmt.Sprint(a.curTurn)+" — working set kept in context"))
+		}
+		return
+	}
+	note := buildCollapseNote(a.curTurn, w, archive)
+	rec := CollapseRecord{
+		Turn:           a.curTurn,
+		Archive:        archive,
+		WBytes:         wSize,
+		Note:           note,
+		At:             time.Now(),
+		Partial:        true,
+		BoundaryCallID: boundaryID,
+	}
+	// T5 never-inflate: a checkpoint that is not smaller than the
+	// working set it replaces is not worth recording.
+	cpEstimate := len(buildPartialCheckpointBlock(rec))
+	if cpEstimate >= wSize {
+		_ = os.Remove(archive)
+		return
+	}
+	prevKey := a.collapsed[a.curTurn].MemoryKey
+	rec.MemoryKey = prevKey
+	if newKey := a.indexCollapsedInMemory(rec, buildPartialCheckpointBlock(rec)); newKey != "" {
+		rec.MemoryKey = newKey
+	} else if prevKey != "" {
+		rec.IndexRefreshFailed = true
+	}
+	a.stateMu.Lock()
+	if a.collapsed == nil {
+		a.collapsed = map[int]CollapseRecord{}
+	}
+	a.collapsed[a.curTurn] = rec
+	a.stateMu.Unlock()
+
+	fmt.Fprintln(a.Out, Dim("· mid-turn collapse of request "+fmt.Sprint(a.curTurn)+": "+
+		fmt.Sprint(wSize)+" bytes → "+fmt.Sprint(cpEstimate)+" bytes checkpoint"))
 }
 
 // isCleanAnswer reports whether m is a finished assistant message: role

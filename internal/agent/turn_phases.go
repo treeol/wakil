@@ -294,9 +294,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// hard max. This is the user-required placement — pruning only at
 		// finalizeTurn/SendOutcome boundaries never touches the current
 		// request, which is where the bytes accumulate mid-request.
+		// Mid-turn collapse: the completed prefix of the current turn
+		// collapses under the same in-loop placement — after the tool
+		// round that built it, before the next request is built — so a
+		// long turn never needs to wait for a new user message to shrink.
 		// Rating pass: once per model request (reset before each request build).
 		a.raterPassResetForRequest(len(a.Conv))
 		a.pruneCheck()
+		a.collapseMidTurnPrefix()
 		msgs := a.requestMessages()
 		if !a.IsSubagent {
 			var gerr error
@@ -603,6 +608,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// shows a struggle signal. In auto-counsel mode this fires the call
 		// directly (up to MaxCounsel times); otherwise it only prints a hint.
 		a.maybeSuggestDebug(ctx)
+		// Mid-turn collapse: if the projected request now exceeds the
+		// percentage hard max or the absolute ceiling, collapse this
+		// turn's completed prefix before the next model request is built.
+		// Sits here (after the tool round) in addition to the in-loop
+		// placement above — both are between tool calls, and both are
+		// before the next model request.
+		a.collapseMidTurnPrefix()
 	}
 	return final, suspended, nil
 }

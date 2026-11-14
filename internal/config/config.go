@@ -349,6 +349,15 @@ type Config struct {
 	ContextMode             string `json:"context_mode,omitempty"`
 	ContextCollapseMinBytes int    `json:"context_collapse_min_bytes,omitempty"` // default 2000; turns under this are not collapsed
 
+	// ContextCollapseCeilingTokens is the absolute ceiling (tokens) that
+	// also triggers a mid-turn collapse of the current turn's completed
+	// prefix, beside the percentage threshold (hard max of the effective
+	// context). Default 200000; 0 disables the absolute ceiling (the
+	// percentage alone decides). Either threshold crossing collapses the
+	// completed prefix before the next model request, keeping the task
+	// message and pinned content intact.
+	ContextCollapseCeilingTokens int `json:"context_collapse_ceiling_tokens,omitempty"`
+
 	// ContextTailTurns bounds the number of finished requests that stay in the
 	// projection at full size (question + answer + note) in long-session mode.
 	// Requests older than the tail degrade to a single pointer line each
@@ -1480,20 +1489,21 @@ func DefaultConfig() Config {
 		HardMaxFrac:             0.95,   // hard ceiling at 95% of effective context
 		ContextCapacityFrac:     0.80,   // use 80% of proxy's usable_ctx as the working budget
 
-		ContextMode:                DefaultContextMode, // long-session default; "standard" opts out
-		ContextCollapseMinBytes:    2000,               // turns under 2k are not worth collapsing
-		ContextTailTurns:           20,                 // keep last 20 requests at full size before pointer degrade
-		ContextTailAnswerBytes:     0,                  // prior assistant reports are kept whole (>0 caps them + archive pointer)
-		ContextPrune:               "off",              // per-round value pruning; "on" enables model-rated round stubs
-		ContextPruneAt:             0.70,               // fraction of hard max that triggers pruning
-		ContextPruneTarget:         0.55,               // fraction of hard max pruning aims to reach
-		ContextPruneProtect:        3,                  // most recent rounds never pruned
-		ContextPruneMarks:          "immediate",        // immediate | on-trigger
-		ContextPruneAtTokens:       0,                  // 0 = not set (fractions only); absolute trigger in tokens otherwise
-		ContextPruneTargetTokens:   0,                  // 0 = not set; absolute target in tokens otherwise
-		ContextPruneRater:          "off",              // "off" (no pass) | "main" (session model) | endpoint name
-		ContextPruneRaterMaxRounds: 40,                 // max unrated rounds rated per pass
-		ContextPruneRaterTimeout:   60,                 // rating pass timeout in seconds
+		ContextMode:                  DefaultContextMode, // long-session default; "standard" opts out
+		ContextCollapseMinBytes:      2000,               // turns under 2k are not worth collapsing
+		ContextCollapseCeilingTokens: 200000,             // absolute mid-turn collapse ceiling (tokens); 0 disables
+		ContextTailTurns:             20,                 // keep last 20 requests at full size before pointer degrade
+		ContextTailAnswerBytes:       0,                  // prior assistant reports are kept whole (>0 caps them + archive pointer)
+		ContextPrune:                 "off",              // per-round value pruning; "on" enables model-rated round stubs
+		ContextPruneAt:               0.70,               // fraction of hard max that triggers pruning
+		ContextPruneTarget:           0.55,               // fraction of hard max pruning aims to reach
+		ContextPruneProtect:          3,                  // most recent rounds never pruned
+		ContextPruneMarks:            "immediate",        // immediate | on-trigger
+		ContextPruneAtTokens:         0,                  // 0 = not set (fractions only); absolute trigger in tokens otherwise
+		ContextPruneTargetTokens:     0,                  // 0 = not set; absolute target in tokens otherwise
+		ContextPruneRater:            "off",              // "off" (no pass) | "main" (session model) | endpoint name
+		ContextPruneRaterMaxRounds:   40,                 // max unrated rounds rated per pass
+		ContextPruneRaterTimeout:     60,                 // rating pass timeout in seconds
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
@@ -2750,6 +2760,9 @@ func validateContextLimits(cfg Config) error {
 	}
 	if cfg.ContextCollapseMinBytes < 0 {
 		return fmt.Errorf("context_collapse_min_bytes must be >= 0 (got %d)", cfg.ContextCollapseMinBytes)
+	}
+	if cfg.ContextCollapseCeilingTokens < 0 {
+		return fmt.Errorf("context_collapse_ceiling_tokens must be >= 0 (got %d; 0 disables the absolute ceiling)", cfg.ContextCollapseCeilingTokens)
 	}
 	if cfg.ContextTailTurns < 0 {
 		return fmt.Errorf("context_tail_turns must be >= 0 (got %d)", cfg.ContextTailTurns)
