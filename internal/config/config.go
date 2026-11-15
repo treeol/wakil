@@ -3053,7 +3053,43 @@ func (c Config) StartupBanner() string {
 	if c.Sandbox.DefaultNote != "" {
 		b += " · " + c.Sandbox.DefaultNote
 	}
+	// Name the work folder when it is not the current directory (FACTS c:
+	// `wakil` in a new folder worked in the config's folder with no visible
+	// reason, while `wakil .` worked in the current folder). The setting
+	// that put it there is named so the user can remove it.
+	if line := c.nonCwdWorkDirLine(); line != "" {
+		b += "\n" + line
+	}
 	return b
+}
+
+// nonCwdWorkDirLine names the work folder when it is not the current
+// directory, and says which setting put it there. Empty when the work
+// folder IS the current directory (the common case: no line). The work
+// folder is HostWorkDir in docker mode and WorkDir in direct mode; both
+// paths are made absolute for the comparison so a relative spelling of
+// the cwd still counts as the cwd. The banner reports the HOST folder
+// (where the user launched wakil), not the in-container agent root.
+func (c Config) nonCwdWorkDirLine() string {
+	work := c.HostWorkDir
+	if c.ExecMode == "direct" {
+		work = c.WorkDir
+	}
+	if work == "" {
+		return ""
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	absWork, err := filepath.Abs(work)
+	if err != nil {
+		return ""
+	}
+	if filepath.Clean(absWork) == filepath.Clean(cwd) {
+		return ""
+	}
+	return "work folder: " + absWork + " (not the current directory; set by the workspace argument, a config workdir, or WAKIL_WORKDIR)"
 }
 
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty

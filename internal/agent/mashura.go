@@ -230,12 +230,44 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 	return a.runMashuraCore(ctx, name, tc, a.IsSubagent)
 }
 
-// autoCounselResultHeader is the first line of every automatic-counsel
-// result given to the model: it states that Wakil started the round
-// automatically and the model did not call it. This keeps the provenance
-// honest in transcripts — in manual tests the model reported "I called
-// mashura__debug myself, which broke your rule".
-const autoCounselResultHeader = "[automatic mashura round — Wakil started this round automatically; you did not call it]\n\n"
+// autoCounselResultHeader is the marker text every automatic-counsel
+// result given to the model carries: it states that Wakil started the
+// round automatically and the model did not call it. This keeps the
+// provenance honest in transcripts — in manual tests the model reported
+// "I called mashura__debug myself, which broke your rule". The bound
+// header (autoCounselHeader) fills in the counts; detection sites match
+// on this prefix so a bound header is always recognised.
+const autoCounselResultHeader = "[automatic mashura round"
+
+// autoCounselHeader builds the injected header for one automatic round,
+// naming the round number, the panel size and the cap in plain words
+// ("one automatic round, two panel members"). Both counts come from the
+// same values that fill the console announce ("round %d of %d", "%d
+// members"), so the model-facing and console lines cannot disagree.
+func autoCounselHeader(round, members, cap int) string {
+	return "[automatic mashura round " + countPhrase(round) +
+		" — Wakil started this round automatically; you did not call it " +
+		countPhrase(members) + " panel members, cap " + fmt.Sprintf("%d", cap) + " per turn]\n\n"
+}
+
+// countPhrase renders a small positive count as a word ("one", "two", …)
+// or as a number for larger values, for use in plain-language headers.
+func countPhrase(n int) string {
+	switch n {
+	case 1:
+		return "one"
+	case 2:
+		return "two"
+	case 3:
+		return "three"
+	case 4:
+		return "four"
+	case 5:
+		return "five"
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
 
 // magicToolCallPrefix marks tool calls injected by Wakil itself rather
 // than by the model (automatic Mashūra rounds). Any prefix the model
@@ -1893,7 +1925,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		// message carries a mashura tool call the model did not make, so
 		// the request stays valid without a fabricated tool-call pair.
 		a.appendConv(
-			proxy.Message{Role: "user", Content: StrPtr(autoCounselResultHeader + result)},
+			proxy.Message{Role: "user", Content: StrPtr(autoCounselHeader(a.counselCalls, len(members), capMax) + result)},
 		)
 		// Surface the round in the Mashūra tab exactly like a requested
 		// round: the synchronous path emits no AsyncJobStartMsg, so emit

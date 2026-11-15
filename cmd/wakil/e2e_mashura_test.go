@@ -280,6 +280,13 @@ func TestE2EAutoMashuraOneRoundPerSymptom(t *testing.T) {
 	if autoCountTurn1 != 1 {
 		t.Errorf("[automatic mashura round count in last turn 1 request = %d, want 1", autoCountTurn1)
 	}
+	// The injected header must state the counts plainly in the model-facing
+	// text (FACTS a from the 0.8.3 live run: the model wrote "the two
+	// automatic counsel rounds" after one round with two members). One
+	// round, two members, cap the default 2.
+	if !strings.Contains(string(lastTurn1Body), "[automatic mashura round one — Wakil started this round automatically; you did not call it two panel members, cap 2 per turn]") {
+		t.Errorf("injected header does not state plain counts (one round, two panel members): %.200s", string(lastTurn1Body))
+	}
 	var chat struct {
 		Messages []struct {
 			Role      string `json:"role"`

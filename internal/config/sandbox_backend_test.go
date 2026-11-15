@@ -7,13 +7,33 @@ import (
 	"testing"
 )
 
+func containsArg(args []string, want string) bool {
+	for _, a := range args {
+		if a == want {
+			return true
+		}
+	}
+	return false
+}
+
 // loadSandboxCfg writes cfgJSON and loads it with the given extra args.
+// The host workdir is the test process's cwd, so the startup banner's
+// work-folder line (FACTS c) stays off these banner-shape assertions.
 func loadSandboxCfg(t *testing.T, cfgJSON string, args ...string) (Config, error) {
 	t.Helper()
 	dir := t.TempDir()
 	p := filepath.Join(dir, "config.json")
 	if err := os.WriteFile(p, []byte(cfgJSON), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Put the load's cwd in the work dir so the banner's non-cwd line stays
+	// off; callers that pass --host-workdir get their own value instead.
+	if !containsArg(args, "--host-workdir") {
+		args = append([]string{"--host-workdir", cwd}, args...)
 	}
 	return LoadConfig(append([]string{"--config", p, "--base-url", "http://proxy:11400"}, args...))
 }
@@ -176,7 +196,9 @@ func TestExecModeDeprecatedAlias(t *testing.T) {
 // session through the backend's CLI transport (P4). Under docker it stays on
 // with the plain banner.
 func TestSandboxHisnBrowserOn(t *testing.T) {
-	cfg, err := loadSandboxCfg(t, `{"browser_enabled":true,"sandbox":{"backend":"hisn"}}`, "--host-workdir", t.TempDir())
+	// No --host-workdir: the work dir defaults to the test process's cwd, so
+	// the banner's non-cwd work-folder line stays off.
+	cfg, err := loadSandboxCfg(t, `{"browser_enabled":true,"sandbox":{"backend":"hisn"}}`)
 	if err != nil {
 		t.Fatalf("browser_enabled under hisn must not be an error: %v", err)
 	}
@@ -188,7 +210,7 @@ func TestSandboxHisnBrowserOn(t *testing.T) {
 		t.Errorf("banner = %q", b)
 	}
 
-	cfg, err = loadSandboxCfg(t, `{"browser_enabled":true}`, "--host-workdir", t.TempDir())
+	cfg, err = loadSandboxCfg(t, `{"browser_enabled":true}`)
 	if err != nil {
 		t.Fatal(err)
 	}

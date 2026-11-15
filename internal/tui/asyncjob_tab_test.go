@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/treeol/wakil/internal/core/event"
 )
 
@@ -44,6 +45,45 @@ func findJobTab(m tuiModel, opID string) *subTab {
 		}
 	}
 	return nil
+}
+
+// TestCounselOutputNotCutAtNarrowWidths (FACTS d): a pasted /counsel
+// output line ended "...already fired for this symptom this tur", and it was
+// unknown whether the program cut the line or the terminal did. The counsel
+// result is drawn in the async-job tab through renderSubTabContent, which
+// word-wraps every line to the viewport width (wrapAnsi). This test renders
+// a long counsel line at 80 and 100 columns through that path and asserts
+// no line is cut: the full text appears and every rendered line fits the
+// width.
+func TestCounselOutputNotCutAtNarrowWidths(t *testing.T) {
+	// A long line longer than both widths, plus a short one.
+	long := "result: already fired for this symptom this turn — the panel voted unanimously to ask for a fresh trace before deciding anything further"
+	short := "done: no panel ran"
+	for _, w := range []int{80, 100} {
+		m, _ := newJobModel()
+		m.width = w
+		m.height = 24
+		result := long + "\n\n" + short
+		m = step(m, jobStarted("op_op-1", "mashura__debug", tabSID))
+		m = step(m, jobDone("op_op-1", "mashura__debug", result, "", tabSID))
+		tab := findJobTab(m, "op_op-1")
+		if tab == nil {
+			t.Fatalf("width %d: no async-job tab", w)
+		}
+		rendered := m.renderSubTabContent(tab, w, 24)
+		if strings.Contains(rendered, "\x1b") == false {
+			// plain text render is fine; ANSI is not required
+		}
+		plain := plain(rendered)
+		if !strings.Contains(plain, "already fired for this symptom this turn") || !strings.Contains(plain, "done: no panel ran") {
+			t.Errorf("width %d: counsel text cut or lost\n%s", w, plain)
+		}
+		for _, line := range strings.Split(plain, "\n") {
+			if lipgloss.Width(line) > w {
+				t.Errorf("width %d: rendered line wider than the viewport (%d > %d): %q", w, lipgloss.Width(line), w, line)
+			}
+		}
+	}
 }
 
 // TestAsyncJobDoneClearsActive verifies a done async-job tab is no

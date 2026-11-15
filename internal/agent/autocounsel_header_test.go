@@ -13,17 +13,28 @@ import (
 // mashura__debug round (which the model did not call) must begin with one
 // line stating that Wakil started it automatically.
 func TestAutoCounselResultHeader(t *testing.T) {
-	want := "[automatic mashura round — Wakil started this round automatically; you did not call it]\n\n"
+	want := "[automatic mashura round"
 	if autoCounselResultHeader != want {
-		t.Fatalf("autoCounselResultHeader = %q, want %q", autoCounselResultHeader, want)
+		t.Fatalf("autoCounselResultHeader = %q, want %q (the detection marker everything matches on)", autoCounselResultHeader, want)
 	}
 	if !strings.HasPrefix(autoCounselResultHeader+`REPORT BODY`, want) {
-		t.Fatal("header must prefix the result verbatim")
+		t.Fatal("marker must prefix the result verbatim")
 	}
-	// The header is one line: exactly one \n before the report starts.
-	lines := strings.SplitN(strings.TrimSuffix(want, "\n"), "\n", 2)
+	// The bound header is one line: exactly one \n before the report starts.
+	bound := autoCounselHeader(1, 2, 2)
+	lines := strings.SplitN(strings.TrimSuffix(bound, "\n"), "\n", 2)
 	if len(lines) != 2 || lines[1] != "" {
-		t.Fatalf("header must be one line plus blank line, got %q", want)
+		t.Fatalf("bound header must be one line plus blank line, got %q", bound)
+	}
+	if !strings.HasPrefix(bound, autoCounselResultHeader) {
+		t.Fatalf("bound header %q must carry the marker", bound)
+	}
+	// The bound form states the counts plainly (FACTS a): one automatic
+	// round, two panel members.
+	got := autoCounselHeader(1, 2, 2)
+	wantHeader := "[automatic mashura round one — Wakil started this round automatically; you did not call it two panel members, cap 2 per turn]\n\n"
+	if got != wantHeader {
+		t.Fatalf("autoCounselHeader(1,2,2) = %q, want %q", got, wantHeader)
 	}
 	_ = proxy.Message{}
 	_ = config.Config{}

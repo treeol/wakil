@@ -3104,7 +3104,17 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 	case "finalize_goal":
 		return a.handleFinalizeGoal(tc)
 	case "run_shell":
-		return stringToToolResult(a.handleRunShell(ctx, tc))
+		// run_shell carries the command text so the classifier can catch
+		// a compound command ending in an echo of $? whose last line
+		// prints a non-zero value (masked exit code) — see maskedExitEcho.
+		cmd := ""
+		var shellArgs struct {
+			Command string `json:"command"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &shellArgs); err == nil {
+			cmd = shellArgs.Command
+		}
+		return stringToToolResultFor("run_shell", cmd, a.handleRunShell(ctx, tc))
 	case "open_url":
 		return stringToToolResult(a.handleOpenURL(ctx, tc))
 	case "read_file":

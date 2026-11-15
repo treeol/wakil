@@ -9,6 +9,40 @@ import (
 	"testing"
 )
 
+// TestStartupBannerNamesNonCwdWorkDir (FACTS c): started as `wakil` in a new
+// folder, the session worked in the config's folder with no visible reason;
+// started as `wakil .` it worked in the current folder. The banner names the
+// work folder when it is not the current directory, and says which setting
+// put it there. No behaviour change.
+func TestStartupBannerNamesNonCwdWorkDir(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Work dir == cwd: no line.
+	c := DefaultConfig()
+	c.HostWorkDir = cwd
+	if line := c.nonCwdWorkDirLine(); line != "" {
+		t.Errorf("work dir == cwd must print no line, got %q", line)
+	}
+	// Work dir != cwd, from the config file: the line names the folder.
+	other := filepath.Join(cwd, "..", "other-project")
+	c.HostWorkDir = other
+	line := c.nonCwdWorkDirLine()
+	if !strings.Contains(line, filepath.Clean(other)) {
+		t.Errorf("line = %q, want folder %q", line, filepath.Clean(other))
+	}
+	if !strings.Contains(line, "workdir") {
+		t.Errorf("line = %q, want the workdir source named", line)
+	}
+	// Direct mode reads WorkDir.
+	c.ExecMode = "direct"
+	c.WorkDir = other
+	if line := c.nonCwdWorkDirLine(); !strings.Contains(line, filepath.Clean(other)) {
+		t.Errorf("direct line = %q, want folder %q", line, filepath.Clean(other))
+	}
+}
+
 // ---------------- cost helpers ----------------
 
 func TestMashuraCost(t *testing.T) {
