@@ -1,7 +1,7 @@
 package timeline
 
 import (
-	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -34,6 +34,18 @@ func start(t *testing.T) (*fakeClock, string) {
 	return c, p
 }
 
+func loadDoc(p string) (*Doc, error) {
+	b, err := os.ReadFile(p)
+	if err != nil {
+		return nil, err
+	}
+	var d Doc
+	if err := json.Unmarshal(b, &d); err != nil {
+		return nil, err
+	}
+	return &d, nil
+}
+
 func TestOffIsANoOp(t *testing.T) {
 	Reset()
 	if Enabled() {
@@ -43,7 +55,7 @@ func TestOffIsANoOp(t *testing.T) {
 	end()
 	Event("y")
 	Enter("z")
-	defer Phase("p")()
+	defer Begin("p")()
 	if p, err := Flush(); p != "" || err != nil {
 		t.Fatalf("Flush when off = %q, %v", p, err)
 	}
@@ -83,7 +95,7 @@ func TestNestedPhasesAndOffsets(t *testing.T) {
 	if _, err := Flush(); err != nil {
 		t.Fatal(err)
 	}
-	d, err := Load(p)
+	d, err := loadDoc(p)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -123,7 +135,7 @@ func TestTransitionsExcludeIdleTime(t *testing.T) {
 	if _, err := Flush(); err != nil {
 		t.Fatal(err)
 	}
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	if len(d.Transitions) != 2 || d.Transitions[0].TotalMS != 100 || d.Transitions[1].TotalMS != 50 {
 		t.Fatalf("totals = %+v", d.Transitions)
 	}
@@ -143,7 +155,7 @@ func TestSpanBelongsToItsOwnTransition(t *testing.T) {
 	if _, err := Flush(); err != nil {
 		t.Fatal(err)
 	}
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	if len(d.Transitions[0].Spans) != 1 || d.Transitions[0].Spans[0].Name != "late" || len(d.Transitions[1].Spans) != 0 {
 		t.Fatalf("spans = %+v / %+v", d.Transitions[0].Spans, d.Transitions[1].Spans)
 	}
@@ -157,7 +169,7 @@ func TestEndIsIdempotent(t *testing.T) {
 	end()
 	end()
 	_, _ = Flush()
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	if n := len(d.Transitions[0].Spans); n != 1 {
 		t.Fatalf("%d spans after three ends, want 1", n)
 	}
@@ -178,7 +190,7 @@ func TestConcurrentPhasesAreMarkedAndDoNotNest(t *testing.T) {
 	end := Begin("after")
 	end()
 	_, _ = Flush()
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	for _, s := range d.Transitions[0].Spans {
 		if strings.HasPrefix(s.Name, "probe") && (!s.Concurrent || s.Depth != 0) {
 			t.Errorf("%+v", s)
@@ -199,7 +211,7 @@ func TestFlushTwiceKeepsAllSpans(t *testing.T) {
 	c.add(time.Millisecond)
 	end()
 	_, _ = Flush()
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	if len(d.Transitions[0].Spans) != 2 {
 		t.Fatalf("spans = %+v", d.Transitions[0].Spans)
 	}
@@ -232,55 +244,25 @@ func TestRaceSafe(t *testing.T) {
 	wg.Wait()
 }
 
-func TestTopFiveSkipsParents(t *testing.T) {
-	tr := Transition{Name: "start", Spans: []Span{
-		{Name: "parent", StartMS: 0, DurMS: 100, Depth: 0},
-		{Name: "child-a", StartMS: 0, DurMS: 60, Depth: 1},
-		{Name: "child-b", StartMS: 60, DurMS: 30, Depth: 1},
-		{Name: "solo", StartMS: 100, DurMS: 40, Depth: 0},
-		{Name: "tiny1", StartMS: 140, DurMS: 1},
-		{Name: "tiny2", StartMS: 141, DurMS: 2},
-		{Name: "tiny3", StartMS: 143, DurMS: 3},
-		{Name: "mark", StartMS: 5, Instant: true},
-	}}
-	got := TopFive(tr)
-	if len(got) != 5 || got[0].Name != "child-a" || got[1].Name != "solo" || got[2].Name != "child-b" {
-		t.Fatalf("TopFive = %+v", got)
-	}
-	for _, s := range got {
-		if s.Name == "parent" || s.Instant {
-			t.Errorf("a parent or an instant crowded the list: %+v", s)
-		}
-	}
-}
-
-func TestRenderAndDefaultPath(t *testing.T) {
+func TestFlushWritesSchema(t *testing.T) {
 	c, p := start(t)
-	SetMeta("v", "repo", "host")
-	end := Detail("config load", "/etc/x")
-	c.add(12 * time.Millisecond)
+	end := Begin("work")
+	c.add(time.Millisecond)
 	end()
-	_, _ = Flush()
-	d, _ := Load(p)
-	var b bytes.Buffer
-	Render(&b, d)
-	for _, want := range []string{"start  at +0.0 ms  total 12.0 ms", "config load", "12.0 ms", "[/etc/x]", "top five"} {
-		if !strings.Contains(b.String(), want) {
-			t.Errorf("render lacks %q:\n%s", want, b.String())
-		}
+	if _, err := Flush(); err != nil {
+		t.Fatal(err)
+	}
+	d, err := loadDoc(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Schema != Schema {
+		t.Fatalf("schema = %q, want %q", d.Schema, Schema)
 	}
 	t.Setenv("XDG_DATA_HOME", "/xdg")
 	got := DefaultPath("", time.Date(2026, 11, 8, 1, 2, 3, 0, time.UTC))
 	if !strings.HasPrefix(got, "/xdg/wakil/traces/timeline-20261108T010203Z-") || !strings.HasSuffix(got, ".json") {
 		t.Errorf("DefaultPath = %q", got)
-	}
-}
-
-func TestLoadRefusesAnUnknownSchema(t *testing.T) {
-	p := filepath.Join(t.TempDir(), "x.json")
-	_ = os.WriteFile(p, []byte(`{"schema":"other/v1"}`), 0o600)
-	if _, err := Load(p); err == nil {
-		t.Fatal("an unknown schema must be refused")
 	}
 }
 
@@ -295,7 +277,7 @@ func TestAccumSumsManyCallsIntoOneSpan(t *testing.T) {
 	c.add(5 * time.Millisecond)
 	end()
 	_, _ = Flush()
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	var acc, work int
 	for _, s := range d.Transitions[0].Spans {
 		switch s.Name {
@@ -328,7 +310,7 @@ func TestEnterOnceDoesNotReopen(t *testing.T) {
 	c.add(time.Millisecond)
 	end()
 	_, _ = Flush()
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	if len(d.Transitions) != 2 || d.Transitions[1].Name != "exit" || len(d.Transitions[1].Spans) != 2 {
 		t.Fatalf("transitions = %+v", d.Transitions)
 	}
@@ -338,9 +320,6 @@ func TestSetDirKeepsTheFileName(t *testing.T) {
 	_, p := start(t)
 	dir := t.TempDir()
 	SetDir(dir)
-	if got := Path(); got != filepath.Join(dir, filepath.Base(p)) {
-		t.Fatalf("Path = %q", got)
-	}
 	if _, err := Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -363,7 +342,7 @@ func TestTransitionsCarryTheirAbsoluteStart(t *testing.T) {
 	c.add(5 * time.Millisecond)
 	Event("x")
 	_, _ = Flush()
-	d, _ := Load(p)
+	d, _ := loadDoc(p)
 	if d.Transitions[0].AtMS != 0 || d.Transitions[1].AtMS != 40 {
 		t.Fatalf("at_ms = %v, %v want 0, 40", d.Transitions[0].AtMS, d.Transitions[1].AtMS)
 	}

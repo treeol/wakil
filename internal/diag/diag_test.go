@@ -2,7 +2,6 @@ package diag
 
 import (
 	"bytes"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -76,16 +75,5 @@ func TestSanitizeID(t *testing.T) {
 		if got := sanitizeID(in); got != want {
 			t.Errorf("sanitizeID(%q) = %q, want %q", in, got, want)
 		}
-	}
-}
-
-// TestLogPathUsesXDGDataHome verifies the XDG_DATA_HOME base is joined with the
-// wakil subdirectory (the documented path), not used as the directory itself.
-func TestLogPathUsesXDGDataHome(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", "/tmp/xdg")
-	got := LogPath("abc")
-	want := filepath.Join("/tmp", "xdg", "wakil", "diag-abc.log")
-	if got != want {
-		t.Errorf("LogPath = %q, want %q", got, want)
 	}
 }

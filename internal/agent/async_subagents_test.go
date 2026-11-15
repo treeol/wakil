@@ -151,7 +151,7 @@ func TestAsyncDiscoveryCapacityRejectNoSilentSync(t *testing.T) {
 	}
 	defer func() {
 		for _, op := range held {
-			app.finishAsyncOp(op) // release for other tests
+			app.publishAsyncOp(op) // release for other tests
 		}
 	}()
 

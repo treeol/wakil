@@ -125,8 +125,8 @@ func TestInputLayout(t *testing.T) {
 	m := sizedModel(140, 40)
 	in := m.renderInput()
 	lines := strings.Split(in, "\n")
-	if len(lines) != m.inputOuterBoxH() {
-		t.Fatalf("input block height = %d, want %d", len(lines), m.inputOuterBoxH())
+	if len(lines) != m.inputRows()+borderH {
+		t.Fatalf("input block height = %d, want %d", len(lines), m.inputRows()+borderH)
 	}
 	for i, l := range lines {
 		if w := ansi.StringWidth(l); w != m.width {

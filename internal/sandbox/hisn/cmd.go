@@ -537,14 +537,6 @@ func (o procOps) stat(pid int) (state byte, start string, err error) {
 	return f[0][0], start, nil
 }
 
-// procZombie reports whether pid is a zombie (/proc/<pid>/stat state Z or X).
-// A detached supervisor is reparented; until its new parent reaps it, a
-// finished one still answers kill(pid, 0).
-func procZombie(pid int) bool {
-	state, _, err := realProcOps.stat(pid)
-	return err == nil && (state == 'Z' || state == 'X')
-}
-
 // trackSupervisor finds the real supervisor process for a 0.4.1 detach session
 // and arms the supervisorProc to track it. The session directory comes from
 // `hisn ls --json` (field dir); the supervisor pid is read from

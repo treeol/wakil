@@ -2,23 +2,10 @@ package hisn
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
 )
-
-// PublicKeyFingerprint returns the SHA256 fingerprint of an OpenSSH public key
-// file (a .pub line such as "ssh-ed25519 AAAA… comment"). Only the public key
-// is read; a file that does not parse is an error that names the path. The
-// private key never enters this code path.
-func PublicKeyFingerprint(path string) (string, error) {
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return "", fmt.Errorf("ssh public key %s: %w", path, err)
-	}
-	return fingerprintOf(raw, path)
-}
 
 // fingerprintOf parses the first authorized-key line in raw. name is used only
 // in error messages.

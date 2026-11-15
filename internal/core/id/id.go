@@ -130,9 +130,6 @@ func (g *Generator) OpID() (event.OpID, error) {
 // defaultGenerator backs the package-level New*ID helpers with crypto/rand.
 var defaultGenerator = New()
 
-// NewSessionID returns a fresh prefixed UUIDv7 session id.
-func NewSessionID() (event.SessionID, error) { return defaultGenerator.SessionID() }
-
 // NewApprovalID returns a fresh prefixed UUIDv7 approval id.
 func NewApprovalID() (event.ApprovalID, error) { return defaultGenerator.ApprovalID() }
 

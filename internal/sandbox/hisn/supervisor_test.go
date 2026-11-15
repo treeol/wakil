@@ -1302,24 +1302,27 @@ func TestStopDetachedLeavesAForeignReplacement(t *testing.T) {
 	}
 }
 
-func TestProcZombie(t *testing.T) {
+func TestProcAliveReportsZombieAsGone(t *testing.T) {
 	cmd := osexec.Command("true")
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
 	pid := cmd.Process.Pid
+	// Poll until the child is reaped by the OS into a zombie state; its
+	// /proc entry exists until Wait() collects it.
 	deadline := time.Now().Add(5 * time.Second)
-	for !procZombie(pid) {
-		if time.Now().After(deadline) {
-			t.Fatal("an exited, unreaped child must read as a zombie")
+	for {
+		if procAlive(pid, procStart(pid)) {
+			if time.Now().After(deadline) {
+				t.Fatal("exited, unreaped child must read as gone")
+			}
+			time.Sleep(5 * time.Millisecond)
+			continue
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if procAlive(pid, procStart(pid)) {
-		t.Fatal("procAlive must report a zombie as gone")
+		break
 	}
 	_ = cmd.Wait()
-	if procZombie(os.Getpid()) {
-		t.Fatal("this process is not a zombie")
+	if !procAlive(os.Getpid(), procStart(os.Getpid())) {
+		t.Fatal("this process must be alive")
 	}
 }

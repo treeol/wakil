@@ -1133,15 +1133,6 @@ func IsMashuraTool(short string) bool {
 	return false
 }
 
-// MashuraToolFullName maps a short counsel name ("review") to the full tool
-// name ("mashura__review"). ok is false for unknown short names.
-func MashuraToolFullName(short string) (string, bool) {
-	if IsMashuraTool(short) {
-		return "mashura__" + short, true
-	}
-	return "", false
-}
-
 // IsMashuraLevel reports whether level is one of off|low|medium|high.
 func IsMashuraLevel(level string) bool {
 	switch level {

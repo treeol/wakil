@@ -953,16 +953,12 @@ func TestCheckpoint_CaptureGenNotFound(t *testing.T) {
 	// Clear checkpoints (simulates compaction).
 	app.clearCheckpoints()
 
-	// Both lookup helpers should return nil for the old generation.
+	// activeCheckpointByGenLocked should return nil for the old generation.
 	app.cpMu.Lock()
-	cp := app.checkpointByGenLocked(1) // gen 1 was the first checkpoint
 	cpActive := app.activeCheckpointByGenLocked(1)
 	cpCount := len(app.checkpoints)
 	app.cpMu.Unlock()
 
-	if cp != nil {
-		t.Fatal("expected nil from checkpointByGenLocked for evicted checkpoint")
-	}
 	if cpActive != nil {
 		t.Fatal("expected nil from activeCheckpointByGenLocked for evicted checkpoint")
 	}

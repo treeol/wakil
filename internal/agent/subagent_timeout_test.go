@@ -193,7 +193,7 @@ func TestAsyncRegistryRefusalSendsDoneEvents(t *testing.T) {
 	}
 	defer func() {
 		for _, op := range held {
-			app.finishAsyncOp(op)
+			app.publishAsyncOp(op)
 		}
 	}()
 

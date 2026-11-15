@@ -96,7 +96,7 @@ func TestTunnel_AbruptForwarderDeathReapsEverything(t *testing.T) {
 	}
 	defer tun.close()
 
-	client, err := net.DialTimeout("tcp4", tun.addr().String(), 3*time.Second)
+	client, err := net.DialTimeout("tcp4", tun.ln.Addr().String(), 3*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}

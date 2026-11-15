@@ -28,7 +28,7 @@ func TestReviewKeepsProviderCostAndServedModel(t *testing.T) {
 			FinishReason:    parsed.FinishReason,
 		}, nil
 	}
-	out := dispatchReview(context.Background(), "openrouter/auto", 128000, 4096, 4096, "Review.", "ctx", "", send)
+	out := dispatchReviewWithReasoning(context.Background(), "openrouter/auto", 128000, 4096, 4096, 0, "Review.", "ctx", "", send, nil)
 	if !out.Usage.HasProviderCost || out.Usage.ProviderCostUSD != parsed.ProviderCostUSD {
 		t.Errorf("review outcome lost the provider cost: %+v", out.Usage)
 	}

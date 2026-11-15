@@ -1457,7 +1457,7 @@ func struggleKey(rule string, last ToolTraceEntry, path string) string {
 	return "command:" + last.Abbrev + ":" + last.Command
 }
 
-// detectStruggleScan is the shared scanner behind DetectStruggle and the
+// detectStruggleScan is the scanner behind the struggle gate and the
 // /counsel evaluation dump. The bool is whether a rule fired; rule names the
 // rule ("none" when nothing fired).
 //
@@ -1533,15 +1533,12 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, k
 	return "", false, "none", ""
 }
 
-// detectStruggle scans recent tool traces for a deterministic struggle signal and,
-// when found, returns a prefilled symptom string for mashura__debug. Signals: a
-// streak of two consecutive failures; the same command run twice in a row; or the
-// same file written/edited three or more times in the window. It only offers — the
-// caller never auto-calls the tool, and the human gate always applies.
-func DetectStruggle(traces []ToolTraceEntry) (symptom string, detected bool) {
-	symptom, detected, _, _ = detectStruggleScan(traces)
-	return symptom, detected
-}
+// detectStruggleScan scans recent tool traces for a deterministic struggle
+// signal and, when found, returns a prefilled symptom string for
+// mashura__debug. Signals: a streak of two consecutive failures; the same
+// command run twice in a row; or the same file written/edited three or
+// more times in the window. It only offers — the caller never auto-calls
+// the tool, and the human gate always applies.
 
 // resolveCounselMode resolves the effective auto-counsel mode and where it
 // came from. Precedence, highest first:

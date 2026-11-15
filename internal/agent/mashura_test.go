@@ -186,6 +186,7 @@ func TestMashuraToolsAutoApproveInAutoMode(t *testing.T) {
 		}
 	}
 }
+
 // The human gate fires for every tool: a declining confirmer short-circuits the
 // call (no network, no cost) and the real tool name reaches Confirm.
 func TestMashuraGateDeclineShortCircuits(t *testing.T) {
@@ -312,27 +313,27 @@ func TestDetectStruggle(t *testing.T) {
 	fail := ToolTraceEntry{Abbrev: "shell", Command: "go test", ExitErr: true, FirstLine: "FAIL"}
 	ok := ToolTraceEntry{Abbrev: "read", Command: "main.go"}
 
-	if _, d := DetectStruggle([]ToolTraceEntry{fail}); d {
+	if _, d, _, _ := detectStruggleScan([]ToolTraceEntry{fail}); d {
 		t.Error("single entry should not trigger")
 	}
-	if _, d := DetectStruggle([]ToolTraceEntry{ok, ok2()}); d {
+	if _, d, _, _ := detectStruggleScan([]ToolTraceEntry{ok, ok2()}); d {
 		t.Error("two unrelated ok calls should not trigger")
 	}
-	if s, d := DetectStruggle([]ToolTraceEntry{fail, fail}); !d || !strings.Contains(s, "repeated failures") {
+	if s, d, _, _ := detectStruggleScan([]ToolTraceEntry{fail, fail}); !d || !strings.Contains(s, "repeated failures") {
 		t.Errorf("two failures should trigger; got %q, %v", s, d)
 	}
 	twice := ToolTraceEntry{Abbrev: "shell", Command: "make"}
-	if s, d := DetectStruggle([]ToolTraceEntry{twice, twice}); !d || !strings.Contains(s, "twice") {
+	if s, d, _, _ := detectStruggleScan([]ToolTraceEntry{twice, twice}); !d || !strings.Contains(s, "twice") {
 		t.Errorf("same command twice should trigger; got %q, %v", s, d)
 	}
 	w := ToolTraceEntry{Abbrev: "edit", Command: "x.go"}
-	if s, d := DetectStruggle([]ToolTraceEntry{w, ok, w, ok, w}); !d || !strings.Contains(s, "rewrote") {
+	if s, d, _, _ := detectStruggleScan([]ToolTraceEntry{w, ok, w, ok, w}); !d || !strings.Contains(s, "rewrote") {
 		t.Errorf("three rewrites should trigger; got %q, %v", s, d)
 	}
 	// Empty Abbrev (tool-call name lost to stream corruption) must be called
 	// out as such, not rendered as a misleading `shell ""`.
 	lost := ToolTraceEntry{Abbrev: "", Command: "", ExitErr: true, FirstLine: "ERROR: could not parse arguments"}
-	if s, d := DetectStruggle([]ToolTraceEntry{lost, lost}); !d || !strings.Contains(s, "name lost") {
+	if s, d, _, _ := detectStruggleScan([]ToolTraceEntry{lost, lost}); !d || !strings.Contains(s, "name lost") {
 		t.Errorf("empty tool name should be flagged as stream corruption; got %q, %v", s, d)
 	}
 }
@@ -1125,7 +1126,7 @@ func counselServer(t *testing.T) (*httptest.Server, *int) {
 	return srv, count
 }
 
-// buildStruggleTraces returns recentTraces that trigger DetectStruggle (two
+// buildStruggleTraces returns recentTraces that trigger detectStruggleScan (two
 // consecutive failures on the same command).
 func buildStruggleTraces() []ToolTraceEntry {
 	e := ToolTraceEntry{

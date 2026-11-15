@@ -20,8 +20,8 @@ func TestMashuraTimeoutZeroIdleTotal(t *testing.T) {
 	if got := a.mashuraTimeout(); got != mashuraIdleTotalCap {
 		t.Fatalf("mashuraTimeout = %v, want total cap %v", got, mashuraIdleTotalCap)
 	}
-	if got := a.mashuraWatchdogTimeout(); got != 2*time.Second {
-		t.Fatalf("mashuraWatchdogTimeout = %v, want idle 2s", got)
+	if got := a.mashuraWatchdogTimeoutFor(a.mashuraCallTimeout("panel")); got != 2*time.Second {
+		t.Fatalf("mashuraWatchdogTimeoutFor(panel) = %v, want idle 2s", got)
 	}
 	// Default (unset) case: 300s.
 	b := newTestApp("http://unused.invalid", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
@@ -29,7 +29,7 @@ func TestMashuraTimeoutZeroIdleTotal(t *testing.T) {
 	if got := b.mashuraTimeout(); got != 300*time.Second {
 		t.Fatalf("default mashuraTimeout = %v, want 300s", got)
 	}
-	if got := b.mashuraWatchdogTimeout(); got != 300*time.Second {
+	if got := b.mashuraWatchdogTimeoutFor(b.mashuraCallTimeout("panel")); got != 300*time.Second {
 		t.Fatalf("default watchdog = %v, want 300s", got)
 	}
 }
@@ -56,7 +56,7 @@ func TestMashuraZeroWatchdogCutsSilentStream(t *testing.T) {
 	op.mu.Unlock()
 
 	start := time.Now()
-	a.armMashuraWatchdog(op, a.mashuraWatchdogTimeout())
+	a.armMashuraWatchdog(op, a.mashuraWatchdogTimeoutFor(a.mashuraCallTimeout("panel")))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

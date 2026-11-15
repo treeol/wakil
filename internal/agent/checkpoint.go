@@ -283,18 +283,6 @@ func (a *App) activeCheckpointLocked() *Checkpoint {
 	return &a.checkpoints[len(a.checkpoints)-1]
 }
 
-// checkpointByGenLocked returns a pointer to the checkpoint with the given
-// generation ID, or nil if it no longer exists (evicted, compacted, or
-// session rotated). Caller must hold cpMu.
-func (a *App) checkpointByGenLocked(gen int64) *Checkpoint {
-	for i := range a.checkpoints {
-		if a.checkpoints[i].Generation == gen {
-			return &a.checkpoints[i]
-		}
-	}
-	return nil
-}
-
 // activeCheckpointByGenLocked returns a pointer to the checkpoint with the
 // given generation ID only if it is still the last (active) checkpoint.
 // This prevents a slow capture from storing into a checkpoint that is no

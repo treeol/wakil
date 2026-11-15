@@ -100,7 +100,7 @@ func TestArmBannerShown(t *testing.T) {
 		t.Errorf("banner should name the key and action; got %q", notice)
 	}
 	// The notice must flow into the status segments.
-	in := m2.headerStatusInput()
+	in := m2.buildStatusInput(m2.facade.Info(), m2.facade.Consent())
 	if in.arm == "" {
 		t.Errorf("statusLineInput.arm should carry the notice")
 	}

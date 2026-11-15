@@ -73,7 +73,7 @@ func TestResolveProjectMatchesChatForCwd(t *testing.T) {
 				{ExecMode: mode},                     // no host_workdir set
 				{ExecMode: mode, HostWorkDir: stale}, // stale host_workdir: never keys a store
 			} {
-				chat := agent.ChatProjectPath(cfg)
+				chat := agent.ProjectDir(cfg)
 				if agent.WorkspaceKey(chat) != agent.WorkspaceKey(gc) {
 					t.Fatalf("mode=%s cwd=%s cfg.HostWorkDir=%q: chat key %s != gc key %s",
 						mode, c, cfg.HostWorkDir, agent.WorkspaceKey(chat), agent.WorkspaceKey(gc))

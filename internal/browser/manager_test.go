@@ -2,8 +2,6 @@ package browser
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -66,17 +64,6 @@ func TestNilManager_Close(t *testing.T) {
 	var m *Manager
 	if err := m.Close(); err != nil {
 		t.Errorf("Close on nil manager should return nil, got: %v", err)
-	}
-}
-
-func TestScreenshotDir(t *testing.T) {
-	dir := ScreenshotDir()
-	if dir == "" {
-		t.Fatal("ScreenshotDir returned empty string")
-	}
-	// Should be the system temp dir.
-	if dir != filepath.Join(os.TempDir()) {
-		t.Errorf("ScreenshotDir = %q, want %q", dir, filepath.Join(os.TempDir()))
 	}
 }
 

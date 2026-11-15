@@ -90,28 +90,8 @@ func addProviderCost(u, b OracleUsage) OracleUsage {
 	return u
 }
 
-// OracleDetail builds the human-readable detail shown in the confirm-gate
-// prompt. The full payload (model + question + context) is shown, but truncated
-// at ~2000 display chars with a "(+N chars)" suffix — the actual HTTP call uses
-// the untruncated question and context.
-func OracleDetail(model, question, oracleCtx string) string {
-	var sb strings.Builder
-	fmt.Fprintf(&sb, "model:    %s\nquestion: %s", model, question)
-	if oracleCtx != "" {
-		fmt.Fprintf(&sb, "\ncontext:  %s", oracleCtx)
-	}
-	full := sb.String()
-	const maxDisplay = 2000
-	if len(full) <= maxDisplay {
-		return full
-	}
-	excess := len(full) - maxDisplay
-	return full[:maxDisplay] + fmt.Sprintf(" (+%d chars)", excess)
-}
-
-// ── Multi-model panel support ─────────────────────────────────────────────────
-
-// PanelCallConfig carries per-call parameters shared by all providers in a panel.
+// PanelCallConfig carries per-call parameters shared by all providers
+// in a panel.
 // All members route through OpenRouter; the transport is the single
 // internal/proxy transport, which applies the data policy.
 type PanelCallConfig struct {
@@ -1102,8 +1082,8 @@ func logFooter(r PanelMemberResult) string {
 }
 
 // PanelDetail builds the confirm-gate detail for a panel call. For a
-// single-model panel it falls back to OracleDetail-style formatting (backward
-// compat). For multi-model panels it shows the full configuration.
+// single-model panel it uses the single-model format. For multi-model
+// panels it shows the full configuration.
 // When serverTools is non-empty, a disclosure line is prepended so the user
 // knows the model may search the web / fetch URLs (egress to third-party
 // services). The disclosure is placed BEFORE question/context so the 2,000-byte

@@ -277,7 +277,7 @@ func TestReviewCodeOnlyCitationNotVoid(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	out := dispatchReview(ctx, "test-model", 128000, 4096, 4096, "Review this code.", briefing, "", send)
+	out := dispatchReviewWithReasoning(ctx, "test-model", 128000, 4096, 4096, 0, "Review this code.", briefing, "", send, nil)
 	if out.Err != nil {
 		t.Fatalf("expected no error, got: %v (answer=%q)", out.Err, out.Answer)
 	}
@@ -304,7 +304,7 @@ func TestReviewCodeOnlyRangeLabelCitation(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	out := dispatchReview(ctx, "test-model", 128000, 4096, 4096, "Review this code.", briefing, "", send)
+	out := dispatchReviewWithReasoning(ctx, "test-model", 128000, 4096, 4096, 0, "Review this code.", briefing, "", send, nil)
 	if out.Err != nil {
 		t.Fatalf("expected no error for range-label citation, got: %v", out.Err)
 	}
@@ -327,7 +327,7 @@ func TestReviewCodeOnlyCitationWrongPathVoid(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	out := dispatchReview(ctx, "test-model", 128000, 4096, 4096, "Review this code.", briefing, "", send)
+	out := dispatchReviewWithReasoning(ctx, "test-model", 128000, 4096, 4096, 0, "Review this code.", briefing, "", send, nil)
 	if out.Err != nil {
 		t.Fatalf("a wrong citation with content must be accepted (coverage flagged), got: %v", out.Err)
 	}

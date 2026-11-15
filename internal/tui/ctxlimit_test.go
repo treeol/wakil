@@ -171,7 +171,7 @@ func TestHeaderCtxAmberOnUnresolvedModel(t *testing.T) {
 		ContextLimit: sessionclient.ContextLimit{NCtx: 131072, Source: "backend", ModelUnresolved: true, ReasoningBudget: 4096, AnswerMargin: 4096},
 		ContextUsed:  0, ContextExact: false, ConvLen: 0, TranscriptSize: 0,
 	}}
-	strip := tuiModel{facade: f, width: 120}.ctxSegment()
+	strip := ctxSegmentFromInfo(f.info, 120)
 	if !strings.Contains(plain(strip), "ctx") {
 		t.Fatalf("ctx strip missing key; got %q", plain(strip))
 	}
@@ -181,7 +181,7 @@ func TestHeaderCtxAmberOnUnresolvedModel(t *testing.T) {
 		ContextLimit: sessionclient.ContextLimit{NCtx: 131072, Source: "fallback", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
 		ContextUsed:  0, ContextExact: false, ConvLen: 0, TranscriptSize: 0,
 	}}
-	fbStrip := tuiModel{facade: fbf, width: 120}.ctxSegment()
+	fbStrip := ctxSegmentFromInfo(fbf.info, 120)
 	// Compare only the region containing the styled key: both must carry
 	// identical styling bytes for "ctx".
 	if keyStyling(strip) != keyStyling(fbStrip) {
@@ -231,7 +231,7 @@ func TestParseContextLimitJSON(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			nc, nt := agent.ParseContextLimitJSON([]byte(c.body))
+			nc, nt := agent.ParseContextLimitJSONForTest([]byte(c.body))
 			if nc != c.wantCtx || nt != c.wantTrain {
 				t.Errorf("parse(%s) = (%d,%d), want (%d,%d)", c.body, nc, nt, c.wantCtx, c.wantTrain)
 			}
@@ -246,8 +246,7 @@ func TestHeaderCtxReadsBackendNCtx(t *testing.T) {
 		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
 		ContextUsed:  48000, ContextExact: true, ConvLen: 1, TranscriptSize: 2,
 	}}
-	m := tuiModel{facade: f, width: 120}
-	strip := plain(m.ctxSegment())
+	strip := plain(ctxSegmentFromInfo(f.info, 120))
 	if !strings.Contains(strip, "196k") {
 		t.Errorf("ctx strip must show 196k denominator; got: %q", strip)
 	}
@@ -272,7 +271,7 @@ func TestHeaderCtxTildeOnEstimate(t *testing.T) {
 		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
 		ContextUsed:  48000, ContextExact: false, ConvLen: 1, TranscriptSize: 2,
 	}}
-	strip := plain(tuiModel{facade: est, width: 120}.ctxSegment())
+	strip := plain(ctxSegmentFromInfo(est.info, 120))
 	if !strings.Contains(strip, "~48k") {
 		t.Errorf("estimated usage must render '~48k'; got: %q", strip)
 	}
@@ -282,7 +281,7 @@ func TestHeaderCtxTildeOnEstimate(t *testing.T) {
 		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
 		ContextUsed:  48000, ContextExact: true, ConvLen: 1, TranscriptSize: 2,
 	}}
-	strip = plain(tuiModel{facade: ex, width: 120}.ctxSegment())
+	strip = plain(ctxSegmentFromInfo(ex.info, 120))
 	if !strings.Contains(strip, "48k") {
 		t.Errorf("exact usage must render '48k'; got: %q", strip)
 	}
@@ -298,7 +297,7 @@ func TestHeaderCtxTildeOnFallback(t *testing.T) {
 		ContextLimit: sessionclient.ContextLimit{NCtx: 196608, Source: "backend", ModelUnresolved: false, ReasoningBudget: 4096, AnswerMargin: 4096},
 		ContextUsed:  1000, ContextExact: false, ConvLen: 1, TranscriptSize: 4000,
 	}}
-	strip := plain(tuiModel{facade: fb, width: 120}.ctxSegment())
+	strip := plain(ctxSegmentFromInfo(fb.info, 120))
 	// 4000 chars / 4 = 1000 tokens → "~1k".
 	if !strings.Contains(strip, "~1k") {
 		t.Errorf("fallback estimate must render '~1k'; got: %q", strip)

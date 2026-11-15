@@ -17,8 +17,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"os"
-	"strings"
 	"sync"
 	"time"
 )
@@ -703,27 +701,4 @@ func statusByte(resp []byte) byte {
 		return respError
 	}
 	return resp[0]
-}
-
-// IsServerUnavailable reports whether err indicates the kvr server is not
-// reachable (connection refused, no such file, etc.). Used by the tool
-// layer to report "staging unavailable".
-func IsServerUnavailable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if errors.Is(err, os.ErrNotExist) {
-		return true
-	}
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
-		// Connection refused, no such file or directory, etc.
-		s := opErr.Err.Error()
-		if strings.Contains(s, "connection refused") ||
-			strings.Contains(s, "no such file") ||
-			strings.Contains(s, "connect: connection") {
-			return true
-		}
-	}
-	return false
 }

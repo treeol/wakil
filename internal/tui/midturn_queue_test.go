@@ -244,9 +244,9 @@ func TestQueuePrompt_MultipleQueued_FlushesOneAtATime(t *testing.T) {
 func TestQueuePrompt_StatusLine_ShowsQueueCount(t *testing.T) {
 	m, _ := queueModel(t)
 	m.queuedPrompts = []queuedPrompt{{text: "a"}, {text: "b"}, {text: "c"}}
-	in := m.headerStatusInput()
+	in := m.buildStatusInput(m.facade.Info(), m.facade.Consent())
 	if in.queueLen != 3 {
-		t.Errorf("headerStatusInput queueLen: expected 3, got %d", in.queueLen)
+		t.Errorf("buildStatusInput queueLen: expected 3, got %d", in.queueLen)
 	}
 }
 
@@ -591,7 +591,7 @@ func TestToolStartEvent_SetsRunningTool(t *testing.T) {
 		t.Errorf("expected command 'ls -la', got %q", m.runningTool.command)
 	}
 	// Status line should show the tool segment.
-	in := m.headerStatusInput()
+	in := m.buildStatusInput(m.facade.Info(), m.facade.Consent())
 	if !strings.Contains(in.runningTool, "tool: run_shell") {
 		t.Errorf("status line should show 'tool: run_shell', got %q", in.runningTool)
 	}

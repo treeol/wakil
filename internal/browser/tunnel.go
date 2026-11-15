@@ -85,9 +85,6 @@ func startTunnel(exe interactiveStarter, port int, marker string) (*tunnel, stri
 	return t, "http://" + ln.Addr().String(), nil
 }
 
-// addr returns the listener address (always 127.0.0.1).
-func (t *tunnel) addr() net.Addr { return t.ln.Addr() }
-
 func (t *tunnel) acceptLoop() {
 	for {
 		c, err := t.ln.Accept()

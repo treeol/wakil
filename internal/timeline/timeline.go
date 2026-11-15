@@ -10,7 +10,7 @@
 //
 // Usage:
 //
-//	defer timeline.Phase("config load")()          // a phase of the current transition
+//	defer timeline.Begin("config load")()        // a phase of the current transition
 //	ph := timeline.Begin("hisn start"); ...; ph()  // the same, split over statements
 //	timeline.Event("first prompt ready")           // an instant, offset only
 //	timeline.Enter("/new")                         // start a named transition
@@ -19,7 +19,6 @@ package timeline
 import (
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -143,19 +142,6 @@ func SetDir(dir string) {
 	r.mu.Unlock()
 }
 
-// Path is where Flush writes ("" when the timeline is off).
-func Path() string {
-	gmu.Lock()
-	r := rec
-	gmu.Unlock()
-	if r == nil {
-		return ""
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.path
-}
-
 // SetMeta records the version, repository and host named in the file header.
 func SetMeta(version, repo, host string) {
 	gmu.Lock()
@@ -260,9 +246,6 @@ func Begin(name string) func() { return begin(name, "", false) }
 // BeginConcurrent is Begin for a phase that runs in a goroutine alongside
 // others: it is marked concurrent and does not nest.
 func BeginConcurrent(name string) func() { return begin(name, "", true) }
-
-// Phase is Begin for use with defer: defer timeline.Phase("x")().
-func Phase(name string) func() { return begin(name, "", false) }
 
 // Detail starts a phase carrying a short detail string.
 func Detail(name, detail string) func() { return begin(name, detail, false) }
@@ -444,82 +427,6 @@ func SetClock(now func() time.Time) {
 		r.now = now
 		r.mu.Unlock()
 	}
-}
-
-// Render writes a human table of every transition: phases indented by depth,
-// with start offset and duration, and the five costliest phases listed last.
-func Render(w io.Writer, d *Doc) {
-	for _, t := range d.Transitions {
-		fmt.Fprintf(w, "%s  at +%.1f ms  total %.1f ms\n", t.Name, t.AtMS, t.TotalMS)
-		spans := append([]Span(nil), t.Spans...)
-		sort.SliceStable(spans, func(i, j int) bool { return spans[i].StartMS < spans[j].StartMS })
-		for _, s := range spans {
-			ind := strings.Repeat("  ", s.Depth+1)
-			mark := ""
-			if s.Concurrent {
-				mark = " (concurrent)"
-			}
-			if s.Instant {
-				fmt.Fprintf(w, "%s@ %8.1f  %s\n", ind, s.StartMS, s.Name)
-				continue
-			}
-			det := ""
-			if s.Detail != "" {
-				det = "  [" + s.Detail + "]"
-			}
-			fmt.Fprintf(w, "%s%-44s +%8.1f  %8.1f ms%s%s\n", ind, s.Name, s.StartMS, s.DurMS, mark, det)
-		}
-		fmt.Fprintf(w, "  top five by duration:\n")
-		for _, s := range TopFive(t) {
-			fmt.Fprintf(w, "    %8.1f ms  %s\n", s.DurMS, s.Name)
-		}
-		fmt.Fprintln(w)
-	}
-}
-
-// TopFive returns the five longest leaf phases of t: a phase that contains
-// another is skipped, so a parent never crowds out the costs inside it.
-func TopFive(t Transition) []Span {
-	var leaves []Span
-	for i, s := range t.Spans {
-		if s.Instant {
-			continue
-		}
-		parent := false
-		for j, o := range t.Spans {
-			if i == j || o.Instant || o.Accumulated {
-				continue
-			}
-			if o.Depth > s.Depth && o.StartMS >= s.StartMS && o.StartMS+o.DurMS <= s.StartMS+s.DurMS+0.01 {
-				parent = true
-				break
-			}
-		}
-		if !parent {
-			leaves = append(leaves, s)
-		}
-	}
-	sort.SliceStable(leaves, func(i, j int) bool { return leaves[i].DurMS > leaves[j].DurMS })
-	if len(leaves) > 5 {
-		leaves = leaves[:5]
-	}
-	return leaves
-}
-
-// Load reads a timeline file.
-func Load(path string) (*Doc, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	var d Doc
-	if err := json.Unmarshal(b, &d); err != nil {
-		return nil, err
-	}
-	if d.Schema != Schema {
-		return nil, fmt.Errorf("timeline: unsupported schema %q", d.Schema)
-	}
-	return &d, nil
 }
 
 // ProcessStart returns when this process started, taken from the kernel, so it

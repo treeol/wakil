@@ -282,16 +282,6 @@ func (b *BudgetState) add(u OracleUsage) {
 	}
 }
 
-// spentUSD returns the accumulated spend estimate (priced + estimated).
-func (b *BudgetState) spentUSD() float64 {
-	if b == nil {
-		return 0
-	}
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.spent
-}
-
 // shouldStop reports whether the budget guard has stopped further calls,
 // marking the state stopped (sticky) when a budget is reached.
 func (b *BudgetState) shouldStop() (string, bool) {
@@ -479,13 +469,6 @@ func lowerReasoningSpec(spec *config.ReasoningSpec) (*config.ReasoningSpec, bool
 		}
 	}
 	return spec, false
-}
-
-// doubleBudget returns the doubled answer budget for a limit retry: twice
-// the wanted budget, capped by what the window leaves after the input and
-// the answer reserve, with the 4096 floor.
-func doubleBudget(answerWant, usableForAnswer, inTok int) int {
-	return max(min(answerWant*2, usableForAnswer-inTok-answerReserveTokens), defaultMinAnswerTokens)
 }
 
 // reasoningSpecString renders a reasoning spec for the attempt log
@@ -1131,20 +1114,12 @@ func voidAfterTruncation(err error, what string) error {
 	return &VoidError{Reason: fmt.Sprintf("the first reply hit max_tokens and the %s failed (%v)", what, err)}
 }
 
-// dispatchReview sends question+briefing to one model, whole when it fits and
-// as labelled parts otherwise (appendix, when non-empty, is quoted reference
-// material added unchanged to EVERY part and never part of the evidence
-// target), enforcing the answer budget, the retry-once
-// chunked path on truncation, and the last-section evidence check.
-func dispatchReview(ctx context.Context, label string, ctxTokens, configuredMax int, floor int, question, briefing, appendix string, send sendFunc) reviewOutcome {
-	return dispatchReviewWithReasoning(ctx, label, ctxTokens, configuredMax, floor, 0, question, briefing, appendix, send, nil)
-}
-
-// dispatchReviewWithReasoning is dispatchReview with an explicit reasoning
-// reserve: reasoningBudget tokens are subtracted from the usable context
-// when sizing the answer budget, so the additive wire total (reasoning +
-// answer) fits the window. The answer floor is 4096 for every tool — a
-// floor below it (including 0 and the old check floor) is raised to it.
+// dispatchReviewWithReasoning sends question+briefing to one model with an
+// explicit reasoning reserve: reasoningBudget tokens are subtracted from
+// the usable context when sizing the answer budget, so the additive wire
+// total (reasoning + answer) fits the window. The answer floor is 4096 for
+// every tool — a floor below it (including 0 and the old check floor) is
+// raised to it.
 func dispatchReviewWithReasoning(ctx context.Context, label string, ctxTokens, configuredMax int, floor int, reasoningBudget int, question, briefing, appendix string, send sendFunc, budget *BudgetState) reviewOutcome {
 	if floor < defaultMinAnswerTokens {
 		floor = defaultMinAnswerTokens

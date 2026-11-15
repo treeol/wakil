@@ -222,11 +222,11 @@ func TestRunPanelFallbackEmptyModels(t *testing.T) {
 	}
 }
 
-// ─── OracleDetail ────────────────────────────────────────────────────────────
+// ─── PanelDetail ─────────────────────────────────────────────────────────────
 
-func TestOracleDetail_Truncation(t *testing.T) {
+func TestPanelDetail_Truncation(t *testing.T) {
 	longQuestion := strings.Repeat("x", 3000)
-	got := OracleDetail("model", longQuestion, "")
+	got := PanelDetail("p", []string{"m"}, "single", longQuestion, "", nil)
 	if len(got) > 2100 {
 		t.Errorf("truncated detail should be <= ~2100 chars, got %d", len(got))
 	}
@@ -235,8 +235,8 @@ func TestOracleDetail_Truncation(t *testing.T) {
 	}
 }
 
-func TestOracleDetail_NoTruncation(t *testing.T) {
-	got := OracleDetail("model", "short question", "short context")
+func TestPanelDetail_NoTruncation(t *testing.T) {
+	got := PanelDetail("p", []string{"m"}, "single", "short question", "short context", nil)
 	if strings.Contains(got, "(+") {
 		t.Errorf("non-truncated detail should not contain excess indicator")
 	}
@@ -251,8 +251,8 @@ func TestOracleDetail_NoTruncation(t *testing.T) {
 	}
 }
 
-func TestOracleDetail_NoContext(t *testing.T) {
-	got := OracleDetail("model", "question", "")
+func TestPanelDetail_NoContext(t *testing.T) {
+	got := PanelDetail("p", []string{"m"}, "single", "question", "", nil)
 	if strings.Contains(got, "context:") {
 		t.Errorf("detail should not contain context label when oracleCtx is empty")
 	}

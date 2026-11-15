@@ -298,7 +298,7 @@ func TestStatusSegmentsBackendOverrideMarker(t *testing.T) {
 // --- flowSegments (status line packing) ---
 
 func TestFlowSegmentsOneLineWhenFits(t *testing.T) {
-	rows := flowSegments([]string{"• AUTO", "model", "ctx ⣿ 0k"}, 120)
+	rows := flowSegmentsN([]string{"• AUTO", "model", "ctx ⣿ 0k"}, 120, 2)
 	if len(rows) != 1 {
 		t.Fatalf("should fit on one row; got %d: %v", len(rows), rows)
 	}
@@ -309,7 +309,7 @@ func TestFlowSegmentsOneLineWhenFits(t *testing.T) {
 
 func TestFlowSegmentsWrapsToTwo(t *testing.T) {
 	// Each segment ~10 wide; w=25 fits two per row → 2 rows for 3 segments.
-	rows := flowSegments([]string{"aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"}, 25)
+	rows := flowSegmentsN([]string{"aaaaaaaaaa", "bbbbbbbbbb", "cccccccccc"}, 25, 2)
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows; got %d: %v", len(rows), rows)
 	}
@@ -326,7 +326,7 @@ func TestFlowSegmentsNeverExceedsTwoRows(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		segs = append(segs, strings.Repeat(string(rune('a'+i)), 10))
 	}
-	rows := flowSegments(segs, 30)
+	rows := flowSegmentsN(segs, 30, 2)
 	if len(rows) != 2 {
 		t.Fatalf("status zone caps at 2 rows; got %d", len(rows))
 	}
@@ -342,7 +342,7 @@ func TestFlowSegmentsNeverExceedsTwoRows(t *testing.T) {
 }
 
 func TestFlowSegmentsOversizedSingleSegment(t *testing.T) {
-	rows := flowSegments([]string{strings.Repeat("x", 50)}, 20)
+	rows := flowSegmentsN([]string{strings.Repeat("x", 50)}, 20, 2)
 	if len(rows) != 1 {
 		t.Fatalf("one row; got %d", len(rows))
 	}
@@ -356,7 +356,7 @@ func TestFlowSegmentsDropsRightmostSuffixNotMiddle(t *testing.T) {
 	// after it must be dropped — a later smaller segment must never leapfrog
 	// a dropped middle one.
 	segs := []string{"aaa", "bbb", "small2", "widewidewidewide", "ccc"}
-	rows := flowSegments(segs, 16) // row1: "aaa · bbb · small2"=18>16 → row1 "aaa · bbb", row2 "small2" then wide drops
+	rows := flowSegmentsN(segs, 16, 2) // row1: "aaa · bbb · small2"=18>16 → row1 "aaa · bbb", row2 "small2" then wide drops
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows; got %d: %v", len(rows), rows)
 	}
@@ -380,7 +380,7 @@ func TestFlowSegmentsAnsiStyledSegments(t *testing.T) {
 	// leak a partial escape sequence into the visible width math.
 	red := lipgloss.NewStyle().Foreground(lipgloss.Color("1")).Render("REDRED")
 	dim := lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("dimdim")
-	rows := flowSegments([]string{red, dim, "plain"}, 14)
+	rows := flowSegmentsN([]string{red, dim, "plain"}, 14, 2)
 	for i, r := range rows {
 		if w := lipgloss.Width(r); w > 14 {
 			t.Errorf("row %d styled width %d > 14", i, w)
@@ -391,7 +391,7 @@ func TestFlowSegmentsAnsiStyledSegments(t *testing.T) {
 func TestFlowSegmentsPathologicalWidths(t *testing.T) {
 	segs := []string{"• AUTO", "model", "ctx ⣿ 0k", "hist 1 2k"}
 	for _, w := range []int{1, 2, 3, 5, 8} {
-		rows := flowSegments(segs, w)
+		rows := flowSegmentsN(segs, w, 2)
 		if len(rows) == 0 || len(rows) > 2 {
 			t.Errorf("w=%d: rows=%d, want 1..2", w, len(rows))
 		}
@@ -406,7 +406,7 @@ func TestFlowSegmentsPathologicalWidths(t *testing.T) {
 func TestFlowSegmentsSingleSegmentPerRowWhenForced(t *testing.T) {
 	// Width fits exactly one segment per row: head on row 1, next on row 2,
 	// the rest dropped with ellipsis.
-	rows := flowSegments([]string{"aaaa", "bbbb", "cccc"}, 4)
+	rows := flowSegmentsN([]string{"aaaa", "bbbb", "cccc"}, 4, 2)
 	if len(rows) != 2 {
 		t.Fatalf("want 2 rows; got %d: %v", len(rows), rows)
 	}

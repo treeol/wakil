@@ -328,35 +328,6 @@ func TestScrubMultipleInOneString(t *testing.T) {
 	}
 }
 
-func TestParseLevel(t *testing.T) {
-	tests := []struct {
-		input string
-		want  Level
-		err   bool
-	}{
-		{"off", LevelOff, false},
-		{"standard", LevelStandard, false},
-		{"aggressive", LevelAggressive, false},
-		{"", 0, true},
-		{"invalid", 0, true},
-	}
-	for _, tt := range tests {
-		got, err := ParseLevel(tt.input)
-		if tt.err {
-			if err == nil {
-				t.Fatalf("ParseLevel(%q) should error", tt.input)
-			}
-			continue
-		}
-		if err != nil {
-			t.Fatalf("ParseLevel(%q) error: %v", tt.input, err)
-		}
-		if got != tt.want {
-			t.Fatalf("ParseLevel(%q) = %v, want %v", tt.input, got, tt.want)
-		}
-	}
-}
-
 func TestScrubNilSafe(t *testing.T) {
 	var ps *PatternScrubber
 	got := ps.Scrub("hello")

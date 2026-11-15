@@ -361,9 +361,11 @@ func parseContextLimitJSON(body []byte) limitsResult {
 	return res
 }
 
-// ParseContextLimitJSON is the exported legacy entrypoint for callers that only
-// need n_ctx and n_ctx_train (tests, subagent compatibility).
-func ParseContextLimitJSON(body []byte) (nCtx, nCtxTrain int) {
+// ParseContextLimitJSONForTest is the test-only legacy entrypoint for
+// callers that only need n_ctx and n_ctx_train. It is kept for the
+// cross-package test in internal/tui/ctxlimit_test.go; production reads
+// the limit through App.ContextLimit.
+func ParseContextLimitJSONForTest(body []byte) (nCtx, nCtxTrain int) {
 	res := parseContextLimitJSON(body)
 	return res.nCtx, res.nCtxTrain
 }

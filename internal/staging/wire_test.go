@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"testing"
-	"time"
 )
 
 // wire_test.go — golden byte-vector tests for the client's frame builders
@@ -415,21 +414,6 @@ func TestIsBrokenPipeGolden(t *testing.T) {
 	}
 	if !isBrokenPipe(io.ErrClosedPipe) {
 		t.Fatal("ErrClosedPipe should be broken pipe")
-	}
-}
-
-// ─── IsServerUnavailable tests (no server needed) ─────────────────────
-
-func TestIsServerUnavailableMissingSocket(t *testing.T) {
-	// A client pointing at a nonexistent socket should report unavailable.
-	c := NewClient("/nonexistent/path/that/does/not/exist.sock")
-	c.SetTimeout(500 * time.Millisecond)
-	err := c.Ping(t.Context())
-	if err == nil {
-		t.Fatal("expected error pinging nonexistent socket")
-	}
-	if !IsServerUnavailable(err) {
-		t.Fatalf("expected IsServerUnavailable=true, got err: %v", err)
 	}
 }
 

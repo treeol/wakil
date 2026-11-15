@@ -11,9 +11,7 @@
 package scrub
 
 import (
-	"fmt"
 	"regexp"
-	"strings"
 )
 
 // Level controls scrubbing aggressiveness.
@@ -121,18 +119,4 @@ func (ps *PatternScrubber) Scrub(text string) string {
 		text = p.re.ReplaceAllString(text, p.replace)
 	}
 	return text
-}
-
-// ParseLevel converts a string flag to a Level.
-func ParseLevel(s string) (Level, error) {
-	switch strings.ToLower(s) {
-	case "off", "disabled", "none":
-		return LevelOff, nil
-	case "standard", "default", "normal":
-		return LevelStandard, nil
-	case "aggressive", "strict":
-		return LevelAggressive, nil
-	default:
-		return 0, fmt.Errorf("scrub: unknown level %q (want off|standard|aggressive)", s)
-	}
 }

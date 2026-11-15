@@ -96,9 +96,9 @@ func TestGeneratedIDsAreUnique(t *testing.T) {
 }
 
 func TestPackageLevelHelpersUseDefaultGenerator(t *testing.T) {
-	id, err := NewSessionID()
+	id, err := defaultGenerator.SessionID()
 	if err != nil {
-		t.Fatalf("NewSessionID: %v", err)
+		t.Fatalf("defaultGenerator.SessionID: %v", err)
 	}
 	checkBody(t, "ses_", string(id))
 }

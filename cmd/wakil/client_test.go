@@ -312,10 +312,19 @@ func TestNoMemoryWriteFlag(t *testing.T) {
 // (The authoritative list is internal/tools gatedToolList; this test records
 // the gate's end-to-end behaviour through the real Send path.)
 func TestGatedToolSet(t *testing.T) {
+	// toolArgs maps each gated/ungated tool to arguments its handler accepts.
+	// run_shell needs {"command":...}; write_file needs {"path":...,"content":...};
+	// read_file needs {"path":...} and must not reach the Confirm gate.
+	toolArgs := map[string]string{
+		"run_shell":  `{"command":"echo hi"}`,
+		"write_file": `{"path":"/work/x","content":"data"}`,
+		"read_file":  `{"path":"/work/x"}`,
+	}
 	for name, want := range map[string]bool{"run_shell": true, "write_file": true, "read_file": false} {
+		args := toolArgs[name]
 		if want {
 			// gated tools must reach the Confirm gate in the real loop
-			srv := sseServer(t, toolCallFrames("c1", name, `{"path":"/work/x"}`), []string{contentChunk("done")})
+			srv := sseServer(t, toolCallFrames("c1", name, args), []string{contentChunk("done")})
 			defer srv.Close()
 			fexec := newFakeExecutor()
 			prompted := ""
@@ -326,7 +335,7 @@ func TestGatedToolSet(t *testing.T) {
 			}
 		} else {
 			// read_file must not reach the Confirm gate
-			srv := sseServer(t, toolCallFrames("c1", name, `{"path":"/work/x"}`), []string{contentChunk("done")})
+			srv := sseServer(t, toolCallFrames("c1", name, args), []string{contentChunk("done")})
 			defer srv.Close()
 			fexec := newFakeExecutor()
 			prompted := ""

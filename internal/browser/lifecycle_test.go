@@ -263,7 +263,7 @@ func TestTunnel_LoopbackOnlyAndTransparent(t *testing.T) {
 	defer tun.close()
 
 	// B3: the listener is on 127.0.0.1 and nothing else.
-	ta := tun.addr().(*net.TCPAddr)
+	ta := tun.ln.Addr().(*net.TCPAddr)
 	if !ta.IP.IsLoopback() || ta.IP.String() != "127.0.0.1" {
 		t.Fatalf("tunnel listens on %v, want 127.0.0.1", ta)
 	}
@@ -315,7 +315,7 @@ func TestTunnel_CloseEndsConnections(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c, err := net.Dial("tcp4", tun.addr().String())
+	c, err := net.Dial("tcp4", tun.ln.Addr().String())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -332,7 +332,7 @@ func TestTunnel_CloseEndsConnections(t *testing.T) {
 	if _, err := c.Read(make([]byte, 1)); err == nil {
 		t.Error("client connection must end after tunnel.close")
 	}
-	if c2, err := net.DialTimeout("tcp4", tun.addr().String(), time.Second); err == nil {
+	if c2, err := net.DialTimeout("tcp4", tun.ln.Addr().String(), time.Second); err == nil {
 		c2.Close()
 		t.Error("listener must be closed")
 	}

@@ -523,8 +523,15 @@ func TestIncompleteStatusWarningSurfaced(t *testing.T) {
 
 	exec := newFakeExecutor()
 	var out strings.Builder
+	// Raise the hard-max ceiling: the parent's default (160000) is at the
+	// same boundary the subagent's system prompt + task + tool history
+	// fluctuate around, so guardCurrentTurn fails intermittently under -race
+	// when the request lands a few bytes over the limit.
+	cfg := config.DefaultConfig()
+	cfg.HardMaxBytes = 320000
+	cfg.CompactAt = 240000
 	app := &App{
-		Cfg:     config.DefaultConfig(),
+		Cfg:     cfg,
 		Client:  newTestClient(srv.URL),
 		Exec:    exec,
 		Tools:   wtools.DefaultTools("/work"),

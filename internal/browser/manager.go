@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -426,10 +425,4 @@ func (m *Manager) GetHTML(ctx context.Context, selector string) (string, error) 
 		html = html[:maxHTMLLen] + "\n... (truncated at 50KB — use a more specific selector for full content)"
 	}
 	return html, nil
-}
-
-// ScreenshotDir returns the default directory for saved screenshots.
-// Currently the system temp dir; could be configured in the future.
-func ScreenshotDir() string {
-	return filepath.Join(os.TempDir())
 }

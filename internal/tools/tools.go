@@ -508,8 +508,8 @@ func IsEditTool(name string) bool {
 // IsMashuraTool reports whether name is one of the mashūra counsel tools
 // (the mashura__* family). Every such tool goes through the confirm gate
 // (auto-approved in /auto mode with a visible ⚡ auto note), and its response
-// is kept in full (capOrStub never truncates it). The short-name counterpart
-// is config.IsMashuraTool / config.MashuraToolFullName.
+// is kept in full (capOrStub never truncates it). The short-name check is
+// config.IsMashuraTool.
 func IsMashuraTool(name string) bool {
 	short, found := strings.CutPrefix(name, "mashura__")
 	if !found {

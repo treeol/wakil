@@ -84,16 +84,6 @@ func OpenSessionLog(sessionID string) *os.File {
 	return f
 }
 
-// LogPath returns the diagnostic log path for a session ID without opening it,
-// so a caller can surface the path to the user before entering the TUI.
-func LogPath(sessionID string) string {
-	dir := dataDir()
-	if dir == "" {
-		return ""
-	}
-	return filepath.Join(dir, "diag-"+sanitizeID(sessionID)+".log")
-}
-
 // dataDir resolves the wakil data directory: XDG_DATA_HOME/wakil, else
 // ~/.local/share/wakil. Empty when neither is resolvable.
 func dataDir() string {

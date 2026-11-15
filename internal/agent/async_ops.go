@@ -216,7 +216,7 @@ type asyncOp struct {
 	subagentEffectsCommitted bool
 	envelopeDelivered        bool // result rendered into Conv or consumed by check_pending
 	// published marks that the op was published to the inbox exactly once
-	// (guarded by mu) — makes finishAsyncOp idempotent.
+	// (guarded by mu) — makes publishAsyncOp idempotent.
 	published bool
 
 	// watchdog is the timeout timer armed at registration. It fires if the
@@ -288,7 +288,7 @@ type asyncRegistry struct {
 	asyncActive   int
 	asyncStopping bool
 	// wake is a COALESCING completion signal for Phase 2 (Idle/Wake). It is a
-	// buffered-1 channel touched only under asyncMu in finishAsyncOp/StopAllAsyncOps;
+	// buffered-1 channel touched only under asyncMu in publishAsyncOp/StopAllAsyncOps;
 	// a non-blocking send means "something completed" — multiple near-simultaneous
 	// completions collapse into ONE signal (no buffering of more than one), so
 	// exactly one resumed request is scheduled. A waiter first checks the inbox
@@ -437,14 +437,6 @@ func (a *App) mashuraTimeout() time.Duration {
 	// Unset (0 without the explicit-zero flag — the DefaultConfig state)
 	// uses the idle+total semantics, as does an explicit 0.
 	return mashuraIdleTotalCap
-}
-
-// mashuraWatchdogTimeout returns the watchdog terminalization deadline.
-// For the explicit-0 idle+total case it is the idle timeout (not the total):
-// a stream silent for the idle duration is cut even though the worker context
-// still has total-cap room. Otherwise it is mashuraTimeout() (unchanged).
-func (a *App) mashuraWatchdogTimeout() time.Duration {
-	return a.mashuraWatchdogTimeoutFor(a.mashuraCallTimeout("panel"))
 }
 
 // mashuraWatchdogTimeoutFor scales the worker's actual deadline (callTimeout =
@@ -760,7 +752,7 @@ func (a *App) countActiveAsyncOps() int {
 // refusal reason is "full" or "stopping". The active slot is reserved
 // ATOMICALLY under asyncMu, so concurrent enqueues cannot over-subscribe the
 // cap (unlike the previous snapshot-then-reacquire admission). The caller must
-// call finishAsyncOp exactly once when its worker reaches terminal completion
+// call publishAsyncOp exactly once when its worker reaches terminal completion
 // to release the slot.
 func (a *App) registerAsyncOp(toolName, label string) (*asyncOp, string) {
 	a.asyncMu.Lock()
@@ -791,7 +783,7 @@ func (a *App) registerAsyncOp(toolName, label string) (*asyncOp, string) {
 	return op, ""
 }
 
-// finishAsyncOp releases the active slot and publishes a terminal outcome to
+// publishAsyncOp releases the active slot and publishes a terminal outcome to
 // the inbox. The slot is decremented exactly once (guarded by op.mu.terminal,
 // so the "exactly once" holds even if a racing worker double-calls it). Called
 // by the worker at terminal completion, just like the closed `done` channel.
@@ -898,12 +890,6 @@ func renderAsyncJobChunkText(ev counsel.PanelMemberEvent) string {
 		line = truncateUTF8(line, asyncJobChunkMaxBytes)
 	}
 	return line
-}
-
-// finishAsyncOp is the outward publication call (compat/alias) used by tests and
-// the sync-path helpers. It is idempotent.
-func (a *App) finishAsyncOp(op *asyncOp) {
-	a.publishAsyncOp(op)
 }
 
 // enqueueAsyncOp registers a new operation and starts its worker. Returns the

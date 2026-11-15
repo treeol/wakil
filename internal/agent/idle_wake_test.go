@@ -91,7 +91,7 @@ func TestWaitForCompletionNoLostWake(t *testing.T) {
 		op.mu.Lock()
 		op.terminal, op.result = true, "done"
 		op.mu.Unlock()
-		app.finishAsyncOp(op)
+		app.publishAsyncOp(op)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -118,7 +118,7 @@ func TestWaitForCompletionCoalescing(t *testing.T) {
 		op.mu.Lock()
 		op.terminal, op.result = true, fmt.Sprintf("res-%d", i)
 		op.mu.Unlock()
-		app.finishAsyncOp(op)
+		app.publishAsyncOp(op)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -174,7 +174,7 @@ func TestWaitForCompletionToolSuspends(t *testing.T) {
 		op.mu.Lock()
 		op.terminal = true
 		op.mu.Unlock()
-		app.finishAsyncOp(op)
+		app.publishAsyncOp(op)
 	}()
 	if got := app.handleWaitForCompletion(); got != waitForCompletionToken {
 		t.Errorf("pending case: got %q, want token", got)
@@ -268,7 +268,7 @@ func TestIsIdleFalseWhenOnlyInbox(t *testing.T) {
 	op.mu.Lock()
 	op.terminal, op.result = true, "finished during stream"
 	op.mu.Unlock()
-	app.finishAsyncOp(op) // publishes to inbox, decrements asyncActive
+	app.publishAsyncOp(op) // publishes to inbox, decrements asyncActive
 
 	// asyncActive == 0, len(asyncInbox) > 0 → isIdle must be false.
 	if app.isIdle(true) {
@@ -300,7 +300,7 @@ func TestIsIdleTrueWhenActive(t *testing.T) {
 		op.mu.Lock()
 		op.terminal = true
 		op.mu.Unlock()
-		app.finishAsyncOp(op)
+		app.publishAsyncOp(op)
 	}()
 	// asyncActive > 0 → isIdle must be true.
 	if !app.isIdle(true) {

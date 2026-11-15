@@ -263,9 +263,6 @@ func TestCallMemberSnakeCase(t *testing.T) {
 func TestBudgetStateSessionCost(t *testing.T) {
 	bs := newBudgetState(PanelCallConfig{SessionBudgetUSD: 10, SessionCostFunc: func() float64 { return 5 }})
 	bs.add(OracleUsage{HasProviderCost: true, ProviderCostUSD: 1.0, InputTokens: 1, OutputTokens: 1})
-	if got := bs.spentUSD(); got != 1.0 {
-		t.Errorf("spentUSD = %v, want 1.0", got)
-	}
 	if _, stop := bs.shouldStop(); stop {
 		t.Error("session base 5 + spent 1 < 10 must not stop")
 	}
@@ -274,9 +271,6 @@ func TestBudgetStateArithmetic(t *testing.T) {
 	// Nil-state no-ops.
 	var nilState *BudgetState
 	nilState.add(OracleUsage{InputTokens: 1})
-	if nilState.spentUSD() != 0 {
-		t.Error("nil spentUSD must be 0")
-	}
 	if _, stop := nilState.shouldStop(); stop {
 		t.Error("nil shouldStop must not stop")
 	}
@@ -284,9 +278,6 @@ func TestBudgetStateArithmetic(t *testing.T) {
 	// Priced add sets the per-token rate; the budget then trips at 1.0.
 	bs := newBudgetState(PanelCallConfig{ReviewBudgetUSD: 1.0})
 	bs.add(OracleUsage{InputTokens: 100, OutputTokens: 100, HasProviderCost: true, ProviderCostUSD: 1.0})
-	if got := bs.spentUSD(); got != 1.0 {
-		t.Errorf("spentUSD = %v, want 1.0", got)
-	}
 	if _, stop := bs.shouldStop(); !stop {
 		t.Error("budget 1.0 with spend 1.0 must stop")
 	}
@@ -305,9 +296,6 @@ func TestBudgetStateArithmetic(t *testing.T) {
 	// Unpriced estimation path: no rate known, counted unpriced, no stop.
 	bs3 := newBudgetState(PanelCallConfig{})
 	bs3.add(OracleUsage{InputTokens: 50, OutputTokens: 50})
-	if got := bs3.spentUSD(); got != 0 {
-		t.Errorf("unpriced spend without a rate = %v, want 0", got)
-	}
 	if _, stop := bs3.shouldStop(); stop {
 		t.Error("no budget configured must not stop")
 	}

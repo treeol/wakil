@@ -135,9 +135,9 @@ const (
 	ChoiceGrantTool                        // run this one and auto-approve future [tool] calls this session
 )
 
-// grantEligibleTools is the set of tools that can be granted for the session.
-// Shared by the TUI (to show the 'g' key) and the agent (to enforce the
-// allowlist). Deletes, moves, and external-backend egress are never
+// grantEligibleTools is the session-client's grant allowlist, mirrored in
+// agent/grants.go. TestGrantEligibilityParity (agent/grants_test.go) checks
+// the two copies match. Deletes, moves, and external-backend egress are never
 // eligible. For run_shell/run_background, eligibility in this set is
 // necessary but not sufficient — the per-call destructive-command exclusion
 // is computed agent-side (agent.GrantEligibleForCall) and carried in
@@ -157,21 +157,6 @@ var grantEligibleTools = map[string]bool{
 	"edit_file":         true,
 	"run_shell":         true,
 	"run_background":    true,
-}
-
-// IsGrantEligible reports whether a tool name is eligible for session grants.
-func IsGrantEligible(toolName string) bool {
-	return grantEligibleTools[toolName]
-}
-
-// GrantEligibleTools returns a copy of the grant-eligible tools set.
-// Used by parity tests to ensure the agent's copy matches.
-func GrantEligibleTools() map[string]bool {
-	out := make(map[string]bool, len(grantEligibleTools))
-	for k, v := range grantEligibleTools {
-		out[k] = v
-	}
-	return out
 }
 
 // ApprovalRequest mirrors the fields of agent.ConfirmReqMsg that the TUI

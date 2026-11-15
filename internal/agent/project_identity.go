@@ -29,9 +29,3 @@ func ProjectDir(cfg config.Config) string {
 	}
 	return canonicalWorkspace(wd)
 }
-
-// ChatProjectPath is kept for callers that name the chat's store directory. It
-// is ProjectDir: store identity never depends on WAKIL_WORKSPACE_PATH.
-func ChatProjectPath(cfg config.Config) string {
-	return ProjectDir(cfg)
-}

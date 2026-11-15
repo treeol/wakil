@@ -296,13 +296,15 @@ func TestRunPanelFallbackStopsOnSuccess(t *testing.T) {
 	}
 }
 
-// TestPanelDetailSingleModel verifies that PanelDetail for a 1-model panel
-// produces the same format as OracleDetail (backward compat).
+// TestPanelDetailSingleModel verifies PanelDetail for a 1-model panel
+// produces the single-model confirm-gate detail format.
 func TestPanelDetailSingleModel(t *testing.T) {
-	oracle := OracleDetail("claude-opus-4-8", "the question", "ctx body")
 	panel := PanelDetail("default", []string{"anthropic:claude-opus-4-8"}, "panel", "the question", "ctx body", nil)
-	if oracle != panel {
-		t.Errorf("single-model PanelDetail differs from OracleDetail:\noracle: %q\npanel:  %q", oracle, panel)
+	want := "model:    claude-opus-4-8\nquestion: the question\ncontext:  ctx body"
+	// PanelDetail truncates/suffixes long text the same way OracleDetail did;
+	// short prompts are exact.
+	if panel != want {
+		t.Errorf("single-model PanelDetail:\n got: %q\nwant: %q", panel, want)
 	}
 }
 

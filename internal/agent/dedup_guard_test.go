@@ -87,8 +87,8 @@ func TestDedupHitRecordsTraceEntry(t *testing.T) {
 		t.Errorf("dedup trace entry = (%q,%q), want repeat of (%q,%q)",
 			second.Abbrev, second.Command, app.recentTraces[0].Abbrev, app.recentTraces[0].Command)
 	}
-	if _, detected := DetectStruggle(app.recentTraces); !detected {
-		t.Error("DetectStruggle should fire on a deduped repeat read")
+	if _, detected, _, _ := detectStruggleScan(app.recentTraces); !detected {
+		t.Error("detectStruggleScan should fire on a deduped repeat read")
 	}
 }
 

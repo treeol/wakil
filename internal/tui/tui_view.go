@@ -382,9 +382,6 @@ func (m tuiModel) inputRows() int {
 	return inputRowsNormal
 }
 
-// inputOuterBoxH is the input box's outer height: textarea rows + border.
-func (m tuiModel) inputOuterBoxH() int { return m.inputRows() + borderH }
-
 // autoApprove reports whether /auto is active (pending grants don't count).
 func (m tuiModel) autoApprove() bool {
 	return m.facade != nil && m.facade.Consent().AutoApprove
@@ -484,10 +481,8 @@ func (m tuiModel) statusLines() []string {
 		}
 		rows = append(rows, tr)
 	}
-	// Fetch Info() and Consent() once for the whole status zone. Previously
-	// headerStatusInput, ctxSegment, and billedSegmentFromInfo each called
-	// Info() separately (and headerStatusInput called Snapshot() which copies
-	// the entire conversation). Now all three read from this single fetch.
+	// Fetch Info() and Consent() once for the whole status zone. Now all
+	// three read from this single fetch.
 	info := m.facade.Info()
 	consent := m.facade.Consent()
 	in := m.buildStatusInput(info, consent)
@@ -666,8 +661,10 @@ func statusSegments(in statusLineInput) []string {
 	return segs
 }
 
-// ctxSegment renders the ctx/hist gauge as ONE status segment (it joins the
-// same flow as the identity segments):
+// ctxSegmentFromInfo is the pure-function version that takes a pre-fetched
+// InfoSnapshot so the caller can share one Info() call across the whole
+// status zone. It renders the ctx/hist gauge as ONE status segment (it
+// joins the same flow as the identity segments):
 //
 //	ctx ⣿⣀⣀⣀⣀⣀┊⣀⣀⣀⣀⣀⣀ 48k / 1.0M 24% · hist 13 22k
 //
@@ -675,15 +672,6 @@ func statusSegments(in statusLineInput) []string {
 // usable budget) → red (≥90% of n_ctx); the "ctx" key is amber when the
 // ceiling came from the config fallback or the model was unresolved.
 // Wiring path: all fields from Info() (limit + usage + transcript stats).
-// ctxSegment is the backward-compatible wrapper that fetches Info() itself.
-// Prefer ctxSegmentFromInfo in render paths. Kept for test callers.
-func (m tuiModel) ctxSegment() string {
-	return ctxSegmentFromInfo(m.facade.Info(), m.width)
-}
-
-// ctxSegmentFromInfo is the pure-function version that takes a pre-fetched
-// InfoSnapshot so the caller can share one Info() call across the whole
-// status zone.
 func ctxSegmentFromInfo(info sessionclient.InfoSnapshot, _ int) string {
 	lim := info.ContextLimit
 	used, exact := info.ContextUsed, info.ContextExact
@@ -731,18 +719,9 @@ func formatTruncate(s string, n int) string {
 	return string(r[:n]) + "…"
 }
 
-// headerStatusInput is the backward-compatible wrapper that fetches Info()
-// and Consent() itself. Prefer buildStatusInput in render paths to avoid
-// duplicate facade reads. Kept for test callers.
-func (m tuiModel) headerStatusInput() statusLineInput {
-	return m.buildStatusInput(m.facade.Info(), m.facade.Consent())
-}
-
 // buildStatusInput assembles the statusLineInput for the status line from
 // model state and the pre-fetched Info/Consent. Callers should fetch Info()
-// and Consent() once per statusLines() call and pass them here — previously
-// this method called Info(), Snapshot(), and Consent() itself, and
-// ctxSegment/billedSegmentFromInfo called Info() again.
+// and Consent() once per statusLines() call and pass them here.
 func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sessionclient.Consent) statusLineInput {
 	runningTool := ""
 	if m.runningTool != nil {
@@ -798,13 +777,9 @@ func (m tuiModel) buildStatusInput(info sessionclient.InfoSnapshot, consent sess
 	return in
 }
 
-// flowSegments packs segments left-to-right with " · " separators onto as
-// few rows as needed, capped at 2 (the collapsed status zone's limit).
-func flowSegments(segs []string, w int) []string {
-	return flowSegmentsN(segs, w, 2)
-}
-
-// flowSegmentsN is flowSegments with an explicit row cap. A segment never
+// flowSegmentsN packs segments left-to-right with " · " separators onto as
+// few rows as needed, capped at maxRows (2 is the collapsed status zone's
+// limit). A segment never
 // splits across rows: when it doesn't fit the current row it moves wholesale
 // to the next. Past the cap the rightmost suffix is dropped with a trailing
 // ellipsis (still reachable when the info expansion is on). Returns at least
