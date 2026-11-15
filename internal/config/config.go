@@ -530,10 +530,11 @@ type Config struct {
 	// paths can be comma-separated; empty = no image attached.
 	AttachImage string `json:"-"`
 
-	// CorrectionCapture enables correction capture: automatic detection of
-	// user corrections and the confirmation prompt that records them. Off by
-	// default; when false no detection runs, no prompt appears and auto mode
-	// is never suspended by a correction.
+	// CorrectionCapture was the correction-capture opt-in (detection of user
+	// corrections + confirmation prompt). The feature was removed in 0.8.4;
+	// the key is accepted at load and ignored with one notice, in the same
+	// way the removed google keys are handled. The field stays so nothing
+	// breaks; no code reads it.
 	CorrectionCapture bool `json:"correction_capture,omitempty"`
 
 	// Mashūra: counsel tool that calls an external AI API for a second opinion.
@@ -1600,6 +1601,11 @@ var mashuraDerivedNoticeOnce sync.Once
 // removed keys.
 var googleRemovedNoticeOnce sync.Once
 
+// correctionCaptureRemovedNoticeOnce guarantees the removed-correction-capture
+// notice fires at most once per process (one session), when a config file
+// still carries the key.
+var correctionCaptureRemovedNoticeOnce sync.Once
+
 // legacyMashuraKeysPresent lists the legacy mashura/oracle keys whose value
 // differs from DefaultConfig. A bool cannot distinguish absent from false,
 // so presence is detected by deviation from defaults — absent (zero) always
@@ -1933,6 +1939,7 @@ func LoadConfig(argv []string) (Config, error) {
 				OracleTimeoutSeconds *int   `json:"oracle_timeout_seconds"`
 				GoogleAPIKey         string `json:"google_api_key"`
 				GoogleCX             string `json:"google_cx"`
+				CorrectionCapture    bool   `json:"correction_capture"`
 			}
 			if err := json.Unmarshal(b, &probe); err == nil {
 				if probe.OracleEndpoint != "" {
@@ -1945,6 +1952,16 @@ func LoadConfig(argv []string) (Config, error) {
 				if probe.GoogleAPIKey != "" || probe.GoogleCX != "" {
 					googleRemovedNoticeOnce.Do(func() {
 						fmt.Fprintln(os.Stderr, "google_api_key / google_cx were removed in 0.8.3 — the google_search and google_fetch_url tools no longer exist; searxng serves the same role")
+					})
+				}
+				// correction_capture's feature was removed in 0.8.4: a config
+				// that still carries the key loads with one notice. Presence
+				// is probed via the struct — a bool cannot tell absent from
+				// false, so this fires only for true, which is the value a
+				// config would carry while the feature was on.
+				if probe.CorrectionCapture {
+					correctionCaptureRemovedNoticeOnce.Do(func() {
+						fmt.Fprintln(os.Stderr, "correction_capture was removed in 0.8.4 — the key is accepted and ignored")
 					})
 				}
 				// Explicit 0 in the file selects idle+total semantics; without

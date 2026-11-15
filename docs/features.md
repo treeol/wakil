@@ -336,11 +336,6 @@ In a tainted session, `memory_put plan/current` is redirected to `plan/tainted/<
 
 **Which store?** A chat keys its per-project stores by `config.WorkspacePath()` — the launch directory (or `host_workdir` / the workspace argument), **unless `WAKIL_WORKSPACE_PATH` is set, which replaces it**. `wakil plan gc` always uses the current directory. `wakil --print-workspace-key` prints both with the source of each, and flags a divergence; when `WAKIL_WORKSPACE_PATH` is set, Wakil prints one startup line naming the path and the resulting keys, and `/sandbox` repeats it.
 
-## Correction capture
+## Correction capture (removed in 0.8.4)
 
-Wakil automatically detects when you correct its work and proposes storing a memory entry:
-
-- **After `/rewind`**: if you undo the agent's work and then send a new message, Wakil proposes capturing your correction with the reverted file paths as anchors.
-- **Explicit patterns**: messages like "no, use const not var", "stop doing X", "I wanted Y, not Z" trigger detection.
-
-You must explicitly confirm before anything is stored — the `correction_capture` gate is carved out from `/auto` mode so it always prompts. Approved corrections are stored as PROPOSED memory entries (kind="correction") that require `memory_promote` before becoming active. Once active, they're automatically retrieved in future sessions working on similar tasks.
+Correction capture is removed: Wakil no longer detects corrections or proposes memory entries automatically. The `correction_capture` config key is accepted at load and ignored with one notice, like the other removed keys. To remember a correction, ask Wakil to store it with `memory_put` and approve it yourself; `memory_list` (prefix `correction/`, `status: proposed`), `memory_promote`, `memory_forget` and `memory_reject` are the tools that manage the entries a removed capture may have created.

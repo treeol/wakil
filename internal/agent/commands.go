@@ -33,12 +33,8 @@ func SuspendAuto(toolName string, app *App, detail string) string {
 		// Egress consent gate: session context would be sent to an external backend.
 		// Always requires explicit approval — never auto-approved, even in /auto.
 		return "external backend egress (privacy gate)"
-	case "correction_capture":
-		// Correction-capture stores a durable memory entry from user
-		// input. Always requires explicit per-entry approval — never auto-approved,
-		// even in /auto or under a policy "allow" rule. The "never store without
-		// explicit user confirmation" acceptance criterion requires this carve-out.
-		return "correction capture (consent gate)"
+	// (Correction capture was removed in 0.8.4 — the "correction_capture"
+	// SuspendAuto case is gone.)
 	case "save_skill", "update_skill", "forget_skill":
 		// Skill writes are immediately active, global, durable, and
 		// auto-retrieved into every matching turn. Always require explicit
@@ -1412,9 +1408,6 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		}
 		return true, false, func() Msg {
 			result := app.rewind(n)
-			// Record the rewind result so the next user message
-			// can be evaluated as a correction candidate.
-			app.SetLastRewind(&result)
 			app.SaveSession()
 			// Return both a RewoundMsg (for TUI viewport resync) and a
 			// SysNoteMsg (for the user-visible summary). Batch lets the

@@ -1,10 +1,10 @@
 package agent
 
-// datapolicy_test.go covers B3 (correction_capture gate) and B5 (mid-session
-// cache-reset line on /zdr and /region changes).
+// datapolicy_test.go covers B5 (mid-session
+// cache-reset line on /zdr and /region changes). The B3 correction-capture
+// gate tests were removed in 0.8.4 with the feature.
 
 import (
-	"context"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -14,51 +14,18 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-// correctionTestApp builds a parent App with a real memory store and a
-// counting confirmer, wired for correction capture.
-func correctionTestApp(t *testing.T, capture bool) (*App, *int) {
+// testStore opens an in-memory memory store for testing. It lived in
+// correction_test.go (removed in 0.8.4 with correction capture) but is used
+// by the collapse_*_test.go files, so it moved here.
+func testStore(t *testing.T) *memory.Store {
 	t.Helper()
-	confirmed := new(int)
-	store, err := memory.Open(filepath.Join(t.TempDir(), "memory.db"), t.TempDir())
+	dir := t.TempDir()
+	s, err := memory.Open(filepath.Join(dir, "memory.db"), dir)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("memory.Open: %v", err)
 	}
-	app := &App{
-		Cfg:         config.Config{CorrectionCapture: capture},
-		MemoryStore: store,
-		Confirm: func(_, _, _ string, _ bool) bool {
-			*confirmed++
-			return true
-		},
-	}
-	return app, confirmed
-}
-
-// TestCorrectionCapture_OffSkipsDetection: with correction_capture off, even
-// an explicit correction message produces no prompt and no suspension of
-// auto mode.
-func TestCorrectionCapture_OffSkipsDetection(t *testing.T) {
-	app, confirmed := correctionTestApp(t, false)
-	app.SetAutoApprove(true)
-	app.detectAndProposeCorrection(context.Background(), "no, use tabs not spaces")
-	if *confirmed != 0 {
-		t.Errorf("Confirm called %d times with capture off, want 0", *confirmed)
-	}
-	// Correction capture off: detectAndProposeCorrection returned before
-	// any detection ran, so auto mode is untouched.
-	if !app.Consent().AutoApprove {
-		t.Error("auto mode must be untouched when capture is off")
-	}
-}
-
-// TestCorrectionCapture_OnPrompts: with correction_capture on, an explicit
-// correction message produces a confirmation prompt.
-func TestCorrectionCapture_OnPrompts(t *testing.T) {
-	app, confirmed := correctionTestApp(t, true)
-	app.detectAndProposeCorrection(context.Background(), "no, use tabs not spaces")
-	if *confirmed == 0 {
-		t.Error("Confirm must be called for a correction when capture is on")
-	}
+	t.Cleanup(func() { s.Close() })
+	return s
 }
 
 // TestDataSwitch_MidSessionCacheNotice: changing /zdr or /region after the

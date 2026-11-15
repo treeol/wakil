@@ -104,8 +104,7 @@
   "openrouter_region": "off",
   "trusted_local_hosts": [],
 
-  "_comment_correction": "Correction capture: when true, the agent detects user corrections (explicit negation patterns, or a /rewind followed by a related message) and proposes storing them in durable memory for the user to confirm and promote. When false (default), no detection runs, no prompt appears and auto mode is never suspended by a correction.",
-  "correction_capture": false,
+  "_comment_correction": "Correction capture was removed in 0.8.4; a config that still carries correction_capture loads with one notice and the key is ignored.",
 
   "mashura_fallback_model": "",
 

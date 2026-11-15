@@ -866,6 +866,28 @@ func TestLoadConfig_EndpointlessStubIsNoConfig(t *testing.T) {
 	}
 }
 
+// TestLoadConfig_CorrectionCaptureKeyIgnored: a config that still carries
+// correction_capture loads fine (the feature was removed in 0.8.4) and the
+// key does nothing. The one-notice fires once per process, so the test does
+// not assert on stderr text (see the google-notice test for that pattern).
+func TestLoadConfig_CorrectionCaptureKeyIgnored(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	raw := `{"base_url": "http://proxy:11400", "correction_capture": true}`
+	if err := os.WriteFile(cfgPath, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	clearEndpointEnv(t)
+	cfg, err := LoadConfig([]string{"--config", cfgPath, "--sandbox", "direct"})
+	if err != nil {
+		t.Fatalf("a config with correction_capture must still load: %v", err)
+	}
+	if cfg.Endpoint.BaseURL == "" {
+		t.Error("base_url should still resolve")
+	}
+}
+
 // TestLoadConfig_ExampleConfigLoadsUnchanged: config.example.json (which has
 // an endpoints block) loads and resolves its default endpoint.
 func TestLoadConfig_ExampleConfigLoadsUnchanged(t *testing.T) {
