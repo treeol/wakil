@@ -222,7 +222,8 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 // handles the cases where the underlying content actually changed.
 func (m *tuiModel) renderSelection() {
 	off := m.vp.YOffset
-	m.vp.SetContent(m.highlightedContent())
+	sr, sc, er, ec := m.sel.ordered()
+	m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
 	m.vp.SetYOffset(off)
 }
 
@@ -403,8 +404,13 @@ func isBoxBorderLine(s string) bool {
 // selection is active; they return when it clears.
 func (m tuiModel) highlightedContent() string {
 	sr, sc, er, ec := m.sel.ordered()
-	out := make([]string, len(m.plainLines))
-	for i, line := range m.plainLines {
+	// Full-content highlight (no viewport window): used by tests that
+	// assert on the whole highlight, and by refreshViewport's active path
+	// before this windowed optimisation landed. The drag hot path uses
+	// highlightedWindow via renderSelection/refreshViewport.
+	lines := m.plainLines
+	out := make([]string, len(lines))
+	for i, line := range lines {
 		if i < sr || i > er {
 			out[i] = line
 			continue
@@ -418,6 +424,51 @@ func (m tuiModel) highlightedContent() string {
 		out[i] = string(runes[:a]) + sgrReverse + string(runes[a:z+1]) + sgrReset + string(runes[z+1:])
 	}
 	return strings.Join(out, "\n")
+}
+
+// highlightedWindow renders only the visible window of the highlight (plus
+// the selection span), with row references copied unless the row is inside
+// the selection (then one styled string is built). SetContent slices the
+// result in View, so handing it the whole transcript on every drag step
+// pays the full join for the whole session (Part 1 Drag2000: 53.6 ms,
+// 20 MB, 59k allocs at 2000 messages).
+func (m tuiModel) highlightedWindow(sr, sc, er, ec int) string {
+	lines := m.plainLines
+	if len(lines) == 0 {
+		return ""
+	}
+	_, vpH, _ := m.sizes()
+	lo := m.vp.YOffset
+	if lo < 0 {
+		lo = 0
+	}
+	hi := lo + vpH
+	if hi > len(lines) {
+		hi = len(lines)
+	}
+	var sb strings.Builder
+	for i := lo; i < hi; i++ {
+		if i > lo {
+			sb.WriteByte('\n')
+		}
+		line := lines[i]
+		if i < sr || i > er {
+			sb.WriteString(line)
+			continue
+		}
+		runes := []rune(line)
+		a, z, ok := m.sliceRange(i, sr, sc, er, ec, len(runes))
+		if !ok {
+			sb.WriteString(line)
+			continue
+		}
+		sb.WriteString(string(runes[:a]))
+		sb.WriteString(sgrReverse)
+		sb.WriteString(string(runes[a : z+1]))
+		sb.WriteString(sgrReset)
+		sb.WriteString(string(runes[z+1:]))
+	}
+	return sb.String()
 }
 
 // clipboardCmds lists the native clipboard writers we try, in preference

@@ -33,6 +33,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/treeol/wakil/internal/core"
@@ -66,10 +67,10 @@ func benchTranscriptSize(conv []proxy.Message) int {
 // only calls Snapshot() at construction/rotation, not per frame).
 type benchFacade struct {
 	sessionclient.Facade
-	sid   event.SessionID
-	chat  string
-	conv  []proxy.Message
-	cons  sessionclient.Consent
+	sid  event.SessionID
+	chat string
+	conv []proxy.Message
+	cons sessionclient.Consent
 }
 
 func (f *benchFacade) Snapshot() sessionclient.ClientSnapshot {
@@ -86,7 +87,7 @@ func (f *benchFacade) Info() sessionclient.InfoSnapshot {
 	// Real wiring facade cost: walk the conversation on every call.
 	convLen, convSize := len(f.conv), benchTranscriptSize(f.conv)
 	return sessionclient.InfoSnapshot{
-		ChatID:        f.chat,
+		ChatID:         f.chat,
 		EffectiveModel: "ilm",
 		ContextLimit: sessionclient.ContextLimit{
 			NCtx: 32768, Source: "backend",
@@ -241,7 +242,57 @@ func TestBenchHarnessSmoke(t *testing.T) {
 	}
 }
 
-// TestBenchSoak exercises the Part 1 soak: 200 turns with tool calls,
+// TestFrameCostRegression is the Part 2 regression test: a frame
+// (Update + View) at 2000 messages must not exceed 5× the per-op numbers
+// recorded in the Part 1 table (docs/work-0.8.4-progress.md, Part 1
+// numbers, AMD Ryzen 7 PRO 7840U): keypress 1,738,328 ns, stream
+// 1,581,144 ns, wheel 1,557,169 ns, drag 53,589,096 ns (pre-fix).
+// The generous 5× headroom keeps it from flaking on slower machines;
+// the point is to catch a frame that starts growing with session length
+// again, not to enforce today's absolute numbers.
+func TestFrameCostRegression(t *testing.T) {
+	if testing.Short() {
+		t.Skip("frame-cost regression is a CI gate, not a short run")
+	}
+	const maxFactor = 5
+	cases := []struct {
+		name string
+		msg  tea.Msg
+		base int64 // ns/op, Part 1 table
+	}{
+		{"keypress", tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")}, 1_738_328},
+		{"stream", evt(event.KindMessageDelta, event.MessageDelta{Text: " streamed chunk"}, benchPrincipalSID), 1_581_144},
+		{"wheel", tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}, 1_557_169},
+		{"drag", tea.MouseMsg{X: 20, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft}, 53_589_096},
+	}
+	for _, tc := range cases {
+		m := newBenchModel(benchCorpus(2000), 120, 40)
+		if tc.name == "stream" {
+			m.state = stateStreaming
+		}
+		if tc.name == "drag" {
+			m.sel = selection{pressed: true, anchorRow: 0, anchorCol: 0, headRow: 0, headCol: 0}
+		}
+		// Warm + measure: run once to settle caches, then time 20 iters.
+		updated, _ := m.Update(tc.msg)
+		m = updated.(tuiModel)
+		_ = m.View()
+		start := time.Now()
+		const iters = 20
+		for i := 0; i < iters; i++ {
+			updated, _ := m.Update(tc.msg)
+			m = updated.(tuiModel)
+			_ = m.View()
+		}
+		got := int64(time.Since(start)) / iters
+		if got > tc.base*maxFactor {
+			t.Errorf("%s: frame %d ns/op > %dx Part 1 baseline %d ns (limit %d)", tc.name, got, maxFactor, tc.base, tc.base*maxFactor)
+		} else {
+			t.Logf("%s: frame %d ns/op (limit %d)", tc.name, got, tc.base*maxFactor)
+		}
+	}
+}
+
 // 20 rotations through /new and /resume, 10 Mashūra rounds, recording
 // heap, goroutines, live tickers/subscriptions and tabs at start and end.
 //
@@ -255,6 +306,7 @@ func TestBenchHarnessSmoke(t *testing.T) {
 //   - A rotation is a rotationMsg carrying a fresh bench facade; the
 //     model rebuilds items, clears tabs and re-arms nothing — the
 //     numbers at the end show whether anything accumulated.
+//
 // The test asserts the invariants the soak must hold: tabs are cleared
 // on rotation, tick-arm flags are not stuck, and the model keeps
 // rendering correctly after 200 turns.

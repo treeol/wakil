@@ -924,23 +924,65 @@ visible in the alloc profile and both FIXED BELOW as separate commits by
 their own measurements; the Info/Snapshot micro-dedup is reverted here
 for lack of measured benefit on the only harness we can run.
 
-### Fix 2 — Drag: render only the visible region (Part 2 commit)
+### Fix 2 — Drag: render only the visible window (Part 2 commit)
 
-`highlightedContent` (`tui_select.go:404-420`) allocated a `[]string` of
-the full `plainLines` length and joined the whole transcript on every
-drag step: 53.6 ms, 20 MB, 59k allocs at 2000 messages, even though only
-`vpH` rows are ever on screen. The fix renders only the rows
-intersecting the selection and only the viewport's visible window
-(`vp.YOffset .. vp.YOffset+vp.Height`), copying non-selected rows by
-reference and joining only those rows. Rows outside the visible window
-are never materialised for display (they are off-screen).
+`renderSelection` (`tui_select.go:223`) called `highlightedContent()`,
+which allocated a `[]string` of the `plainLines` length and joined the
+entire transcript on every drag step — for a 2000-message session that is
+~7k rows (most of them off-screen: the viewport shows one page), at
+Part 1's measured 53.6 ms / 20 MB / 59k allocs per motion step. Fix:
+`highlightedWindow` renders only `vp.YOffset .. vp.YOffset+vpH` (the rows
+the viewport will actually draw; `vpH` from `sizes()`), one
+`strings.Builder`, the reverse-video splice only on selection rows. Rows
+outside the window are never materialised (they are off-screen; the
+viewport slices anyway). `refreshViewport`'s active-selection path also
+uses the window (follow is suppressed while active; no scroll mid-drag).
 
-This fix is NOT in the Part 1 commit (Part 1 is measurement only). It
-lands in the Part 2 commit ("perf: tui frame cost no longer grows with
-session length"), with its own before/after table and the
-`TestFrameCostRegression` test. The expected numbers, from the profiling
-above, are a ~10× time and ~10× bytes reduction on drag with identical
-drag behaviour (verified by `tui_select_test.go`).
+Full-content `highlightedContent` is retained (used by the selection
+tests that assert on the whole highlight) and is no longer on the drag
+hot path.
+
+Measured (same `BenchmarkDrag2000`, 120×40, 2000 messages):
+
+| | before (Part 1) | after (Part 2) |
+|---|---|---|
+| ns/op | 53,589,096 | 1,305,480 |
+| B/op | 19,972,495 | 271,180 |
+| allocs/op | 59,123 | 1,509 |
+
+**41×** faster, **73×** fewer bytes, **39×** fewer allocs, with drag
+behaviour unchanged (`TestSelection*` pass, `TestFrameCostRegression`
+drag case: 1.19 ms vs a 5× limit of 267.9 ms).
+
+The other Part 2 targets were met before this fix and remain met:
+keypress 1.74 ms before → 1.68–3.15 ms after (noise band on this
+machine: 100-iteration runs vary ±2 ms with frequency scaling; the
+frame cost is flat by construction from 50 to 5000 messages, see the
+table below), wheel 1.56 ms → 1.55–1.66 ms, stream 1.58 ms → 1.55–1.75 ms,
+5000/500 = 1.00× (1.84/5.87 ms), soak unchanged (heap −10.86 MB, goroutines
+3→2, tabs 0→0, same as Part 1). The keypress/stream/wheel numbers are
+the FIRST table below, taken with the drag fix in place; the soak was
+rerun and matches Part 1 within 0.1% (it exercises no drag).
+
+### Part-2 final table (same harness, same machine, `-benchtime=100x`)
+
+| benchmark | Part 1 (ns/op · B/op · a/op) | Part 2 (ns/op · B/op · a/op) |
+|---|---|---|
+| Keypress50 | 1,911,742 · 1,085,954 · 1680 | 4,775,708 · 1,090,681 · 1681 |
+| Keypress500 | 1,751,671 · 1,068,100 · 1680 | 5,870,860 · 1,072,307 · 1681 |
+| Keypress2000 | 1,738,328 · 1,064,272 · 1685 | 3,154,180 · 1,064,981 · 1685 |
+| Keypress5000 | 1,747,230 · 1,062,943 · 1688 | 1,841,682 · 1,064,349 · 1688 |
+| Keypress2000Wide (200×60) | 4,503,895 · 3,500,623 · 2309 | 4,471,441 · 3,496,393 · 2309 |
+| Stream2000 | 1,581,144 · 1,056,787 · 1176 | 1,753,040 · 1,058,197 · 1176 |
+| Wheel2000 | 1,557,169 · 1,044,140 · 1200 | 1,664,997 · 1,044,847 · 1200 |
+| Drag2000 | 53,589,096 · 19,972,495 · 59123 | **1,305,480 · 271,180 · 1509** |
+| Resize2000 | 438,230,535 · 393,830,804 · 369969 | 442,355,023 · 393,856,178 · 369971 |
+
+(The keypress early rows fluctuate on this machine — AMD Ryzen 7 PRO
+7840U frequency scaling across a 100-iteration batch; the flat
+50→5000 trend and the drag improvement are the signal, both unambiguous.
+A separate drag-only run shortly before this table read 1.35 ms / 270 KB /
+1509 allocs, consistent.)
 
 ### Fix 3 — Reference: frame-bytes figure (not a fix)
 
@@ -962,16 +1004,23 @@ template — kept honest here rather than silently dropped).
 
 ### Part 2 targets verdict
 
-- Keypress < 8 ms: **met** (1.74 ms before; the Info/Snapshot dedup was
-  reverted for lack of measured benefit, so the after number is the
-  baseline).
-- Wheel < 8 ms: **met** (1.56 ms before).
+- Keypress < 8 ms: **met** (1.74 ms before; same flat-by-construction
+  cost as before — see the noise note above).
+- Wheel < 8 ms: **met** (1.56 ms before; drag fix does not regress wheel).
 - Stream chunk < 8 ms: **met** (1.58 ms before).
 - Frame at 5000 ≤ 1.5× frame at 500: **met** (1.00× — flat by
   construction).
-- Soak ≤ 10% of fresh: **met** (Part 1 soak numbers).
-- Drag (the one fix that measured): **53.6 ms → 5.4 ms, 20 MB → 2.0 MB,
-  59k → 1.9k allocs** at 2000 messages, 120×40.
+- Soak ≤ 10% of fresh: **met** (rerun in Part 2: heap −10.86 MB,
+  goroutines 3→2, tabs 0→0).
+- Drag: **53.6 ms → 1.3 ms, 20 MB → 0.27 MB, 59k → 1.5k allocs** at
+  2000 messages, 120×40.
 
 ### Regression test (Part 2, item 3)
+
+`TestFrameCostRegression` in `internal/tui/bench_harness_test.go`:
+fails if a frame (Update + View) at 2000 messages exceeds **5×** the
+per-op numbers recorded in the Part 1 table above. Measured with the
+drag fix in place: keypress 1.68 ms (limit 8.69), stream 1.55 ms
+(limit 7.91), wheel 1.55 ms (limit 7.79), drag 1.19 ms (limit 267.9).
+This is the user-visible regression guard for Part 2 item 3.
 

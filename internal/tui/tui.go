@@ -2325,14 +2325,21 @@ func (m *tuiModel) refreshViewport() {
 	// SetContent below (which may change maxYOffset via rewrap).
 	oldOffset := m.vp.YOffset
 
-	styled := m.prefixStyled
-	if len(tailStyled) > 0 && len(m.prefixStyled) > 0 {
-		styled += "\n"
-	}
-	styled += tailStyled
+	// highlightedContent() builds the whole content; SetContent on the
+	// viewport then slices it on View. We pass only the visible window (plus
+	// the selection span) so a drag across a long session does not
+	// re-join the entire transcript on every motion step. The viewport's
+	// TotalLineCount changes, but renderSelection pins YOffset and no
+	// scroll happens mid-drag (follow is suppressed while active).
 	if m.sel.active {
-		m.vp.SetContent(m.highlightedContent())
+		sr, sc, er, ec := m.sel.ordered()
+		m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
 	} else {
+		styled := m.prefixStyled
+		if len(tailStyled) > 0 && len(m.prefixStyled) > 0 {
+			styled += "\n"
+		}
+		styled += tailStyled
 		m.vp.SetContent(styled)
 	}
 	// Follow or preserve position after the content swap. SetContent self-clamps
