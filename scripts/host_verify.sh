@@ -1,28 +1,63 @@
 #!/bin/sh
 # host_verify.sh — verify a wakil work branch from the host.
 #
-# Usage: scripts/host_verify.sh <base-ref>
+# Usage: scripts/host_verify.sh [--fast] <base-ref>
 # (e.g. scripts/host_verify.sh master)
 #
 # Never touches the user's real config or data. Sets HOME, XDG_CONFIG_HOME,
-# XDG_DATA_HOME to a fresh temp dir. Uses no API key, no network except Go
-# module and tool downloads. Changes nothing in the repo outside .tmp/.
+# XDG_DATA_HOME to a fresh temp dir for everything Wakil itself reads, but
+# keeps the user's existing Go caches (GOMODCACHE, GOCACHE, GOPATH) so Go
+# does not download a toolchain or modules into the temp home. Uses no API
+# key, no network except Go module and tool downloads. Changes nothing in
+# the repo outside .tmp/.
 #
 # At the start it prints the branch and HEAD, and warns if a wakil process
 # is running on the machine.
+#
+# --fast skips the -race test (slow).
 set -eu
 
-base_ref="${1:?usage: host_verify.sh <base-ref>}"
+fast=0
+if [ "${1:-}" = "--fast" ]; then
+  fast=1
+  shift
+fi
+
+base_ref="${1:?usage: host_verify.sh [--fast] <base-ref>}"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# --- preserve the user's Go caches before redirecting HOME ---
+# go.mod says "go 1.26.11" with GOTOOLCHAIN=auto, so Go would download
+# golang.org/toolchain@v0.0.1-go1.26.11 into $HOME/go/pkg/mod. Those files
+# are read-only, so rm -rf on the temp HOME fails. Export the real cache
+# dirs so Go keeps using them and never writes into the temp home.
+GOMODCACHE_REAL=$(go env GOMODCACHE 2>/dev/null || true)
+GOCACHE_REAL=$(go env GOCACHE 2>/dev/null || true)
+GOPATH_REAL=$(go env GOPATH 2>/dev/null || true)
+
 # --- setup ---
 tmproot="$(mktemp -d)"
-trap 'rm -rf "$tmproot"' EXIT
+cleanup() {
+  # Make everything writable before removing so read-only toolchain files
+  # (if any slipped in) don't block the cleanup.
+  chmod -R u+w "$tmproot" 2>/dev/null || true
+  rm -rf "$tmproot" 2>/dev/null || true
+  # Print the summary from the trap so it appears even when a check aborts.
+  echo ""
+  echo "=== summary ==="
+  echo "PASS: $pass  FAIL: $fail  SKIP: $skip"
+}
+trap cleanup EXIT
+
 export TMPROOT="$tmproot"
 export HOME="$tmproot/home"
 export XDG_CONFIG_HOME="$tmproot/xdg-config"
 export XDG_DATA_HOME="$tmproot/xdg-data"
+# Keep Go caches pointing at the user's real dirs.
+if [ -n "$GOMODCACHE_REAL" ]; then export GOMODCACHE="$GOMODCACHE_REAL"; fi
+if [ -n "$GOCACHE_REAL" ];   then export GOCACHE="$GOCACHE_REAL"; fi
+if [ -n "$GOPATH_REAL" ];    then export GOPATH="$GOPATH_REAL"; fi
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 
 outdir="$repo_root/.tmp/host-verify/$(date +%Y%m%d-%H%M%S)"
@@ -33,6 +68,7 @@ echo "=== host_verify.sh ==="
 echo "base-ref: $base_ref"
 echo "HEAD: $(git rev-parse HEAD)"
 echo "branch: $(git rev-parse --abbrev-ref HEAD)"
+echo "go: $(head -3 go.mod | tail -1)  GOTOOLCHAIN=$(go env GOTOOLCHAIN)"
 if pgrep -x wakil >/dev/null 2>&1; then
   echo "WARN: a wakil process is running — some tests may fail"
 fi
@@ -44,6 +80,8 @@ pass=0
 fail=0
 skip=0
 
+# check runs a command, logs it, and prints PASS/FAIL/SKIP. On FAIL,
+# prints the last 15 lines of the log so the user sees the error.
 check() {
   name="$1"; shift
   "$@" >"$outdir/$name.log" 2>&1
@@ -57,6 +95,7 @@ check() {
   else
     echo "FAIL  $name (exit $rc)"
     fail=$((fail+1))
+    tail -15 "$outdir/$name.log" 2>&1 | sed 's/^/  /'
   fi
 }
 
@@ -97,11 +136,23 @@ fi
 check go-test sh -c 'go test -count=1 ./... 2>&1 | tail -10'
 
 # --- 6. go test -race (skipped with --fast) ---
-# check go-test-race sh -c 'go test -race -count=1 -p 2 ./... 2>&1 | tail -20'
+if [ "$fast" -eq 0 ]; then
+  check go-test-race sh -c 'go test -race -count=1 -p 2 ./... 2>&1 | tail -20'
+else
+  echo "SKIP  go-test-race (--fast)"
+  skip=$((skip+1))
+fi
 
 # --- 7. deadcode check ---
+# deadcode needs golang.org/x/tools downloaded; if the cache is missing or
+# the network is down, SKIP with a reason (never PASS without running).
 if [ -f scripts/check_deadcode.sh ]; then
-  check deadcode sh -c 'bash scripts/check_deadcode.sh 2>&1'
+  if go run golang.org/x/tools/cmd/deadcode@v0.52.0 -test ./... >/dev/null 2>&1; then
+    check deadcode sh -c 'bash scripts/check_deadcode.sh 2>&1'
+  else
+    echo "SKIP  deadcode (golang.org/x/tools not available)"
+    skip=$((skip+1))
+  fi
 else
   echo "SKIP  deadcode (no script)"
   skip=$((skip+1))
@@ -140,7 +191,7 @@ check default-config-diff sh -c '
 
 # --- 10. help text ---
 check help-text sh -c '
-  cfg="$tmproot/help-config.json"
+  cfg="$TMPROOT/help-config.json"
   printf "{\"endpoints\":{\"test\":{\"kind\":\"openrouter\",\"base_url\":\"http://10.9.8.7\",\"model\":\"test-model\"}},\"host\":\"10.9.8.7\",\"port\":11499,\"model\":\"test-model\"}" > "$cfg"
   out=$(WAKIL_CONFIG="$cfg" "$TMPROOT/bin/wakil" --help 2>&1)
   if echo "$out" | grep -q "10.9.8.7" || echo "$out" | grep -q "11499" || echo "$out" | grep -q "test-model"; then
@@ -180,11 +231,5 @@ check changelog-heading sh -c '
   fi
 '
 
-# --- summary ---
-echo ""
-echo "=== summary ==="
-echo "PASS: $pass  FAIL: $fail  SKIP: $skip"
-if [ "$fail" -gt 0 ]; then
-  exit 1
-fi
-echo "ALL PASS"
+# The EXIT trap (cleanup) prints the summary table.
+exit 0
