@@ -352,6 +352,44 @@ func reasoningChunk(s string) string {
 	return fmt.Sprintf(`{"choices":[{"delta":{"reasoning_content":%q},"finish_reason":null}]}`, s)
 }
 
+// TestSubagentMainOnlyToolsRefused drives the main-only tools through the real
+// Send path with IsSubagent=true. Each tool must be refused with a
+// "main-agent only" message before reaching the Confirm gate.
+func TestSubagentMainOnlyToolsRefused(t *testing.T) {
+	// Main-only tool families: memory promote/reject/forget, skill
+	// save/update/forget, skill template apply/capture, staging bridge.
+	mainOnly := []struct {
+		name string
+		args string
+	}{
+		{"memory_promote", `{"id":1}`},
+		{"memory_reject", `{"id":1,"reason":"test"}`},
+		{"memory_forget", `{"key":"x"}`},
+		{"memory_promote_from_staging", `{"staging_key":"sub/k","key":"arch/k","kind":"note"}`},
+		{"save_skill", `{"key":"k","value":"v"}`},
+		{"update_skill", `{"key":"k","value":"v"}`},
+		{"forget_skill", `{"key":"k"}`},
+		{"apply_skill_template", `{"key":"swarm"}`},
+		{"capture_skill_template", `{"key":"x","paths":["a"]}`},
+	}
+
+	for _, tc := range mainOnly {
+		srv := sseServer(t, toolCallFrames("c1", tc.name, tc.args), []string{contentChunk("done")})
+		defer srv.Close()
+		fexec := newFakeExecutor()
+		prompted := ""
+		app := newTestApp(srv.URL, fexec, func(toolName, _, _ string, _ bool) bool {
+			prompted = toolName
+			return true // auto-approve (should never be reached)
+		})
+		app.IsSubagent = true
+		_, _ = app.Send(context.Background(), "go")
+		if prompted != "" {
+			t.Errorf("subagent %q reached the Confirm gate (prompted=%q) — must be refused before Confirm", tc.name, prompted)
+		}
+	}
+}
+
 // TestReasoningNotInMessage verifies that reasoning_content deltas reach the
 // reasoningSink but are never included in the returned Message content.
 func TestReasoningNotInMessage(t *testing.T) {
