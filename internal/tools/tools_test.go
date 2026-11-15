@@ -74,7 +74,6 @@ func TestDefaultTools_CwdInDescription(t *testing.T) {
 	}
 }
 
-
 // TestValidCapability verifies capability validation.
 func TestValidCapability(t *testing.T) {
 	valid := []string{CapabilityDiscovery, CapabilityEdit, CapabilityTools}

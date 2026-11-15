@@ -137,11 +137,16 @@ const (
 
 // grantEligibleTools is the session-client's grant allowlist, mirrored in
 // agent/grants.go. TestGrantEligibilityParity (agent/grants_test.go) checks
-// the two copies match. Deletes, moves, and external-backend egress are never
-// eligible. For run_shell/run_background, eligibility in this set is
-// necessary but not sufficient — the per-call destructive-command exclusion
-// is computed agent-side (agent.GrantEligibleForCall) and carried in
-// ApprovalRequest.GrantEligible so the TUI never re-derives it.
+// the two copies match. Both must list the same tools; the agent's
+// IsGrantEligible reads its own copy, and this one exists so the parity
+// test can assert they stay in sync. Deletes, moves, and external-backend
+// egress are never eligible. For run_shell/run_background, eligibility
+// in this set is necessary but not sufficient — the per-call
+// destructive-command exclusion is computed agent-side
+// (agent.GrantEligibleForCall) and carried in ApprovalRequest.GrantEligible
+// so the TUI never re-derives it.
+//
+//nolint:unused — mirror of agent.grantEligibleTools; read by TestGrantEligibilityParity
 var grantEligibleTools = map[string]bool{
 	"read_file":         true,
 	"read_file_full":    true,

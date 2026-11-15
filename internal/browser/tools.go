@@ -120,7 +120,6 @@ func BrowserTools() []proxy.Tool {
 	}
 }
 
-
 // browserOps is the interface that *Manager satisfies. It covers only the
 // operations dispatched by tool handlers — Close is lifecycle, not a tool op.
 // This seam allows testing dispatch + argument validation with a fake,
