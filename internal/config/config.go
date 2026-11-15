@@ -1455,6 +1455,50 @@ type LSPServer struct {
 	InitOptions map[string]interface{} `json:"init_options,omitempty"`
 }
 
+// hideOverlaidDefaults resets the printed "(default ...)" of every flag on
+// fs to the sentinel DefaultConfig() would register for the sentinel field,
+// so --help shows only built-in defaults. Flags bind directly to the
+// overlaid cfg, whose values would otherwise be shown as if built in —
+// including a user's API key. The sentinel table name→sentinel echoes
+// DefaultConfig(); "" (and false/0) prints no default at all. A flag missing
+// from the table is reset to its zero value text, so a future flag cannot
+// leak a user's value by accident.
+func hideOverlaidDefaults(fs *flag.FlagSet) {
+	builtin := map[string]string{
+		"base-url":      "",
+		"searxng-url":   "",
+		"mention-base":  "",
+		"host":          "",
+		"port":          "0",
+		"api-key":       "",
+		"model":         DefaultConfig().Model,
+		"exec":          "",
+		"sandbox":       "",
+		"output-mode":   string(DefaultConfig().OutputMode),
+		"sandbox-image": "",
+		"image":         "",
+		"attach-image":  "",
+		"workdir":       "",
+		"host-workdir":  "",
+		"docker-sock":   "false",
+		"ssh-signing":   "",
+		"config":        "",
+		"resume":        "false",
+		"resume-id":     "",
+		"list-sessions": "false",
+		"all":           "false",
+		"auto":          "false",
+		"trace":         "false",
+		"trace-dir":     "",
+		"context-mode":  DefaultContextMode,
+		"prompt-mode":   PromptModeFull,
+		"think":         "",
+	}
+	fs.VisitAll(func(f *flag.Flag) {
+		f.DefValue = builtin[f.Name]
+	})
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Model:    "ilm",
@@ -2083,12 +2127,18 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.PromptMode, "WAKIL_PROMPT_MODE")
 
 	// 3) flags (highest precedence)
+	//
+	// Flags bind directly to cfg (which already carries file+env values), so
+	// Parse layers them without temp-variable copy-back. The help printer
+	// would then show a user's own config/env values as "(default ...)", so
+	// after registration the endpoint flags' printed defaults are reset to
+	// the true built-in defaults below. Runtime precedence is untouched.
 	fs := flag.NewFlagSet("wakil", flag.ContinueOnError)
-	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "ilm proxy base URL (overrides host/port)")
+	fs.StringVar(&cfg.BaseURL, "base-url", cfg.BaseURL, "endpoint base URL (overrides host and port)")
 	fs.StringVar(&cfg.SearXngURL, "searxng-url", cfg.SearXngURL, "SearXNG base URL (enables native searxng_search tool)")
 	fs.StringVar(&cfg.MentionBase, "mention-base", cfg.MentionBase, "base directory for @ file mentions (default: current directory)")
-	fs.StringVar(&cfg.Host, "host", cfg.Host, "ilm proxy host (alternative to base-url)")
-	fs.IntVar(&cfg.Port, "port", cfg.Port, "ilm proxy port (used with --host, default 11400)")
+	fs.StringVar(&cfg.Host, "host", cfg.Host, "endpoint host (alternative to base-url)")
+	fs.IntVar(&cfg.Port, "port", cfg.Port, "endpoint port (used with --host, default 11400)")
 	fs.StringVar(&cfg.APIKey, "api-key", cfg.APIKey, "API key (sent as Bearer token)")
 	fs.StringVar(&cfg.Model, "model", cfg.Model, "model name")
 	fs.StringVar(&cfg.ExecMode, "exec", cfg.ExecMode, "DEPRECATED alias of --sandbox: docker|direct")
@@ -2113,6 +2163,12 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: long-session (default, finished requests collapsed to Q+A with archive pointers) | standard (full history sent)")
 	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
 	fs.StringVar(&cfg.ThinkEffort, "think", "", "set the reasoning/thinking effort level for the main model: off|none|minimal|low|medium|high|xhigh|max (session-scoped; overrides config and /think)")
+	// Help must show only built-in defaults, never the user's own file/env
+	// values that cfg currently carries. Reset every printed default to the
+	// sentinel that DefaultConfig() would register so --help looks the same
+	// with or without a config. The bound values are unchanged; Parse only
+	// writes when the flag is given.
+	hideOverlaidDefaults(fs)
 	fs.Usage = func() {
 		out := fs.Output()
 		fmt.Fprintln(out, "Usage: wakil [flags] [workspace-path]")

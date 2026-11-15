@@ -154,7 +154,7 @@
 
   "mcp_servers": [],
 
-  "_comment_search": "Native web search. SearXNG (self-hosted) or Google Custom Search. Both built-in — no external binaries.",
+  "_comment_search": "Native web search. SearXNG (self-hosted). Built in — no external binaries.",
 
   "searxng_url": "",
 

@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -696,6 +697,113 @@ func clearEndpointEnv(t *testing.T) {
 	for _, k := range []string{"ILM_BASE_URL", "WAKIL_BASE_URL", "ILM_HOST", "WAKIL_HOST", "ILM_MODEL", "WAKIL_MODEL"} {
 		t.Setenv(k, "")
 	}
+}
+
+// TestHelpShowsOnlyBuiltInDefaults: --help (the LoadConfig FlagSet's
+// PrintDefaults output) must not contain the user's own file/env values as
+// "(default ...)". The sentinel config sets host/port/model/api-key via the
+// file and env; none of those values may appear in the help text. The
+// behaviour is observable only through the FlagSet's output: LoadConfig
+// writes it when it sees -h/--help, so the test captures stderr and then
+// asserts on the parsed error path.
+func TestHelpShowsOnlyBuiltInDefaults(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.json")
+	body := `{
+  "host": "10.9.8.7",
+  "port": 11499,
+  "model": "sentinel-model-xyz",
+  "api_key": "sentinel-secret-xyz"
+}
+`
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", t.TempDir())
+	clearEndpointEnv(t)
+	t.Setenv("WAKIL_HOST", "10.6.5.4")
+
+	out, err := captureStderr(t, func() {
+		_, _ = LoadConfig([]string{"--config", cfgPath, "--sandbox", "direct", "-h"})
+	})
+	_ = err
+	for _, want := range []string{
+		"-host string",
+		"-port int",
+		"-base-url string",
+		"-model string",
+		"endpoint host",
+		"endpoint port (used with --host, default 11400)",
+		"endpoint base URL (overrides host and port)",
+		`(default "ilm")`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("help output missing %q:\n%s", want, out)
+		}
+	}
+	for _, leak := range []string{"10.9.8.7", "11499", "sentinel-model-xyz", "sentinel-secret-xyz", "10.6.5.4", "ilm proxy"} {
+		if strings.Contains(out, leak) {
+			t.Errorf("help output leaks user value %q (shown as a default):\n%s", leak, out)
+		}
+	}
+	// Without a config, help does not change apart from the wording above, so
+	// its flag list is identical and still carries only `(default "ilm")`.
+}
+
+// TestHelpDefaultsUnchangedWithoutConfig: with no file/env, the help output
+// equals today's help apart from the neutral WORDING — this Guards the
+// "unchanged except wording" acceptance clause.
+func TestHelpDefaultsUnchangedWithoutConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	clearEndpointEnv(t)
+	t.Setenv("WAKIL_CONFIG", filepath.Join(t.TempDir(), "missing.json"))
+
+	out, _ := captureStderr(t, func() {
+		_, _ = LoadConfig([]string{"--sandbox", "direct", "-h"})
+	})
+	if !strings.Contains(out, `(default "ilm")`) {
+		t.Errorf("help should keep (default \"ilm\"): %s", out)
+	}
+	if strings.Contains(out, "ilm proxy") {
+		t.Errorf("help should not mention the ilm proxy: %s", out)
+	}
+}
+
+// captureStderr runs fn with os.Stderr redirected to a pipe and returns what
+// was written there. LoadConfig's FlagSet writes help to its Output(), which
+// defaults to stderr, so capturing stderr is the only way to observe it.
+func captureStderr(t *testing.T, fn func()) (string, error) {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+	var runErr error
+	func() {
+		defer func() {
+			if rec := recover(); rec != nil {
+				runErr = fmt.Errorf("panic: %v", rec)
+			}
+		}()
+		fn()
+	}()
+	_ = w.Close()
+	os.Stderr = orig
+	var buf strings.Builder
+	bufStr := make([]byte, 8192)
+	for {
+		n, rerr := r.Read(bufStr)
+		if n > 0 {
+			buf.Write(bufStr[:n])
+		}
+		if rerr != nil {
+			break
+		}
+	}
+	return buf.String(), runErr
 }
 
 // TestLoadConfig_MissingConfigWritesNothing: a missing default config yields a

@@ -545,7 +545,7 @@ func selinuxDockerSocketHint() string {
 // past the deadline if a child process holds the stdout pipe.
 //
 // On deadline: the error message names the operation and suggests checking the
-// daemon, so the user sees "docker run timed out (120s) — is the Docker daemon
+// host container runtime, so the user sees "docker run timed out (120s) — is the Docker
 // responsive? Check: docker ps" instead of "signal: killed".
 func dockerCmd(timeout time.Duration, args ...string) (out string, timedOut bool, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)

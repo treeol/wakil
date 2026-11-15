@@ -15,7 +15,7 @@ import (
 )
 
 // cmdRunner runs a container-runtime CLI command and returns its combined
-// output. Injected so tests don't need a real daemon.
+// output. Injected so tests don't need a real container runtime.
 type cmdRunner func(ctx context.Context, name string, args ...string) (string, error)
 
 func execRunner(ctx context.Context, name string, args ...string) (string, error) {

@@ -85,6 +85,17 @@ change. Nothing is written.
 
 `lsp_enabled` is config-file only, no flag — see [LSP code intelligence](features.md#lsp-code-intelligence).
 
+## Environment variables (not tied to a config key)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WAKIL_SESSIONS_DIR` | `~/.local/share/wakil/sessions` *(or `$XDG_DATA_HOME/wakil/sessions`)* | Directory for saved session transcripts. Used only by tests and operators who must place sessions explicitly. |
+| `WAKIL_HISTORY_FILE` | `$XDG_DATA_HOME/wakil/input_history` | File holding the interactive prompt line history. |
+| `WAKIL_KVR_DISABLED` | `false` | Disable the staging KV store *(the config key `kvr_disabled` is the same switch)*. |
+| `WAYLAND_DISPLAY` | *unset* | Selects the Wayland clipboard transport (`wl-paste`) for image clipboard reads; `DISPLAY` selects the X11 transport. |
+
+These are operator/test variables: they have no config-file key, so the config-docs check does not list them. `WAKIL_SESSIONS_DIR` is read by the session store (`internal/agent/session.go`, `internal/tools/toolcap.go`); `WAKIL_HISTORY_FILE` by the TUI history window (`internal/tui/history.go`); `WAKIL_KVR_DISABLED` by the config loader; `WAYLAND_DISPLAY` by the clipboard reader.
+
 ## Endpoints
 
 The `endpoints` block names each server wakil can talk to;
