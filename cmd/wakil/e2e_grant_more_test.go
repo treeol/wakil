@@ -213,6 +213,15 @@ func TestE2EGrantSurvivesResume(t *testing.T) {
 	}
 
 	e.submit("charlie three")
+	// Resume replays completed-turn events into a new host session. Do
+	// not mistake those historical events for this write's completion.
+	deadline = time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(filepath.Join(e.workdir, "c.txt")); err == nil && string(data) == "C" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 	e2eWaitTurns(t, e, 3)
 	e2eNotAsked(t, e, 1)
 	e2eFileIs(t, e, filepath.Join(e.workdir, "c.txt"), "C")
