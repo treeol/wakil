@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`--help` shows only built-in defaults.** The help output no longer shows your config-file or environment values as "(default …)" for endpoint host, port and model; those flags are now registered before your values are loaded. The endpoint flags are also worded neutrally ("endpoint host", "endpoint port (used with --host, default 11400)", "endpoint base URL (overrides host and port)").
+- **Automatic Mashūra rounds state their counts plainly.** The header given to the model now reads e.g. "[automatic mashura round one — Wakil started this round automatically; you did not call it two panel members, cap 2 per turn]", so one round with two members is never described as two rounds.
+- **Masked exit codes are recorded as failures.** A `run_shell` command that ends in an echo of `$?` and prints a non-zero `exit=` value is now recorded as failed in the struggle trace and shown to the model as such; nothing else is guessed from output text.
+- **Session start names the work folder.** When the work folder is not the current directory, the start banner adds one line naming it and says whether the workspace argument, a config `workdir` or `WAKIL_WORKDIR` set it. (No change to which folder is chosen.)
+
+### Removed
+
+- **Correction capture is removed.** Automatic detection of your corrections, the confirmation prompt and the `/auto` suspension carve-out are gone, and the `correction_capture` config key is accepted at load and ignored with one notice. Memory entries the feature created are untouched: list pending proposals with `memory_list` (prefix `correction/`, status `proposed`), refuse them with `memory_reject`, delete active ones with `memory_forget`. The general memory tools are unchanged.
+
+### Changed behaviour
+
+- **Release notes come from the CHANGELOG.** `scripts/release_notes.sh <version>` prints the CHANGELOG section for a release; the release workflow uses it for the tag's version and falls back to the git-generated notes when the section is missing, and CI exercises that path on every push.
+
 ## [0.8.3] - 2026-11-15
 
 ### Fixed

@@ -29,12 +29,12 @@ if [ ! -f "$changelog" ]; then
 fi
 
 # Extract from the version heading up to (not including) the next "^## "
-# line. State machine: print from the match; stop at the next "## " line.
-# Sections are delimited by top-level headings, which start at column 0 and
-# are exactly two '#'s + a space ("## [x]").
+# line. Turn on at a heading iff it is exactly this version ("## [X.Y.Z]"
+# or "## [X.Y.Z] - <date>"), so a shorter request like "0.8" never matches
+# "0.8.3". Sections are delimited by top-level headings ("## " at column 0).
 body=$(awk -v ver="$ver" '
-  $0 ~ "^## \\[" ver "\\]" { found=1 }
-  found && $0 ~ /^## / && $0 !~ "^## \\[" ver "\\]" { exit }
+  $0 ~ ("^## \\[" ver "\\]( -|$)") { found=1 }
+  found && $0 ~ /^## / && $0 !~ ("^## \\[" ver "\\]( -|$)") { exit }
   found { print }
 ' "$changelog")
 
