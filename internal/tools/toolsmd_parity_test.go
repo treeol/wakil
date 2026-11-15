@@ -20,18 +20,18 @@ import (
 // confirmation before running. The list mirrors the tool handlers that call
 // a.Confirm (see TestGatedToolListMatchesHandlers).
 var gatedToolList = map[string]bool{
-	"run_shell":             true,
-	"write_file":            true,
-	"write_binary_file":     true,
-	"edit_file":             true,
-	"delete_file":           true,
-	"move_file":             true,
-	"run_background":        true,
-	"kill_process":          true,
-	"save_skill":            true,
-	"update_skill":          true,
-	"forget_skill":          true,
-	"apply_skill_template":  true,
+	"run_shell":              true,
+	"write_file":             true,
+	"write_binary_file":      true,
+	"edit_file":              true,
+	"delete_file":            true,
+	"move_file":              true,
+	"run_background":         true,
+	"kill_process":           true,
+	"save_skill":             true,
+	"update_skill":           true,
+	"forget_skill":           true,
+	"apply_skill_template":   true,
 	"capture_skill_template": true,
 	// open_url opens a URL on the host desktop; the query string can carry
 	// data out, and every other outbound path needs consent.
@@ -116,10 +116,10 @@ func toolCatalogue() []proxy.Tool {
 func TestToolsMdParity(t *testing.T) {
 	data, err := os.ReadFile("../../docs/tools.md")
 	if err != nil {
-		t.Skipf("tools.md not found from package dir (running from module root?): %v; trying ./docs/tools.md", err)
+		// Running from module root: try the direct path before failing.
 		data, err = os.ReadFile("docs/tools.md")
 		if err != nil {
-			t.Fatalf("cannot read docs/tools.md: %v", err)
+			t.Fatalf("cannot read docs/tools.md (tried ../../docs/tools.md and docs/tools.md): %v", err)
 		}
 	}
 	text := string(data)
