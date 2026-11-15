@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -50,35 +49,6 @@ func (a *App) transportClient() *proxy.Client {
 		return &proxy.Client{BaseURL: oracleEndpointHook, ZDR: a.EffectiveZDR(), Region: a.EffectiveRegion(), TrustedLocalHosts: a.Cfg.TrustedLocalHosts}
 	}
 	return &proxy.Client{BaseURL: "https://openrouter.ai/api/v1/chat/completions", ZDR: a.EffectiveZDR(), Region: a.EffectiveRegion(), TrustedLocalHosts: a.Cfg.TrustedLocalHosts}
-}
-
-// AnthropicRemovedNotice is the one-line notice shown once per session when a
-// configured Anthropic API key is present. Direct Anthropic access was removed:
-// Mashūra uses the configured backend (OpenRouter), so the key is ignored.
-const AnthropicRemovedNotice = "direct Anthropic access was removed; the key is ignored, Mashūra uses the configured backend"
-
-// anthropicNoticeOnce guarantees the notice fires at most once per process
-// (one session). The value is never printed or logged.
-var anthropicNoticeOnce sync.Once
-
-// NoteAnthropicKeyIgnored checks whether an Anthropic API key is configured
-// (a variable naming a non-empty env value) and, if so, prints the removal
-// notice once to out. It NEVER prints the key or the env var's value. Callers
-// invoke it the first time a panel resolves an anthropic: member.
-//
-// NOTE (Group 4, L7): it is currently uncalled — the only caller (in
-// mashuraPanelKeys) was removed in 0.8.4 when its readability was reviewed.
-// It stays because OracleAPIKeyEnv is still read at wiring/facade.go:289 and
-// agent/mashura.go:825, and because a panel resolving an anthropic: member
-// without the notice would leave users on a stale assumption. Wire it again
-// (or delete it deliberately) rather than letting it sit dead.
-func NoteAnthropicKeyIgnored(out interface{ Write([]byte) (int, error) }, envVar string) {
-	if envVar == "" || os.Getenv(envVar) == "" {
-		return
-	}
-	anthropicNoticeOnce.Do(func() {
-		fmt.Fprintln(out, AnthropicRemovedNotice)
-	})
 }
 
 // Mashūra counsel tools. Each
