@@ -22,6 +22,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Release notes come from the CHANGELOG.** `scripts/release_notes.sh <version>` prints the CHANGELOG section for a release; the release workflow uses it for the tag's version and falls back to the git-generated notes when the section is missing, and CI exercises that path on every push.
 
+### Removed (dead-code pass)
+
+- **Gated-tool list consolidated.** The separate `GatedTool` type and `Is*Tool` classifiers (IsMemoryTool, IsSkillTool, IsBrowserTool, etc.) are removed; `gatedToolList` in `toolsmd_parity_test.go` is the single source. `ShouldGateEvenWithAutoApprove` is dropped in favour of testing `SuspendAuto` directly.
+- **Skill template wrappers dropped.** `resolveTemplateParams`, `renderTemplate`, `joinSkillTemplate` are removed; tests use the scoped internals (`resolveParamsScoped`, `renderSelection`, `serializeTemplateSection`) the production handlers call.
+- **Twenty-eight unreachable functions removed.** deadcode@v0.52.0 reported 92 unreachable; 28 with zero non-test references were removed (e.g. `App.mashuraWatchdogTimeout`, `DetectStruggle`, `ParseLevel`, `NewSessionID`), 24 were kept on an allow list (test-support, intended seams, API surfaces like `DocumentChange.UnmarshalJSON`).
+- **Unreachable-code CI check added.** `scripts/check_deadcode.sh` runs deadcode@v0.52.0 and fails when a reported function is not in `scripts/deadcode_allow.txt`. The allow list holds the kept symbols with a short reason each.
+
 ## [0.8.3] - 2026-11-15
 
 ### Fixed
