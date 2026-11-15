@@ -843,8 +843,8 @@ func flowSegmentsN(segs []string, w, maxRows int) []string {
 	flush()
 	if dropped {
 		last := rows[len(rows)-1]
-		if lipgloss.Width(last)+1 > w {
-			last = ansi.Truncate(last, w-1, "")
+		if lipgloss.Width(last)+len("…") > w {
+			last = ansi.Truncate(last, w-len("…"), "")
 		}
 		rows[len(rows)-1] = last + dim2("…")
 	}

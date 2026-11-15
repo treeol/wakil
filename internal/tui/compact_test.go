@@ -119,6 +119,24 @@ func TestPromptBarRedWhenAuto(t *testing.T) {
 	}
 }
 
+// TestHistoryFlattensMultiLine verifies the documented history behaviour:
+// a multi-line prompt stored via appendHistory is recalled as its
+// single-line rendering (TrimSpace per line would split entries; the
+// flatten keeps history a plain line list and recall matches the
+// glanceable first line).
+func TestHistoryFlattensMultiLine(t *testing.T) {
+	// The observable contract is at the call site: appendHistory writes
+	// the flattened form; recall (loadHistory) returns it as one entry.
+	// Test the flatten helper directly through its effect on the file.
+	dir := t.TempDir()
+	t.Setenv("WAKIL_HISTORY_FILE", dir+"/history")
+	appendHistory("line one\nline two\n")
+	got := loadHistory()
+	if len(got) != 1 || got[0] != "line one line two" {
+		t.Fatalf("multi-line history flatten: got %v, want [line one line two]", got)
+	}
+}
+
 // The input block is exactly m.width wide and inputOuterBoxH tall, and the
 // full View fits the terminal.
 func TestInputLayout(t *testing.T) {

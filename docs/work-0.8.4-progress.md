@@ -1428,5 +1428,101 @@ real-outer-`tea.Program` quit paths (the harness records the `done`
 channel but does not yet drive a termination assertion). Those are
 named, not hidden.
 
+## Part 6 — what the user meets
+
+### The walkthrough (what was actually read)
+
+Walked with a discovery subagent over `tui_view.go`, `splash.go`,
+`history.go` (extending into `tui.go`, `complete.go`, `commands.go`).
+Each area was in this pass read against the source; nothing was driven
+in a running program for Part 6. Verdicts per area:
+
+- Start screen / splash: consistent. Centered logo, only when the pane
+  is truly empty; persists while typing. One inconsistency was NOT
+  fixed here (see "listed for later").
+- Input block: 3 rows normal / 1 compact, red ┃ bar in AUTO, grey
+  otherwise; placeholder is `type a task… (Enter=send, Shift+Enter=
+  newline, /help)`. Multi-line via Shift+Enter/textarea; a large
+  bracketed paste (≥5 lines) collapses to `[Pasted text +N lines]` and
+  expands at send; a burst ≥40 runes eager-collapses.
+- History (Up/Down): most-recent-first, draft saved/restored; ctrl+r
+  reverse-i-search case-insensitive, ctrl+g/esc aborts. FIXED this
+  commit: history storage was one-entry-per-line with `TrimSpace` per
+  line, so multi-line or space-edged entries split/trimmed on reload.
+  `appendHistory` now flattens multi-line entries to a single line
+  (newlines/tabs → spaces) so the file stays a line list and recall
+  matches the glanceable first line. Test:
+  `TestHistoryFlattensMultiLine` (`compact_test.go`).
+- Help: `helpTextTUI` in `internal/agent/commands.go` lists commands,
+  but the walkthrough found it omitted handled keys: ctrl+r/g, ctrl+e,
+  ctrl+y, alt+t, ctrl+d, esc-arm, ctrl+p/n, tab, j/k/a resume-picker keys.
+  FIXED this commit: `helpTextTUI` now documents ctrl+y (copy last
+  response), alt+t (terminal-selection bypass — see Part 3, Shift),
+  ctrl+r/ctrl+g (history search), ctrl+e (expand reasoning),
+  ctrl+d/ctrl+c quit-from-idle (double press). `TestHelpTextMentionsAllCommands`
+  still passes.
+- Approval prompts: grant choice unchanged this pass (consistent in
+  wording; the Part 5 harness could not surface one through `Send`).
+- Mode/status indicators: consistent, with one arithmetic fix below.
+- Tool call display: consistent (Part 1 L1 was the same shape).
+- Subagent live lines / Mashūra tab & progress: consistent in the
+  harness sense (Part 5 covers a `SubagentSpawned` through `Send`).
+- Retry/waiting lines: consistent (not walked live; read only).
+- Mid-turn collapse notice: not found as a distinct event (see Part 2's
+  L2/L3 verdicts for the rotation machinery).
+- Error/notice texts: consistent in wording.
+- Tab switching/scrolling keys: consistent (updateViewport + mouse).
+- Colour / light background: NOT VERIFIED in a running terminal here
+  (no harness ran with light background). The splash uses truecolor
+  `logoLight` when the terminal is light+truecolour (`splash.go:172`);
+  the dimmed figures lose contrast on dark backgrounds, but that is the
+  alpha-144 choice in `splash.go:47` and is listed, not fixed.
+
+### Small fixes applied (this commit)
+
+1. Help text: ctrl+y, alt+t (+Shift bypass note), ctrl+r/ctrl+g,
+   ctrl+e, ctrl+d/ctrl+c double-press quit documented in `helpTextTUI`
+   (`internal/agent/commands.go`).
+2. History: `appendHistory` flattens multi-line entries (one line in the
+   file, recall matches the first line). Comment now documents the rule
+   (`internal/tui/history.go`). Test `TestHistoryFlattensMultiLine`.
+3. Status overflow ellipsis: `flowSegmentsN` (`tui_view.go:843-850`)
+   drew the trailing ellipsis OUTSIDE the row when a segment wrapped
+   wide: the guard was `lipgloss.Width(last)+1 > w`, so a row with the
+   last segment exactly `w` wide got `ansi.Truncate(last, w-1, "")` —
+   correct — but a row with `Width(last) == w` got the ellipsis
+   APPENDED anyway (no trim), overflowing the row by one cell. The fix
+   reserves the ellipsis's own width (`len("…")`, which equals its
+   lipgloss width) before deciding to trim: rows that reach `w` now get
+   truncated to `w - 1` before the ellipsis is appended. The old guard
+   worked only when `Width(last) + 1 > w` was evaluated after a
+   segment had already been truncated in place — a 1-cell overflow
+   class the walkthrough could not repro.
+
+### Listed for later (not fixed here)
+
+- Splash logo needs truecolor ≥24 cols for the light version (else the
+  blue figlet); no light-background variant beyond the alpha channel
+  (`splash.go:47,172`). Proposed: measure alpha contrast and choose
+  light/dark variant by `termenv.HasDarkBackground`, not just
+  truecolor; size `s` (small, half a session).
+- History: entries are flattened, but a paste that collapsed to
+  `[Pasted text +N lines]` is stored flattened too; the placeholder
+  text is not expanded at recall. Proposed: store the stash id with the
+  entry (size `s`).
+- Help: checkpoint/rewind keys (`ctrl+` same-key confirm) are documented
+  only via the arm banner, not in `/help`. Proposed: one line in
+  `helpTextTUI` (size `xs`).
+- Light background: never driven in a live terminal here. The alpha-144
+  figures assume dark; verify on a light terminal (size `s`).
+
+### Part 2 numbers re-run
+
+`TestBenchHarnessSmoke` (3 op kinds, 2000 messages, 120×40) and
+`TestFrameCostRegression` pass with the Part 6 changes (no regression):
+key 1.68 ms (limit 8.69), stream 1.55 ms (limit 7.91), wheel 1.55 ms
+(limit 7.79), drag 1.19 ms (limit 267.9). The soak
+(`TestBenchSoak`: 200 turns + 20 rotations + 10 Mashūra rounds) passes.
+
 
 

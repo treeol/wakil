@@ -70,7 +70,16 @@ func searchHistory(history []string, query string, startIdx int) int {
 
 // appendHistory appends entry to the history file (oldest-first on disk).
 // It is a best-effort write: errors are silently ignored.
+//
+// History lines are stored ONE ENTRY PER LINE, and multi-line entries are
+// flattened to a single line (newlines and tabs replaced by spaces) so the
+// file stays a plain line list. Prompts that are multi-line in the
+// textarea therefore appear in history as their single-line rendering —
+// spacing-at-the-edges and interior line breaks are not preserved on
+// recall (the textarea's first line is shown, so the recall matches what
+// the user typed at a glance).
 func appendHistory(entry string) {
+	entry = strings.Join(strings.Fields(entry), " ")
 	path := historyPath()
 	if path == "" {
 		return

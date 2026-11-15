@@ -1769,4 +1769,6 @@ or switch sessions mid-run with /resume inside the TUI
                      /image clipboard reads the system clipboard image
 
 scroll the conversation with the mouse wheel or PgUp/PgDn
-drag with the mouse to select text — it's copied to the clipboard on release`
+drag with the mouse to select text — it's copied to the clipboard on release
+ctrl+y copies the last assistant response; alt+t hands the mouse to the terminal's own selection (hold Shift while dragging on most terminals);
+ctrl+r searches history (ctrl+g/esc aborts); ctrl+e expands collapsed reasoning; ctrl+d/ctrl+c quit from idle (double press).`
