@@ -765,6 +765,13 @@ func (m tuiModel) Init() tea.Cmd {
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if checkPerf() {
+		return m.updateTimed(msg)
+	}
+	return m.update(msg)
+}
+
+func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if timeline.Enabled() {
 		defer timeline.Accum(fmt.Sprintf("tui update: %T", msg))()
 	}

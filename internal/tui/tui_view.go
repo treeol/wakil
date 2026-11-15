@@ -188,6 +188,16 @@ func brailleMeter(used, total int, color lipgloss.Color, half int, leftLabel, ri
 // agree on layout math: both derive the status height from statusLines() —
 // reflow() via sizes() → effectiveStatusRows(), View() directly via len().
 func (m tuiModel) View() string {
+	if checkPerf() {
+		start := time.Now()
+		out := m.view()
+		perfRecord(perfSample{typ: perfMsgType(nil), viewDur: time.Since(start), bytes: len(out)})
+		return out
+	}
+	return m.view()
+}
+
+func (m tuiModel) view() string {
 	defer timeline.Accum("tui view (render a frame)")()
 	if !m.ready {
 		return "initializing…\n"

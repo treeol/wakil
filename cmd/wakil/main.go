@@ -464,6 +464,7 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 
 		// Store composed cleanup for after prog.Run() returns.
 		postRunCleanup = func() {
+			tui.PrintPerfSummary()
 			done.cleanup()
 			if sessionLogClose != nil {
 				sessionLogClose()

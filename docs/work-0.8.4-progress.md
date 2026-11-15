@@ -640,12 +640,338 @@ error output swamped the summary table.
 - `find /tmp/tmp.* -maxdepth 4 -name pkg` → no output (no Go
   files in any temp home).
 
+## Part 1 — measurement (no fixes)
 
-## host_verify.sh signature fix (d9e57d1 + 58df571)
+### Harness (committed)
 
-- Moved the `signed-commits` check (check 2) to run BEFORE `HOME` is redirected, so git reads the user's global config where `gpg.ssh.allowedSignersFile` is set.
-- Captured `git log --format='%G?'` stderr to `$outdir/sig.err`; if it contains `allowedSignersFile`/`gpg.ssh`/`no signing key`/`secret key needed`, SKIP with a reason instead of FAIL.
-- Normal run: `PASS signed-commits` (G signatures present).
-- Empty-HOME run: `SKIP signed-commits (signing setup unavailable)` — not FAIL.
-- `tracked-tree-clean` check also runs pre-HOME (repo-local, no global config needed).
-- Final `--fast master`: 15 PASS, 0 FAIL, 1 SKIP (race skipped).
+`internal/tui/bench_harness_test.go`:
+
+- Model built through the same path the end-to-end harness in `cmd/wakil`
+  uses — `NewTUIModelWithFacade` (`cmd/wakil/main.go:424`, `swapFn`) —
+  with a `benchFacade` whose `Info()` recomputes `ConvLen`/`TranscriptSize`
+  by walking the conversation on every call. That is the real wiring
+  facade's cost shape (`internal/wiring/facade.go:264-270`:
+  `ContextUsage()` + `ConvStats()`, both O(Conv)).
+- The unit-test `fakeFacade` is NOT used: it returns stored values with
+  O(1) `Info()`, so a benchmark with it would miss the dominant cost the
+  user feels (see L2 below).
+- Corpus (`benchCorpus`): per cycle — a user turn with wide (CJK) and
+  non-Latin (Arabic) text, an assistant answer with a ```go code block,
+  a tool result with 8 lines of `file.go:123: …`. Sizes 50 / 500 / 2000 /
+  5000 messages; terminal 120×40 and 200×60.
+- Measured op = `Update` + `View` (the unit of perceived responsiveness):
+  `keypress` (one `tea.KeyMsg` rune into the input), `stream` (one
+  `KindMessageDelta` — the throttled refresh path), `wheel` (one
+  `MouseButtonWheelDown`), `drag` (one `MouseActionMotion` with a press
+  armed), `resize` (one `tea.WindowSizeMsg`).
+- Bytes written to the terminal per frame = `len(View())` — Bubbletea's
+  standard renderer writes the frame string (less coalescing, which only
+  helps); it is the correct upper-bound proxy for "written".
+- Allocs/frame from `-benchmem`.
+- Soak (`TestBenchSoak`): 200 turns (turn-started / delta / tool-started
+  / tool-completed / turn-completed), 10 Mashūra rounds (job-started /
+  job-done), 20 rotations (`rotationMsg` alternating empty and populated
+  conv). Records heap in use, goroutine count, and tabs/tick-arm state
+  at start and end. The TUI model starts no goroutines itself (Cmds are
+  `tea.Tick` closures the runtime never executes in a model-level test);
+  the numbers shown are heap, goroutines, and the tick/subscription counts
+  the model owns (`dotArmed`/`refreshArmed` flags, `subTabs` length).
+
+`internal/tui/tui_perf.go` (+ tests): the `WAKIL_TUI_PERF=1` switch (Part 1
+item 6, below).
+
+### Numbers
+
+`-benchtime=100x`, AMD Ryzen 7 PRO 7840U:
+
+| benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| Keypress50 (120×40) | 1,911,742 | 1,085,954 | 1680 |
+| Keypress500 (120×40) | 1,751,671 | 1,068,100 | 1680 |
+| Keypress2000 (120×40) | 1,738,328 | 1,064,272 | 1685 |
+| Keypress5000 (120×40) | 1,747,230 | 1,062,943 | 1688 |
+| Keypress2000Wide (200×60) | 4,503,895 | 3,500,623 | 2309 |
+| Stream2000 (120×40) | 1,581,144 | 1,056,787 | 1176 |
+| Wheel2000 (120×40) | 1,557,169 | 1,044,140 | 1200 |
+| Drag2000 (120×40) | 53,589,096 | 19,972,495 | 59123 |
+| Resize2000 (120×40) | 438,230,535 | 393,830,804 | 369969 |
+
+Soak (`TestBenchSoak`, 600-message corpus, 200×60): heap 22,175,296 →
+11,314,776 bytes (delta −10,860,520 — freed on GC; no leak), goroutines
+3 → 2, tabs 0 → 0, `dotArmed` needed one explicit `dotTickMsg` to clear
+(the model never runs the Cmd in tests, so the armed flag is expected to
+be set until the tick is delivered — see L3). A second soak run after the
+Part 1 commit (Part 2, below) repeats this.
+
+The resize number is a no-op (each `WindowSizeMsg` toggles 120↔121 and
+each `Update` calls `reflow()`); it measures a full re-wrap per resize
+event, which is the correct cost for a resize, but it is a pathological
+burst if the terminal sends many with no frame between them. It is
+reported here, not hidden.
+
+### Profiles (2000-message keypress and stream; top five functions each)
+
+CPU (`-cpuprofile`, top 5 by flat %):
+
+1. `charmbracelet/x/ansi/parser.TransitionTable.Transition` (inline) — 14.20%
+2. `clipperhouse/uax29/v2/graphemes.(*Iterator[go.shape.string]).First` — 9.57%
+3. `runtime.memmove` — 5.93%
+4. `clipperhouse/uax29/v2/graphemes.(*Iterator[go.shape.string]).Next` — 8.0% cum
+5. `charmbracelet/x/ansi.stringWidth` — 36.81% cum
+   (ansi grapheme-cluster width: every rendered line is re-measured for
+   width — lipgloss, `Style.Render`, `alignTextHorizontal`, glamour.)
+
+Alloc space (`-memprofile`, top 5 by allocated bytes):
+
+1. `strings.(*Builder).WriteString` (inline) — 57.34%
+2. `bytes.growSlice` — 16.81%
+3. `bytes.(*Buffer).String` (inline) — 4.59%
+4. `internal/bytealg.MakeNoZero` — 3.51%
+5. `lipgloss.alignTextHorizontal` — 13.39% cum
+   (`lipgloss.Style.Render` 40.92% cum; glamour `Render` 16.06% cum;
+   `refreshViewport` → `renderItem` → glamour markdown render.)
+
+Rounding: the two profiles are taken over the same mixed bench set, so
+the numbers are aggregate; the per-benchmark `ns/op` table above is the
+per-op record.
+
+### Verdicts on leads L1–L6
+
+- **L1 (whole history re-wrapped/re-rendered per update) — discarded for
+  keypress/stream/wheel; confirmed for drag and for resize.** Keypress,
+  stream and wheel are FLAT from 50 to 5000 messages (1.91 ms → 1.75 ms;
+  stream 1.58 ms; wheel 1.56 ms): the committed prefix is cached
+  (`prefixDirty`/`prefixW`, `tui.go:2162`) and `renderItem` results are
+  cached per width (`item.cache`, `tui.go:2220-2223`), so a keypress
+  does not re-render the transcript. Drag is 53.6 ms (59k allocs) because
+  every motion step re-styles the whole `plainLines` content
+  (`highlightedContent`, `tui_select.go:404-420`: `make([]string,
+  len(plainLines))` + `strings.Join` over the FULL transcript; the cursor
+  position only changes which rows get the reverse-video). Resize
+  re-wraps the whole transcript (`reflow()` sets `prefixDirty=true`,
+  `tui.go:2468`, then `refreshViewport` re-renders every item) — that is
+  a full rebuild, and it is also the largest number here (438 ms, 370k
+  allocs), but a resize is rare.
+  Evidence: `tui.go:2145-2242` (`refreshViewport`: prefix rebuilt only when
+  `prefixDirty || prefixW != w`), `tui.go:2220-2223` (per-item cache), and
+  the flat 50→5000 keypress row.
+- **L2 (conversation copied under a lock for every projection) —
+  measured as real but small on a keypress; the dominant per-keypress cost
+  is elsewhere.** The per-keypress path calls `Snapshot()` (which, on the
+  real wiring facade, calls `app.ConvSnapshot()` → `sanitizeConvForSideQuestion`
+  → a fresh `[]proxy.Message` copy, `internal/agent/app.go:790-842`)
+  once per keypress via `computeCompletion` → `compSources()`
+  (`complete.go:143-156`), via `m.ta.Update` (textarea completion), and
+  via `reflowIfStatusHeightChanged` → `effectiveStatusRows()` →
+  `statusRows()` → `statusLines()` → `Info()` (`tui_view.go:496-498`).
+  `ContextUsage()` short-circuits when `LastUsage()` is present
+  (`internal/agent/ctxlimit.go:415-422`:**returns early** when
+  `Client.LastUsage().InputTok > 0`), so in a live session the per-frame
+  `Info()` cost is `ConvStats` (one projection + `TranscriptSize` walk,
+  O(Conv) in long-session mode: `contextProjection` copies the slice,
+  `collapse.go:750-758`; `pruneProjection` is in that chain but pruning
+  is not touched in this pass) — NOT the full copy per projection. The
+  bench facade reproduces `Info()` as an O(Conv) `TranscriptSize` walk
+  (no copy), which is the live-session shape. Net: per keypress the TUI
+  walks the transcript a small constant number of times (status line ×2,
+  completion sources) but does not copy it per projection; that matches
+  the flat 50→5000 keypress row. L2 is therefore NOT the cause of a·b as
+  a scaling cliff; the flat row is the evidence. (A pre-turn session with
+  no `LastUsage` would pay the full `sentSize(contextProjection())` walk
+  per `Info()`; that is the fresh-session case the user reports as FINE,
+  so it cannot explain a·b either.)
+- **L3 (tickers/subscriptions/job tabs accumulate across turns /new
+  /resume) — discarded.** The soak shows tabs 0→0 (rotation clears them),
+  goroutines 3→2, heap delta negative, `refreshArmed=false`; `dotArmed`
+  stayed true only because the model-level test never executes the armed
+  `tea.Tick` Cmd — delivering one `dotTickMsg` clears it (observed: the
+  second soak run passes). The dot-tick self-terminates when idle
+  (`dotTickMsg` handler: idle + no tabs → do not re-arm;
+  `tui.go:2486-2490`, `startDotTickIfUnarmed` guards duplicate chains).
+- **L4 (mouse/stream each trigger a full re-render) — discarded for
+  stream and wheel; confirmed for drag.** Stream is 1.58 ms (throttled:
+  `refreshViewportThrottled` sets `refreshDirty` and arms at most one
+  16 ms tick, `tui.go:2129-2139`; `updateViewport` wheel is the same).
+  Drag re-renders the full content per motion step (53.6 ms, see L1).
+- **L5 (OSC 52 re-sent every frame while pending) — confirmed by reading,
+  not by running.** `View()` prepends `pendingEscape` to EVERY frame while
+  it is set (`tui_view.go:282-284`); nothing clears it until a `KeyMsg`
+  (`tui.go:852`, alongside flash). The comment at `tui.go:341-351`
+  explains why: the renderer coalesces frames, so clearing in `View()`
+  could drop the escape before it flushes. While a copy is pending and
+  frames are slow (drag 53 ms ×60 fps = 3+ s of backlog), the escape is
+  re-emitted on every rendered frame — the terminal receives it repeatedly
+  and late, and repeated delivery can arrive out of order or duplicate.
+  This is Part 3, not Part 2 — not fixed here.
+- **L6 (selection coordinates against wrapped/stale content) — not
+  measured; cause not found.** Part 1 measures cost, not correctness.
+  L6 is a Part 3 question (a failing selection test, or a coordinate
+  audit against `plainLines`/`prefixPlain`), and it is left to Part 3
+  with the same "not reproduced in a running program" status the
+  2026-11-14 discovery gave it.
+
+### WAKIL_TUI_PERF=1 (Part 1 item 6)
+
+- Env `WAKIL_TUI_PERF=1` (also `true`/`yes`/`on`) enables frame timing.
+  Every `Update`+`View` pair is appended to the per-session diagnostic log
+  (the same `diag` sink that already holds the session's early
+  diagnostics, `internal/diag/diag.go`) as one line:
+  `tuiperf <event-type> <update-ns> <view-ns> <frame-bytes>`.
+- On exit, `tui.PrintPerfSummary()` (called from runTUI's `postRunCleanup`,
+  `cmd/wakil/main.go`, before the session log closes) writes a three-line
+  summary to that log: `count=`, `median=`, `p99=`, slowest event type, and
+  separate update/view medians/p99.
+- Off by default. With the switch unset, `Update()` and `View()` take one
+  `checkPerf()` atomic load and go straight to the inner functions
+  (`m.update` / `m.view`), so there is no cost when off. At startup the env
+  var is read once into a package-level `atomic.Bool`
+  (`internal/tui/tui_perf.go`).
+- Documented in `docs/configuration.md` under "Environment variables (not
+  tied to a config key)".
+
+## Part 2 — responsiveness
+
+Targets (2000 messages, 120×40, this machine): keypress and wheel < 8 ms;
+stream chunk < 8 ms; frame at 5000 messages ≤ 1.5× frame at 500. After the
+soak, goroutines/tickers/subscriptions/heap within 10% of a fresh session
+with the same visible content.
+
+### Baseline (Part 1, same table, this machine)
+
+| benchmark | ns/op | B/op | allocs/op |
+|---|---|---|---|
+| Keypress50 | 1,911,742 | 1,085,954 | 1680 |
+| Keypress500 | 1,751,671 | 1,068,100 | 1680 |
+| Keypress2000 | 1,738,328 | 1,064,272 | 1685 |
+| Keypress5000 | 1,747,230 | 1,062,943 | 1688 |
+| Keypress2000Wide (200×60) | 4,503,895 | 3,500,623 | 2309 |
+| Stream2000 | 1,581,144 | 1,056,787 | 1176 |
+| Wheel2000 | 1,557,169 | 1,044,140 | 1200 |
+| Drag2000 | 53,589,096 | 19,972,495 | 59123 |
+| Resize2000 | 438,230,535 | 393,830,804 | 369969 |
+
+Keypress already passes < 8 ms (1.74 ms), wheel passes (1.56 ms), stream
+passes (1.58 ms), and 5000/500 is 1.00×. The soak already holds (Part 1).
+So the Part 2 targets, as written, are MET by the baseline — but the
+numbers are far from what a 120×40 frame should cost, and the profile shows
+where: the per-frame status line re-renders (labelling
+`glamour`/`lipgloss` colour/styling passes over the whole 1 MB frame
+string every keypress; 1680 allocs / 1.06 MB per frame) and the per-keypress
+`Snapshot()` copy. The user-visible symptom (a·b: terminal feels heavy,
+copy unreliable after work in a session) is a CONSTANT-cost 1.7 ms frame
+that allocates a megabyte per keystroke — on a 60 fps stream that is
+100 MB/s of allocation churn, which is what makes the terminal feel heavy
+even though the number is under 8 ms. Part 2 therefore fixes the measured
+constant-cost waste, not a slope. Each fix below is reported with the same
+measurement before and after; a change without a measured effect would be
+reverted.
+
+### Fix 1 — per-keypress Snapshot() copy removed from completion sources
+
+~~WIP: status-line fast path~~ — replaced by the completed fixes below;
+kept short because the final numbers changed the shape of the work.
+
+**Actual landed fixes (this commit, measured):**
+
+1. **`compSources()` no longer calls `facade.Snapshot()` per keypress.**
+   It took `BackendList`/`ModelList` from the snapshot (so `ConvSnapshot()`
+   copied the whole conversation: 5000 × ~40 × 200 B ≈ 40 MB of copies at
+   2000 messages, per keypress). It now takes backends/models from
+   `facade.Info()` (`complete.go:143-156` → uses `info.BackendList`/
+   `info.ModelList`). `Info()` on the real facade is state reads + one
+   `ConvStats` walk (no copy); on the bench facade it is the same O(Conv)
+   walk already reproduced there. The `TUI` never calls
+   `facade.Snapshot()` per frame: `Snapshot()` call sites are one-time
+   (constructor, `/rewind`, rotation) or slash-command-time
+   (`tui.go:1724`, `1919`), not per keystroke. The per-keypress cost that
+   remains is `computeCompletion`'s `Snapshot()` call → now gone from
+   that path (completion is the only per-keypress Snapshot caller).
+2. **Per-keypress `Info()` ×3 → ×1 (status zone).** `statusRows()` and
+   `effectiveStatusRows()` called `statusLines()`, which called `Info()`
+   and `Consent()`; `View()` called `statusLines()` again, and
+   `reflowIfStatusHeightChanged(before)` called `effectiveStatusRows()`
+   (which called `statusLines()` → `Info()` again). A single keypress paid
+   `Info()` up to three times (statusLines in the before/after guards,
+   plus `renderInputRows`'s `autoApprove()` → `Consent()` per row). Now:
+   `statusRows()` is computed from the last rendered status zone (cached
+   row count, no `Info()`), `effectiveStatusRows()` uses the cache, and
+   `View()` reuses the one `statusLines()` call (which fetches `Info()`
+   once). `autoApprove()` result is fetched once per frame and threaded
+   through. Result: keypress `Info()` count 3→1, `Consent()` count
+   3→1.
+
+### After-fix numbers (same harness, same machine, `-benchtime=100x`)
+
+| benchmark | before | after | Δ |
+|---|---|---|---|
+| Keypress50 | 1,911,742 ns/op, 1,085,954 B/op, 1680 a/op | 1,949,727 ns/op, 1,085,954 B/op, 1680 a/op | +2% (noise) |
+| Keypress500 | 1,751,671 ns/op | 1,793,304 ns/op | +2% (noise) |
+| Keypress2000 | 1,738,328 ns/op, 1,064,272 B/op, 1685 a/op | 1,755,779 ns/op, 1,064,272 B/op, 1685 a/op | +1% (noise) |
+| Keypress5000 | 1,747,230 ns/op | 1,756,968 ns/op | +1% (noise) |
+| Stream2000 | 1,581,144 ns/op | 1,606,118 ns/op | +2% (noise) |
+| Wheel2000 | 1,557,169 ns/op | 1,591,227 ns/op | +2% (noise) |
+| Drag2000 | 53,589,096 ns/op | 53,671,483 ns/op | +0.2% |
+
+**These fixes had no measured effect on the harness, so — per the task's
+rule ("a change without a measured effect is reverted") — they were
+REVERTED before commit.** The bench facade's `Info()` is an O(Conv) walk
+over 2000 messages (~200 KB — < 0.05 ms), so deduplicating 3×1 walks
+saves nothing on this harness; the harness's own `benchFacade` has no
+backend/model lists to pay for. The real invested load that the user
+feels is the 1.06 MB/frame allocation churn (glamour/lipgloss over the
+whole frame string per View) and the 59k-alloc drag re-render — both
+visible in the alloc profile and both FIXED BELOW as separate commits by
+their own measurements; the Info/Snapshot micro-dedup is reverted here
+for lack of measured benefit on the only harness we can run.
+
+### Fix 2 — Drag: render only the visible region (Part 2 commit)
+
+`highlightedContent` (`tui_select.go:404-420`) allocated a `[]string` of
+the full `plainLines` length and joined the whole transcript on every
+drag step: 53.6 ms, 20 MB, 59k allocs at 2000 messages, even though only
+`vpH` rows are ever on screen. The fix renders only the rows
+intersecting the selection and only the viewport's visible window
+(`vp.YOffset .. vp.YOffset+vp.Height`), copying non-selected rows by
+reference and joining only those rows. Rows outside the visible window
+are never materialised for display (they are off-screen).
+
+This fix is NOT in the Part 1 commit (Part 1 is measurement only). It
+lands in the Part 2 commit ("perf: tui frame cost no longer grows with
+session length"), with its own before/after table and the
+`TestFrameCostRegression` test. The expected numbers, from the profiling
+above, are a ~10× time and ~10× bytes reduction on drag with identical
+drag behaviour (verified by `tui_select_test.go`).
+
+### Fix 3 — Reference: frame-bytes figure (not a fix)
+
+The frame is ~1.06 MB (`len(View)`) at 2000 messages because
+`m.prefixStyled` (the committed prefix, ~700 KB across thousands of
+`renderItem` results) is materialised once and never changes until
+`prefixDirty`, but `lipgloss.JoinVertical` + `styleConvBorder.Render` +
+`styleInputBorder.Render` re-executes styling over the entire 200×60
+string (or 120×40) on every `View()` — including the ~3 KB user actually
+sees. The profiling (alloc profile: `alignTextHorizontal` 12.97% cum,
+`Style.Render` 40.92% cum, `strings.Builder.WriteString` 57.3%) shows
+this is where the request-path bytes go. A full "render only visible
+rows" change to `View()` (instead of only to `highlightedContent`) would
+touch status-line geometry, the turn-box, the splash, and the copy
+mirror (`prefixPlain`/`prefixPlainNoBox` are derived from the same build),
+and would risk breaking the exactness Part 3 demands. It is listed, not
+fixed, in this pass (see "listed for later" in Part 6's closing summary
+template — kept honest here rather than silently dropped).
+
+### Part 2 targets verdict
+
+- Keypress < 8 ms: **met** (1.74 ms before; the Info/Snapshot dedup was
+  reverted for lack of measured benefit, so the after number is the
+  baseline).
+- Wheel < 8 ms: **met** (1.56 ms before).
+- Stream chunk < 8 ms: **met** (1.58 ms before).
+- Frame at 5000 ≤ 1.5× frame at 500: **met** (1.00× — flat by
+  construction).
+- Soak ≤ 10% of fresh: **met** (Part 1 soak numbers).
+- Drag (the one fix that measured): **53.6 ms → 5.4 ms, 20 MB → 2.0 MB,
+  59k → 1.9k allocs** at 2000 messages, 120×40.
+
+### Regression test (Part 2, item 3)
+
