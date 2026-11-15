@@ -260,8 +260,8 @@ func TestStrugglePathThroughRealStartup(t *testing.T) {
 			}
 		}
 		if m.Content != nil {
-			hdr += strings.Count(*m.Content, "[automatic mashura round — Wakil started this round automatically; you did not call it]")
-			if m.Role == "tool" && strings.Contains(*m.Content, "[automatic mashura round — Wakil started this round automatically; you did not call it]") {
+			hdr += strings.Count(*m.Content, "[automatic mashura round")
+			if m.Role == "tool" && strings.Contains(*m.Content, "[automatic mashura round") {
 				t.Fatal("automatic round delivered as a tool result; want a message from Wakil")
 			}
 		}
