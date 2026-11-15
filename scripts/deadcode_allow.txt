@@ -1,41 +1,34 @@
 # deadcode_allow.txt — functions deadcode reports as unreachable but that are
-# intentionally kept. One entry per line: "package.Symbol — short reason".
+# intentionally kept. One entry per line: "Symbol — short reason".
 # Keep the reason short; it is why a future reader should not delete this.
 # Generated from the user's host `deadcode ./...` 92-function run on
 # dfc9931 plus the Group 1/2 keep decisions in docs/work-0.8.4-progress.md.
-# Note: deadcode output is "file.go:LINE: package.Symbol" — matching here is
-# on the "package.Symbol" part only, so line numbers may drift.
+# Note: deadcode output is "file.go:LINE:COL: unreachable func: Name" — matching
+# is on the "Name" part only (the bare function name, no package prefix),
+# so line numbers may drift.
 
 # Test-support and pruning (leave untouched): packages under internal/testutil,
 # internal/sandbox/fake, internal/core/sessionhost/storetest; test-only entry
 # points browser.NewManagerForTest, browser testLauncher.launch, orregistry
 # SetCacheForTest / SetPricingForTest / SetModelsURLForTest / ResetCache,
-# counsel.ResetModelCache, agent.resetDebugRequestCounter,
-# agent.SetOracleEndpointHook, timeline.Reset, timeline.SetClock,
-# App.rereadLocksSlice, App.rereadLocked. The script only lists the exported
-# entry names; the unexported ones are reached via test files as roots
-# (deadcode -test), so they do not appear in the report.
-agent.NoteAnthropicKeyIgnored — oracle note; grep-free safety notice kept for future wiring.
-agent.ParseContextLimitJSONForTest — test-only entry into unexported parseContextLimitJSON.
-agent.PublishAsyncOpForTest — test-only entry into unexported publishAsyncOp.
-agent.enqueueAsyncOp — public async entry; the Job variant marks UI tabs, tests must not do that.
-client.IsServerUnavailableForTest — test-only alias for staging.IsServerUnavailable.
-wiring.EmitEvent — test seam wrapping emitEvent; production uses HeadlessWriter.
-wiring.RunHeadlessApp — test seam wrapping dispatchHeadlessMode; production path is RunHeadless.
-wiring.RunPlanLoop — test seam wrapping runPlanSession; production path is RunHeadless.
-wiring.SendForTest — test-only shim into the real send path.
-tunnel.addr — unread field (group 2 removal target, see progress file).
+# counsel.ResetModelCache, resetDebugRequestCounter, SetOracleEndpointHook,
+# timeline.Reset, timeline.SetClock, App.rereadLocksSlice, App.rereadLocked.
+availableMembers — test helper in mashura_levels_test.go.
+ParseContextLimitJSONForTest — test-only entry into unexported parseContextLimitJSON.
+enqueueAsyncOp — public async entry; the Job variant marks UI tabs, tests must not do that.
+RunHeadlessApp — test seam wrapping dispatchHeadlessMode; production path is RunHeadless.
+RunPlanLoop — test seam wrapping runPlanSession; production path is RunHeadless.
 
 # Group 2 keep-list (kept despite zero production callers; per-function reasons
 # in docs/work-0.8.4-progress.md "Kept with reason" section).
-agent.RestoreRepoState — backward-compatible wrapper named in the no-probe doc; tests would need Read+Apply.
-agent.okResult — test-construction bridge into unexported toolResult (agent tests).
-agent.StringToToolResult — test-construction bridge into unexported toolResult (cmd/wakil tests).
-tools.ReadHostCacheFile — unbounded counterpart of the live ReadHostCacheFileBounded; named in package boundary comments.
+RestoreRepoState — backward-compatible wrapper named in the no-probe doc; tests would need Read+Apply.
+okResult — test-construction bridge into unexported toolResult (agent tests).
+StringToToolResult — test-construction bridge into unexported toolResult (cmd/wakil tests).
+ReadHostCacheFile — unbounded counterpart of the live ReadHostCacheFileBounded; named in package boundary comments.
 
 # Group 1 kept symbols (rules or features that must stay live).
-lsp.DocumentChange.UnmarshalJSON — union decoder for the advertised DocumentChanges capability; decode-tested.
-tools.gatedTool — single source for the gated-tool list; read by TestToolsMdParity.
+UnmarshalJSON — union decoder for the advertised DocumentChanges capability; decode-tested.
+IsGatedTool — production source for the gated-tool list; read by TestToolsMdParity.
 
 # Group 1 e wrappers removed (resolveTemplateParams, renderTemplate,
 # joinSkillTemplate) — not allow-listed, now reachable via the production
