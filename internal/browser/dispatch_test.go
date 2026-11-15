@@ -397,24 +397,13 @@ func TestDispatchUnknownTool(t *testing.T) {
 
 // ─── Tool-list drift test ────────────────────────────────────────────
 
-// TestToolListConsistency verifies that BrowserTools(), IsBrowserTool(), and
-// dispatchToolCall all reference the same set of tool names — three
-// hand-maintained lists that can drift.
+// TestToolListConsistency verifies BrowserTools() and dispatchToolCall
+// reference the same set of tool names.
 func TestToolListConsistency(t *testing.T) {
 	tools := BrowserTools()
 	toolNames := make(map[string]bool)
 	for _, tool := range tools {
 		toolNames[tool.Function.Name] = true
-		if !IsBrowserTool(tool.Function.Name) {
-			t.Errorf("tool %q in BrowserTools() but not in IsBrowserTool()", tool.Function.Name)
-		}
-	}
-	// Verify IsBrowserTool doesn't accept names not in BrowserTools.
-	knownFalse := []string{"browser_bogus", "run_shell", "lsp_definition", ""}
-	for _, name := range knownFalse {
-		if IsBrowserTool(name) {
-			t.Errorf("IsBrowserTool(%q) = true, expected false", name)
-		}
 	}
 	// Verify dispatchToolCall doesn't return unknown for any registered tool.
 	f := &fakeBrowserOps{screenshotPath: "/tmp/s.png", htmlResult: "<html></html>"}

@@ -163,14 +163,6 @@ func TestParentToolsetComplete(t *testing.T) {
 			t.Errorf("defaultTools missing %q", want)
 		}
 	}
-	for _, gated := range []string{"edit_file", "delete_file", "move_file", "run_background", "kill_process"} {
-		if !tools.GatedTool(gated) {
-			t.Errorf("%q must require confirmation", gated)
-		}
-	}
-	if tools.GatedTool("read_process_log") {
-		t.Error("read_process_log must NOT require confirmation")
-	}
 }
 
 func TestContextPreambleIncludesTools(t *testing.T) {
@@ -985,11 +977,21 @@ func TestReadFileFullBudgetExhaustionStubs(t *testing.T) {
 }
 
 // TestReadFileFullNotGated verifies read_file_full is not a gated tool (no
-// confirmation needed — it's read-only, same as read_file).
+// confirmation needed — it's read-only, same as read_file). The gate lives in
+// the handler's a.Confirm call; this test records the toolset membership and
+// that the ungated handler does not consult Confirm. The authoritative gate
+// list is internal/tools gatedToolList (see TestGatedToolListMatchesHandlers).
 func TestReadFileFullNotGated(t *testing.T) {
-	if tools.GatedTool("read_file_full") {
-		t.Fatal("read_file_full must not be gated (read-only tool)")
+	exe := newFakeExecutor()
+	called := false
+	app := &App{Exec: exe, Out: io.Discard, Confirm: func(_, _, _ string, _ bool) bool { called = true; return true }}
+	res := app.handleToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "read_file_full", Arguments: `{"path":"a.go"}`,
+	}})
+	if called {
+		t.Fatal("read_file_full handler consulted Confirm — it must stay ungated")
 	}
+	_ = res
 }
 
 // TestReadFileFullInDefaultTools verifies read_file_full is in the default

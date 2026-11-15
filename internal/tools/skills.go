@@ -27,8 +27,8 @@ const skillScopeNote = ` Global skill store (shared across all sessions/projects
 // in the tool handler via a.IsSubagent, not by excluding tools from the list.
 //
 // Read tools (list_skills, load_skill, skill_search, skill_history) are
-// ungated. Write tools (save_skill, update_skill, forget_skill) go through the
-// confirm gate via GatedTool, matching the destructive-mutation policy.
+// ungated. Write tools (save_skill, update_skill, forget_skill) are in the
+// gatedToolList as destructive mutations.
 func SkillTools() []proxy.Tool {
 	return []proxy.Tool{
 		{Type: "function", Function: proxy.ToolFunction{
@@ -163,37 +163,5 @@ func SkillTools() []proxy.Tool {
 	}
 }
 
-// IsSkillTool reports whether name is one of the skill tools.
-func IsSkillTool(name string) bool {
-	switch name {
-	case "list_skills", "load_skill", "skill_search", "skill_history",
-		"save_skill", "update_skill", "forget_skill",
-		"apply_skill_template", "capture_skill_template", "check_skill_template":
-		return true
-	}
-	return false
-}
 
-// IsSkillTemplateMainOnlyTool reports whether name is a skill-template tool
-// restricted to the main agent. Kept separate from IsSkillWriteTool, whose
-// meaning is "writes the global store": apply_skill_template writes the
-// workspace, not the store.
-func IsSkillTemplateMainOnlyTool(name string) bool {
-	switch name {
-	case "apply_skill_template", "capture_skill_template":
-		return true
-	}
-	return false
-}
 
-// IsSkillWriteTool reports whether name is a skill tool restricted to the main
-// agent (not available to subagents). These are rejected at dispatch time via
-// a.IsSubagent, not by excluding from tool lists — same pattern as
-// IsMemoryMainOnlyTool.
-func IsSkillWriteTool(name string) bool {
-	switch name {
-	case "save_skill", "update_skill", "forget_skill":
-		return true
-	}
-	return false
-}

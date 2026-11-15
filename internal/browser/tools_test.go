@@ -31,32 +31,6 @@ func TestBrowserToolsDefinitions(t *testing.T) {
 	}
 }
 
-// TestIsBrowserTool verifies the tool name classifier.
-func TestIsBrowserTool(t *testing.T) {
-	cases := []struct {
-		name string
-		want bool
-	}{
-		{"browser_navigate", true},
-		{"browser_screenshot", true},
-		{"browser_viewport", true},
-		{"browser_click", true},
-		{"browser_eval", true},
-		{"browser_text", true},
-		{"browser_html", true},
-		{"browser_reduced_motion", true},
-		{"browser_unknown", false},
-		{"lsp_definition", false},
-		{"run_shell", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := IsBrowserTool(c.name); got != c.want {
-			t.Errorf("IsBrowserTool(%q) = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 // TestHandleToolCallNilManager verifies the nil-manager guard returns a
 // helpful message instead of panicking.
 func TestHandleToolCallNilManager(t *testing.T) {

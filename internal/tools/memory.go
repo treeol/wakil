@@ -96,23 +96,6 @@ func MemoryTools() []proxy.Tool {
 	}
 }
 
-// IsMemoryTool reports whether name is one of the memory_* tools.
-func IsMemoryTool(name string) bool {
-	switch name {
-	case "memory_put", "memory_promote", "memory_reject", "memory_get",
-		"memory_search", "memory_list", "memory_forget", "memory_promote_from_staging":
-		return true
-	}
-	return false
-}
 
-// IsMemoryMainOnlyTool reports whether name is a memory tool restricted to
-// the main agent (not available to subagents). These are rejected at dispatch
-// time via a.IsSubagent, not by excluding from tool lists.
-func IsMemoryMainOnlyTool(name string) bool {
-	switch name {
-	case "memory_promote", "memory_reject", "memory_forget", "memory_promote_from_staging":
-		return true
-	}
-	return false
-}
+
+

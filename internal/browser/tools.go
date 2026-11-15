@@ -120,16 +120,6 @@ func BrowserTools() []proxy.Tool {
 	}
 }
 
-// IsBrowserTool reports whether name is one of the browser_* tools.
-func IsBrowserTool(name string) bool {
-	switch name {
-	case "browser_navigate", "browser_screenshot", "browser_viewport",
-		"browser_click", "browser_eval", "browser_text", "browser_html",
-		"browser_reduced_motion":
-		return true
-	}
-	return false
-}
 
 // browserOps is the interface that *Manager satisfies. It covers only the
 // operations dispatched by tool handlers — Close is lifecycle, not a tool op.

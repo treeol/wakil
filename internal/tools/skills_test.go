@@ -41,57 +41,37 @@ func TestSkillTools_InAllTiers(t *testing.T) {
 	}
 }
 
+// TestSkillTools_GatedWriteTools records that the skill write tools are in the
+// gated set (see TestGatedToolListMatchesHandlers for the handler sync).
 func TestSkillTools_GatedWriteTools(t *testing.T) {
 	for _, w := range []string{"save_skill", "update_skill", "forget_skill"} {
-		if !GatedTool(w) {
-			t.Errorf("GatedTool(%q) = false, want true (write tools need confirmation)", w)
-		}
-		if !IsSkillWriteTool(w) {
-			t.Errorf("IsSkillWriteTool(%q) = false, want true (main-agent-only)", w)
+		if !gatedTool(w) {
+			t.Errorf("gatedTool(%q) = false, want true (write tools need confirmation)", w)
 		}
 	}
 }
 
+// TestSkillTools_ReadToolsUngated records that the skill read tools are not gated.
 func TestSkillTools_ReadToolsUngated(t *testing.T) {
 	for _, r := range []string{"list_skills", "load_skill", "skill_search", "skill_history"} {
-		if GatedTool(r) {
-			t.Errorf("GatedTool(%q) = true, want false (read tools ungated)", r)
+		if gatedTool(r) {
+			t.Errorf("gatedTool(%q) = true, want false (read tools ungated)", r)
 		}
-		if IsSkillWriteTool(r) {
-			t.Errorf("IsSkillWriteTool(%q) = true, want false (read tools available to subagents)", r)
-		}
-	}
-}
-
-func TestIsSkillTool(t *testing.T) {
-	for _, st := range SkillTools() {
-		if !IsSkillTool(st.Function.Name) {
-			t.Errorf("IsSkillTool(%q) = false for a SkillTools-defined tool", st.Function.Name)
-		}
-	}
-	if IsSkillTool("memory_get") || IsSkillTool("read_file") {
-		t.Error("IsSkillTool returned true for a non-skill tool")
 	}
 }
 
 func TestSkillTemplateTools_Classification(t *testing.T) {
 	for _, n := range []string{"apply_skill_template", "capture_skill_template", "check_skill_template"} {
-		if !IsSkillTool(n) {
-			t.Errorf("IsSkillTool(%q) = false", n)
-		}
 		if !hasTool(names(SkillTools()), n) {
 			t.Errorf("SkillTools missing %q", n)
 		}
 	}
 	for _, n := range []string{"apply_skill_template", "capture_skill_template"} {
-		if !GatedTool(n) || !IsSkillTemplateMainOnlyTool(n) {
-			t.Errorf("%q must be gated and main-agent only", n)
-		}
-		if IsSkillWriteTool(n) {
-			t.Errorf("IsSkillWriteTool(%q) = true; template tools use IsSkillTemplateMainOnlyTool", n)
+		if !gatedTool(n) {
+			t.Errorf("%q must be gated", n)
 		}
 	}
-	if GatedTool("check_skill_template") || IsSkillTemplateMainOnlyTool("check_skill_template") {
-		t.Error("check_skill_template is read-only: ungated and available to all tiers")
+	if gatedTool("check_skill_template") {
+		t.Error("check_skill_template is read-only and ungated")
 	}
 }

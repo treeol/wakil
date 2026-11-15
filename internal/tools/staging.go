@@ -59,11 +59,4 @@ func StagingTools() []proxy.Tool {
 	}
 }
 
-// IsStagingTool reports whether name is one of the staging_* tools.
-func IsStagingTool(name string) bool {
-	switch name {
-	case "staging_put", "staging_get", "staging_delete", "staging_list", "staging_get_many":
-		return true
-	}
-	return false
-}
+

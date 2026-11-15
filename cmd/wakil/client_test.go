@@ -308,11 +308,33 @@ func TestNoMemoryWriteFlag(t *testing.T) {
 	}
 }
 
-// write_file is gated; read_file is not.
+// gated set: write_file is gated, read_file is not.
+// (The authoritative list is internal/tools gatedToolList; this test records
+// the gate's end-to-end behaviour through the real Send path.)
 func TestGatedToolSet(t *testing.T) {
 	for name, want := range map[string]bool{"run_shell": true, "write_file": true, "read_file": false} {
-		if tools.GatedTool(name) != want {
-			t.Errorf("gatedTool(%q) = %v, want %v", name, tools.GatedTool(name), want)
+		if want {
+			// gated tools must reach the Confirm gate in the real loop
+			srv := sseServer(t, toolCallFrames("c1", name, `{"path":"/work/x"}`), []string{contentChunk("done")})
+			defer srv.Close()
+			fexec := newFakeExecutor()
+			prompted := ""
+			app := newTestApp(srv.URL, fexec, func(toolName, _, _ string, _ bool) bool { prompted = toolName; return false })
+			_, _ = app.Send(context.Background(), "go")
+			if prompted != name {
+				t.Errorf("tool %q did not reach the Confirm gate (prompted=%q)", name, prompted)
+			}
+		} else {
+			// read_file must not reach the Confirm gate
+			srv := sseServer(t, toolCallFrames("c1", name, `{"path":"/work/x"}`), []string{contentChunk("done")})
+			defer srv.Close()
+			fexec := newFakeExecutor()
+			prompted := ""
+			app := newTestApp(srv.URL, fexec, func(toolName, _, _ string, _ bool) bool { prompted = toolName; return true })
+			_, _ = app.Send(context.Background(), "go")
+			if prompted == name {
+				t.Errorf("tool %q must not reach the Confirm gate", name)
+			}
 		}
 	}
 }

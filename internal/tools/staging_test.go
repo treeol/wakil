@@ -20,16 +20,3 @@ func TestStagingTools_Detailed(t *testing.T) {
 		}
 	}
 }
-
-func TestIsStagingTool(t *testing.T) {
-	for _, name := range []string{"staging_put", "staging_get", "staging_delete", "staging_list", "staging_get_many"} {
-		if !IsStagingTool(name) {
-			t.Errorf("IsStagingTool(%q) = false, want true", name)
-		}
-	}
-	for _, name := range []string{"", "staging", "memory_put", "read_file"} {
-		if IsStagingTool(name) {
-			t.Errorf("IsStagingTool(%q) = true, want false", name)
-		}
-	}
-}
