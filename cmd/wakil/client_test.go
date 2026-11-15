@@ -348,6 +348,68 @@ func TestGatedToolSet(t *testing.T) {
 	}
 }
 
+// TestAutoModeDestructiveStillAsks verifies that under /auto (AutoApprove=true),
+// a destructive shell command still reaches the Confirm gate because
+// SuspendAuto returns "destructive command" for it. The test wires a
+// confirmer that calls agent.SuspendAuto, mirroring the production
+// newHostConfirmer path.
+func TestAutoModeDestructiveStillAsks(t *testing.T) {
+	srv := sseServer(t, toolCallFrames("c1", "run_shell", `{"command":"rm -rf /work/x"}`), []string{contentChunk("done")})
+	defer srv.Close()
+	fexec := newFakeExecutor()
+	prompted := ""
+	var app *agent.App
+	app = newTestApp(srv.URL, fexec, func(toolName, headline, detail string, readAction bool) bool {
+		// Mirror newHostConfirmer: when AutoApprove is on, SuspendAuto
+		// decides whether to auto-approve or prompt.
+		if app.Consent().AutoApprove {
+			reason := agent.SuspendAuto(toolName, app, detail)
+			if reason == "" {
+				return true // auto-approved
+			}
+			// SuspendAuto carved out — must prompt.
+		}
+		prompted = toolName
+		return false
+	})
+	// Enable /auto but NOT /auto destructive.
+	app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: false, AllowReads: false})
+	_, _ = app.Send(context.Background(), "go")
+	if prompted != "run_shell" {
+		t.Errorf("destructive run_shell under /auto must still ask (prompted=%q)", prompted)
+	}
+}
+
+// TestAutoModeExternalBackendStillAsks verifies that under /auto,
+// the egress consent still asks because SuspendAuto always returns
+// non-empty for "external_backend". checkEgressConsent fires before the
+// turn starts, so the test sets SelectedBackend to trigger it.
+func TestAutoModeExternalBackendStillAsks(t *testing.T) {
+	srv := sseServer(t, []string{contentChunk("done")}, []string{contentChunk("done")})
+	defer srv.Close()
+	fexec := newFakeExecutor()
+	prompted := ""
+	var app *agent.App
+	app = newTestApp(srv.URL, fexec, func(toolName, headline, detail string, readAction bool) bool {
+		if app.Consent().AutoApprove {
+			reason := agent.SuspendAuto(toolName, app, detail)
+			if reason == "" {
+				return true
+			}
+		}
+		prompted = toolName
+		return false
+	})
+	app.SetConsent(agent.ConsentSnapshot{AutoApprove: true, AllowDestructive: true, AllowReads: false})
+	// Set an external backend so checkEgressConsent invokes the Confirm gate.
+	app.SelectedBackend = "test-openrouter"
+	app.BackendList = []agent.BackendInfo{{Name: "test-openrouter", External: true}}
+	_, _ = app.Send(context.Background(), "go")
+	if prompted != "external_backend" {
+		t.Errorf("external_backend under /auto must still ask (prompted=%q)", prompted)
+	}
+}
+
 func reasoningChunk(s string) string {
 	return fmt.Sprintf(`{"choices":[{"delta":{"reasoning_content":%q},"finish_reason":null}]}`, s)
 }
