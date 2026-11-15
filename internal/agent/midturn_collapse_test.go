@@ -90,3 +90,32 @@ func TestMidTurnCollapseFiresInsideLongTurn(t *testing.T) {
 	assertPairing(t, proj)
 	assertNoOrphanedToolCalls(t, proj)
 }
+
+// TestAutomaticCollapsePreservesExplicitCheckpoint covers an automatic
+// boundary advance after the model saved a checkpoint in the same turn.
+func TestAutomaticCollapsePreservesExplicitCheckpoint(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.curTurn, app.turnSeq = 1, 1
+	app.Cfg.ContextCollapseCeilingTokens = 1000
+	app.Cfg.ContextCollapseMinBytes = 1
+	app.Out = new(strings.Builder)
+	app.appendConv(proxy.Message{Role: "user", Content: StrPtr("original task")})
+	for i := 1; i <= 4; i++ {
+		id := fmt.Sprintf("c%d", i)
+		app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: id, Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}})
+		app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("result ", 1000))})
+	}
+	old := CollapseRecord{Turn: 1, Partial: true, BoundaryCallID: "c2", Summary: "explicit summary", NextSteps: "run the check", StashKey: "ctx/test/saved", StashDesc: "saved checkpoint", StashKeptFromPrior: true}
+	app.collapsed = map[int]CollapseRecord{1: old}
+	app.collapseMidTurnPrefix()
+	got := app.collapsed[1]
+	if got.BoundaryCallID == old.BoundaryCallID {
+		t.Fatal("automatic boundary did not advance")
+	}
+	if got.Summary != old.Summary || got.NextSteps != old.NextSteps || got.StashKey != old.StashKey || got.StashDesc != old.StashDesc || !got.StashKeptFromPrior {
+		t.Fatalf("explicit checkpoint lost: %+v", got)
+	}
+	assertNoOrphanedToolCalls(t, app.contextProjection())
+}

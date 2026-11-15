@@ -1835,6 +1835,15 @@ func (a *App) collapseMidTurnPrefix() {
 		Partial:        true,
 		BoundaryCallID: tailCallID,
 	}
+	// Advancing an automatic boundary must preserve the model's explicit
+	// checkpoint and recall pointer from an earlier collapse in this turn.
+	if existing {
+		rec.Summary, rec.NextSteps = existingRec.Summary, existingRec.NextSteps
+		rec.StashKey, rec.StashDesc = existingRec.StashKey, existingRec.StashDesc
+		rec.StashRefused = existingRec.StashRefused
+		rec.StashWriteFailed = existingRec.StashWriteFailed
+		rec.StashKeptFromPrior = existingRec.StashKeptFromPrior
+	}
 	// T5 never-inflate: a checkpoint that is not smaller than the
 	// working set it replaces is not worth recording.
 	cpEstimate := len(buildPartialCheckpointBlock(rec))
