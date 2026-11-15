@@ -247,12 +247,6 @@ func TestAppendSkillHint_FiresAndPersistsAcrossCalls(t *testing.T) {
 	}
 }
 
-func TestFormatSkillSequence(t *testing.T) {
-	if got := formatSkillSequence(seq("a", "b")); got != "a → b" {
-		t.Errorf("formatSkillSequence = %q", got)
-	}
-}
-
 // D2: a fresh config defaults to skill auto-creation "off".
 func TestSkillCreationDefaultIsOff(t *testing.T) {
 	var c config.SkillCreationConfig

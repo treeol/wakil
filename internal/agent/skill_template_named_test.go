@@ -35,10 +35,11 @@ func namedTmpl() *skillTemplate {
 
 func TestNamedTemplateRoundTripAndValidation(t *testing.T) {
 	in := namedTmpl()
-	value, err := joinSkillTemplate("# prose", in)
+	section, err := serializeTemplateSection(in)
 	if err != nil {
 		t.Fatal(err)
 	}
+	value := "# prose\n\n" + section
 	got, err := parseSkillTemplateValue(value)
 	if err != nil {
 		t.Fatalf("parse: %v\n%s", err, value)

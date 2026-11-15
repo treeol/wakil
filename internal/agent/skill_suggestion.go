@@ -27,10 +27,6 @@ package agent
 //   - Skill/memory/counsel/subagent bookkeeping tools are excluded so hint
 //     machinery doesn't contaminate its own fingerprints.
 
-import (
-	"strings"
-)
-
 // skillSuggestion* thresholds and caps for the B1/B2 hint logic.
 const (
 	// b2MinCalls / b2MinDistinct / b1MinCalls gate the two triggers.
@@ -214,9 +210,4 @@ func (a *App) appendSkillHint(tcName string, ok bool, text string) string {
 		a.setSkillSignal(a.skillSuggest.signal)
 	}
 	return text
-}
-
-// formatSkillSequence renders a sequence for diagnostics (tests/logs).
-func formatSkillSequence(seq []string) string {
-	return strings.Join(seq, " → ")
 }

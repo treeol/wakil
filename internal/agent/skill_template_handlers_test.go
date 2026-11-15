@@ -518,10 +518,11 @@ func TestApplySkillTemplateCanonicalCollision(t *testing.T) {
 	ctx := context.Background()
 	// Template with two files that collide only after symlink resolution.
 	tmpl := &skillTemplate{Files: []templateFile{{Path: "real/x", Body: "one\n"}, {Path: "alias/x", Body: "two\n"}}}
-	value, err := joinSkillTemplate("collide", tmpl)
+	section, err := serializeTemplateSection(tmpl)
 	if err != nil {
 		t.Fatal(err)
 	}
+	value := "collide\n\n" + section
 	b, _ := json.Marshal(map[string]string{"key": "collide", "value": value})
 	app.handleSaveSkill(ctx, skillTC("save_skill", string(b)))
 	if err := os.MkdirAll(filepath.Join(ws, "out/real"), 0o755); err != nil {

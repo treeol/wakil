@@ -617,14 +617,6 @@ func referencedParams(entries []templateFile) map[string]bool {
 	return ref
 }
 
-// resolveTemplateParams merges supplied values with defaults and validates
-// them for the whole template (legacy behavior: every declared param is in
-// scope). It reports every missing required param at once.
-func resolveTemplateParams(t *skillTemplate, supplied map[string]string) (map[string]string, error) {
-	values, _, err := resolveParamsScoped(t, nil, supplied, false)
-	return values, err
-}
-
 // resolveParamsScoped resolves params for a selection. scope limits which
 // declared params are resolved (nil: all); supplied params outside the scope
 // but declared are ignored, undeclared ones are an error. With allowUnfilled a
@@ -702,14 +694,6 @@ type renderedSnippet struct {
 	Template string
 	Target   string
 	Content  string
-}
-
-// renderTemplate renders every file of a legacy/whole template with resolved
-// values (snippets are skipped). Rendered paths are re-validated (a
-// placeholder value must not introduce traversal).
-func renderTemplate(t *skillTemplate, values map[string]string) ([]renderedFile, error) {
-	files, _, err := renderSelection(t.Files, values)
-	return files, err
 }
 
 // renderSelection renders the chosen entries: files are validated and
@@ -802,19 +786,6 @@ func serializeTemplateSection(t *skillTemplate) (string, error) {
 		b.WriteString(tmplEndPrefix + f.Path + tmplMarkerSuffix + "\n")
 	}
 	return b.String(), nil
-}
-
-// joinSkillTemplate builds a full skill value from prose and a template.
-func joinSkillTemplate(prose string, t *skillTemplate) (string, error) {
-	section, err := serializeTemplateSection(t)
-	if err != nil {
-		return "", err
-	}
-	prose = strings.TrimRight(prose, " \t\r\n")
-	if prose == "" {
-		return section, nil
-	}
-	return prose + "\n\n" + section, nil
 }
 
 // validateSkillTemplateValue enforces template invariants on a value about to

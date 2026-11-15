@@ -31,10 +31,8 @@ func TestSkillTemplateRoundTrip(t *testing.T) {
 				Params: []templateParam{{Name: "NAME", Required: true}},
 				Files:  []templateFile{{Path: "f.txt", Body: body}, {Path: "second", Body: "x\n"}},
 			}
-			value, err := joinSkillTemplate("# prose\nsome text", in)
-			if err != nil {
-				t.Fatal(err)
-			}
+			section := mustSection(t, in)
+			value := "# prose\nsome text\n\n" + section
 			got, err := parseSkillTemplateValue(value)
 			if err != nil {
 				t.Fatalf("parse: %v\nvalue:\n%s", err, value)
@@ -46,8 +44,8 @@ func TestSkillTemplateRoundTrip(t *testing.T) {
 				t.Errorf("prose = %q", skillProse(value))
 			}
 			// Re-serialization is byte-stable.
-			if again := mustSection(t, got); again != mustSection(t, in) {
-				t.Errorf("section not stable:\n%s\nvs\n%s", again, mustSection(t, in))
+			if again := mustSection(t, got); again != section {
+				t.Errorf("section not stable:\n%s\nvs\n%s", again, section)
 			}
 		})
 	}
@@ -111,33 +109,36 @@ func TestResolveAndRender(t *testing.T) {
 	}
 
 	t.Run("missing required", func(t *testing.T) {
-		_, err := resolveTemplateParams(tmpl, nil)
+		_, _, err := resolveParamsScoped(tmpl, nil, nil, false)
 		if err == nil || !strings.Contains(err.Error(), "STACK") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("unknown param", func(t *testing.T) {
-		_, err := resolveTemplateParams(tmpl, map[string]string{"STACK": "a", "X": "1"})
+		_, _, err := resolveParamsScoped(tmpl, nil, map[string]string{"STACK": "a", "X": "1"}, false)
 		if err == nil || !strings.Contains(err.Error(), "unknown") {
 			t.Fatalf("err = %v", err)
 		}
 	})
 	t.Run("pattern is full match", func(t *testing.T) {
-		if _, err := resolveTemplateParams(tmpl, map[string]string{"STACK": "ok-1; rm -rf /"}); err == nil {
+		if _, _, err := resolveParamsScoped(tmpl, nil, map[string]string{"STACK": "ok-1; rm -rf /"}, false); err == nil {
 			t.Fatal("partial pattern match must be rejected")
 		}
 	})
 	t.Run("newline rejected", func(t *testing.T) {
-		if _, err := resolveTemplateParams(tmpl, map[string]string{"STACK": "a", "OPT": "x\ny"}); err == nil {
+		if _, _, err := resolveParamsScoped(tmpl, nil, map[string]string{"STACK": "a", "OPT": "x\ny"}, false); err == nil {
 			t.Fatal("multi-line value must be rejected")
 		}
 	})
 	t.Run("render single pass", func(t *testing.T) {
-		values, err := resolveTemplateParams(tmpl, map[string]string{"STACK": "shop", "OPT": "@@PORT@@"})
+		values, unfilled, err := resolveParamsScoped(tmpl, nil, map[string]string{"STACK": "shop", "OPT": "@@PORT@@"}, false)
 		if err != nil {
 			t.Fatal(err)
 		}
-		files, err := renderTemplate(tmpl, values)
+		if len(unfilled) != 0 {
+			t.Fatalf("unfilled = %v, want none", unfilled)
+		}
+		files, _, err := renderSelection(tmpl.Files, values)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -148,18 +149,18 @@ func TestResolveAndRender(t *testing.T) {
 	})
 	t.Run("path value traversal rejected", func(t *testing.T) {
 		loose := &skillTemplate{Params: []templateParam{{Name: "DIR", Required: true}}, Files: []templateFile{{Path: "@@DIR@@/x", Body: ""}}}
-		values, _ := resolveTemplateParams(loose, map[string]string{"DIR": "../../etc"})
-		if _, err := renderTemplate(loose, values); err == nil {
+		values, _, _ := resolveParamsScoped(loose, nil, map[string]string{"DIR": "../../etc"}, false)
+		if _, _, err := renderSelection(loose.Files, values); err == nil {
 			t.Fatal("rendered path with .. must be rejected")
 		}
-		values, _ = resolveTemplateParams(loose, map[string]string{"DIR": ".wakil"})
-		if _, err := renderTemplate(loose, values); err == nil {
+		values, _, _ = resolveParamsScoped(loose, nil, map[string]string{"DIR": ".wakil"}, false)
+		if _, _, err := renderSelection(loose.Files, values); err == nil {
 			t.Fatal("rendered path into .wakil/ must be rejected")
 		}
 	})
 	t.Run("file vs dir conflict", func(t *testing.T) {
 		c := &skillTemplate{Files: []templateFile{{Path: "a", Body: ""}, {Path: "a/b", Body: ""}}}
-		if _, err := renderTemplate(c, map[string]string{}); err == nil {
+		if _, _, err := renderSelection(c.Files, map[string]string{}); err == nil {
 			t.Fatal("a and a/b must conflict")
 		}
 	})
