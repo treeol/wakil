@@ -149,22 +149,6 @@ func TestHeadlessWriter_FlushEmpty(t *testing.T) {
 	}
 }
 
-func TestEmitEvent(t *testing.T) {
-	var buf bytes.Buffer
-	wiring.EmitEvent(&buf, map[string]any{"type": "done", "status": "pass"})
-
-	var event map[string]any
-	if err := json.Unmarshal(buf.Bytes(), &event); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if event["type"] != "done" {
-		t.Errorf("type = %v, want 'done'", event["type"])
-	}
-	if event["status"] != "pass" {
-		t.Errorf("status = %v, want 'pass'", event["status"])
-	}
-}
-
 func TestParseRunArgs_AutoCounselDefault(t *testing.T) {
 	task, _, flags, err := parseRunArgs([]string{"--auto-counsel", "do task"})
 	if err != nil {

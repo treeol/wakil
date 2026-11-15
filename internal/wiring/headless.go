@@ -104,10 +104,6 @@ func emitEvent(w io.Writer, ev map[string]any) {
 	fmt.Fprintf(w, "%s\n", b)
 }
 
-// EmitEvent writes one JSON-lines event to w (exported wrapper for emitEvent,
-// used by CLI integration tests).
-func EmitEvent(w io.Writer, ev map[string]any) { emitEvent(w, ev) }
-
 // headlessWriter adapts the free-form io.Writer interface (used by app.Out) to a
 // JSON-lines event stream. Text is accumulated until a newline, then flushed as
 // {"type":"output","line":"..."}. ANSI escape codes are stripped.
