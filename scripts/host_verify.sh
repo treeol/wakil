@@ -248,5 +248,31 @@ check changelog-heading sh -c '
   fi
 '
 
+# --- 14. TUI benchmark regression (Part 2, 0.8.4) ---
+# Runs the frame-cost regression test and the Part 1 smoke/soak in
+# isolation (the full go-test above already covers them, but this gate
+# names the cost so a failure points at the frame, not "go-test" in
+# general). SKIP-partial: the soak is 98s; -run only targets the
+# regression test + smoke, which together are ~4s.
+if command -v go >/dev/null 2>&1; then
+  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke" ./internal/tui/ 2>&1 | tail -10'
+else
+  echo "SKIP  tui-perf (go not available)"
+  skip=$((skip+1))
+fi
+
+# --- 15. TUI screen tests on real output (Part 5, 0.8.4) ---
+# The screen harness drives a real tea.Program over in-memory pipes;
+# each test may SKIP with a reason when the FakeFacade cannot surface
+# the event through Send (approval prompts, Mashūra panels). A SKIP is
+# reported as SKIP here rather than FAIL, so the script stays honest
+# about what cannot be driven in this environment.
+if command -v go >/dev/null 2>&1; then
+  check tui-screen sh -c 'go test -count=1 -run "TestScreen" ./internal/tui/ 2>&1 | tail -10'
+else
+  echo "SKIP  tui-screen (go not available)"
+  skip=$((skip+1))
+fi
+
 # The EXIT trap (cleanup) prints the summary table.
 exit 0
