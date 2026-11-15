@@ -135,35 +135,6 @@ const (
 	ChoiceGrantTool                        // run this one and auto-approve future [tool] calls this session
 )
 
-// grantEligibleTools is the session-client's grant allowlist, mirrored in
-// agent/grants.go. TestGrantEligibilityParity (agent/grants_test.go) checks
-// the two copies match. Both must list the same tools; the agent's
-// IsGrantEligible reads its own copy, and this one exists so the parity
-// test can assert they stay in sync. Deletes, moves, and external-backend
-// egress are never eligible. For run_shell/run_background, eligibility
-// in this set is necessary but not sufficient — the per-call
-// destructive-command exclusion is computed agent-side
-// (agent.GrantEligibleForCall) and carried in ApprovalRequest.GrantEligible
-// so the TUI never re-derives it.
-//
-//nolint:unused — mirror of agent.grantEligibleTools; read by TestGrantEligibilityParity
-var grantEligibleTools = map[string]bool{
-	"read_file":         true,
-	"read_file_full":    true,
-	"search_files":      true,
-	"find_files":        true,
-	"list_dir":          true,
-	"lsp_definition":    true,
-	"lsp_references":    true,
-	"lsp_hover":         true,
-	"lsp_symbols":       true,
-	"write_file":        true,
-	"write_binary_file": true,
-	"edit_file":         true,
-	"run_shell":         true,
-	"run_background":    true,
-}
-
 // ApprovalRequest mirrors the fields of agent.ConfirmReqMsg that the TUI
 // displays. The response channel (RespCh) is deliberately absent — async
 // approval is answered through the host's RespondToApproval, not a channel.

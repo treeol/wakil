@@ -5,39 +5,6 @@ import (
 	"testing"
 )
 
-var sessionClientGrantEligible = map[string]bool{
-	"read_file":         true,
-	"read_file_full":    true,
-	"search_files":      true,
-	"find_files":        true,
-	"list_dir":          true,
-	"lsp_definition":    true,
-	"lsp_references":    true,
-	"lsp_hover":         true,
-	"lsp_symbols":       true,
-	"write_file":        true,
-	"write_binary_file": true,
-	"edit_file":         true,
-	"run_shell":         true,
-	"run_background":    true,
-}
-
-// TestGrantEligibilityParity ensures the agent's grantEligibleTools matches
-// the session-client copy exactly — the two maps are kept in sync here so
-// the TUI's list cannot drift from the agent's enforcement.
-func TestGrantEligibilityParity(t *testing.T) {
-	for tool := range grantEligibleTools {
-		if !sessionClientGrantEligible[tool] {
-			t.Errorf("agent grants %q but the session-client list does not", tool)
-		}
-	}
-	for tool := range sessionClientGrantEligible {
-		if !grantEligibleTools[tool] {
-			t.Errorf("session-client grants %q but agent does not", tool)
-		}
-	}
-}
-
 func TestAddGrantRejectsIneligible(t *testing.T) {
 	for _, tool := range []string{"delete_file", "move_file", "external_backend"} {
 		app := &App{}

@@ -118,10 +118,3 @@ linters:
       # os.WriteFile in non-critical paths.
       - linters: [errcheck]
         text: "os.WriteFile"
-
-      # grantEligibleTools in sessionclient/facade.go is a deliberate mirror
-      # of agent.grantEligibleTools; only read by the parity test in another
-      # package. Both must stay in sync.
-      - path: internal/core/sessionclient/facade\.go
-        linters: [unused]
-        text: "grantEligibleTools"
