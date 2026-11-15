@@ -24,7 +24,9 @@ import (
 // control requests, `hisn stop`, and 0.3.3's profiles, services, risk labels,
 // [home]/[rootfs]/[ssh] and "src:dst" known_hosts mounts). Older hisn is
 // refused at startup with a message naming this version; there is no fallback.
-const MinVersion = "0.4.2"
+// It aliases sandbox.MinHisnVersion, the single definition this package and
+// internal/config share.
+const MinVersion = sandbox.MinHisnVersion
 
 // computedEnv names hisn always sets itself inside the sandbox; an exec may
 // not override them (hisn rejects the whole request if it tries).

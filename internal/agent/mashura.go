@@ -816,16 +816,8 @@ func (a *App) defaultPanel() (string, config.MashuraPanelConfig, bool) {
 // mashuraPanelKeys collects the OpenRouter API key for the panel, checking it
 // is present before the gate fires. Every member routes through OpenRouter
 // now: a configured "anthropic:<model>" member is mapped mechanically to the
-// OpenRouter slug "anthropic/<model>" and uses the OpenRouter key. (The
-// direct Anthropic path is gone; an Anthropic key, if set, is ignored — see
-// NoteAnthropicKeyIgnored.)
+// OpenRouter slug "anthropic/<model>" and uses the OpenRouter key.
 func (a *App) mashuraPanelKeys(panel config.MashuraPanelConfig) (map[string]string, error) {
-	for _, model := range panel.Models {
-		if prov, _ := counsel.ParseModelPrefix(model); prov == "anthropic" {
-			NoteAnthropicKeyIgnored(a.Out, a.Cfg.OracleAPIKeyEnv)
-			break
-		}
-	}
 	key := os.Getenv(a.Cfg.OpenRouterAPIKeyEnv)
 	if key == "" {
 		return nil, fmt.Errorf("mashūra API key not set (%s)", a.Cfg.OpenRouterAPIKeyEnv)

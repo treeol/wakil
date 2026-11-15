@@ -1371,8 +1371,9 @@ const (
 // supervisor.pid as "<pid> <starttime>", `ls --prune --name-prefix`; on top
 // of 0.4.0's named sessions, hisn-ls/v2 states, the client record on control
 // requests, `hisn stop`, and 0.3.3's profiles, risk labels, [home]/[rootfs]/[ssh]
-// and "src:dst" read-only mounts).
-const MinHisnVersion = "0.4.2"
+// and "src:dst" read-only mounts). It aliases sandbox.MinHisnVersion, the
+// single definition both this package and the hisn backend share.
+const MinHisnVersion = sandbox.MinHisnVersion
 
 // DefaultHisnEnvPass is the set of variable names allowed through into hisn
 // execs by default: toolchain knobs Wakil's tools need, none that carry
