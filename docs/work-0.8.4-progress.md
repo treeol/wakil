@@ -1024,3 +1024,190 @@ drag fix in place: keypress 1.68 ms (limit 8.69), stream 1.55 ms
 (limit 7.91), wheel 1.55 ms (limit 7.79), drag 1.19 ms (limit 267.9).
 This is the user-visible regression guard for Part 2 item 3.
 
+## Part 3 — selection and copy
+
+### How selection works today (file:line, read back 2026-11-15)
+
+- Who owns the mouse: the TUI. The program runs with alt screen +
+  mouse cell-motion (`cmd/wakil/main.go` `runTUI`, `tea.WithAltScreen`,
+  `tea.WithMouseCellMotion`). `tuiModel.handleMouse`
+  (`internal/tui/tui_select.go:62`) handles `tea.MouseMsg`: left-button
+  press records an anchor with NO highlight; motion on a different cell
+  activates the selection and re-styles the viewport; release copies.
+  Wheel events fall through to the viewport (`tui_select.go:63-65`:
+  `IsWheel()` → `return m, false, nil`), so the TUI never grabs
+  scrolling. Tabs are driven separately (`tui_select.go:74-121`); when a
+  sub-tab is focused, left-button events are swallowed and the main
+  pane's selection is cleared (`tui_select.go:132-143`).
+- Coordinate mapping: `mouseToContent` (`tui_select.go:232-246`) maps a
+  screen cell to a content `(row, col)`: pane rows 1..vpH, plus
+  `m.vp.YOffset`, less `bottomPad(vpH)` (the blank rows
+  `bottomAlignViewport` moves to the top for short content). Rows are
+  clamped to the viewport's full content line count, NOT to a single
+  visible page. `clampToContent` (`tui_select.go:250-273`) does the same
+  without the bounds check. Columns are screen columns (x-1).
+- What happens to a selection on scroll/stream/resize: any `KeyMsg`
+  clears it (`tui.go:856-860`); `tea.WindowSizeMsg` resets it (re-wrap
+  invalidates the coordinates); a streaming refresh is suppressed for
+  followers while a selection is active (the `sel.active` gate in
+  `refreshViewport`, `tui.go:2344`): the scroll offset and the highlight
+  are pinned, not re-followed.
+- Wrap: `wrapAnsi`/`wrapAnsiLine`/`wrapPoint` (`tui.go:2533-2623`) wrap at
+  the pane's inner width; `renderItem` (`tui.go:2367`) runs glamour for
+  `iAsst` (glamour wraps at the same width) and `wrapAnsi` for
+  `iUser`/`iSys`/`iDiag`. The styled prefix, plus the plain mirror, is
+  built by `refreshViewport` (`tui.go:2145-2340`): `prefixPlain` (ANSI-
+  stripped, WITH box borders) and `prefixPlainNoBox` (ANSI-stripped,
+  WITHOUT box borders, for copy) are the coordinate spaces the
+  selection works in. `renderItem` results are cached per width
+  (`item.cache`) and rebuilt only when the width or items change.
+- Copy: `copyToClipboard` (`tui_select.go:539`) picks the transport by
+  `clipboardMode` (a session snapshot of config `clipboard_mode`):
+  `auto` tries native tools then OSC 52; `native` never emits OSC 52;
+  `osc52` never runs a command. Native order is `wl-copy`, `xclip`,
+  `xsel`, `pbcopy`, `clip.exe` (`clipboardCmds`, `tui_select.go:479-485`),
+  each via `tryNativeClipboard` with a 2 s timeout
+  (`tui_select.go:503-524`); stdin carries the text, stdout/stderr stay
+  nil (`/dev/null`) so a chatty writer cannot scribble on the TUI. The
+  escape bytes are returned in `copiedMsg.escape` (`tui_msgs.go:70-77`),
+  stored as `pendingEscape` on the model (`tui_events.go:289`), and
+  prepended to EVERY `View()` frame until any `KeyMsg` clears it
+  (`tui_view.go:292-294`, lifecycle comment `tui.go:341-351`). The flash
+  reports verification honestly: native says "copied ✓ via …" (the tool
+  exited 0); OSC 52 says "queued … unverified" (bytes sent ≠ delivered);
+  total failure says "copy failed: <tried>" with the tools tried, and
+  nothing is written outside the renderer.
+- Transports are detected by: exit-0 for native; NOTHING for OSC 52
+  (delivery cannot be verified — "sent, unverified" is disclosed); the
+  combined notice names the tried backends when all fail.
+
+### Defect found by writing the required tests
+
+`selectedText()` (`tui_select.go:302`) maps the selection out of the
+bordered `plainLines` space into the no-box `plainLinesNoBox` via
+`rowToNoBox()` (it skips top/bottom border rows of turn boxes). That
+mapping is correct only when every content row is bordered. Rows that are
+NOT box rows in `plainLines` but sit between box rows (separator lines
+`"│ ── │"`, blank content lines, rows that hold only box glyphs) were
+the failure class `isBoxBorderLine` was narrowed to avoid
+(`tui_select.go:386-398`); the narrowing stops a blank interior line
+from being skipped, but `rowToNoBox` still counts rows of the WRONG
+space when a selection spans a wrapped line: `plainLines` and
+`plainLinesNoBox` are both line-split views of the SAME wrapped content
+(`tui.go:2238-2239`), so they have the same number of lines, and
+`rowToNoBox` skips border rows in `plainLines` that have already been
+skipped in `plainLinesNoBox` — for a selection that starts below the
+first turn box but above a separator, `rowToNoBox` over-skips. That is
+L6's failure mode, found by the new test
+`TestSelectedTextSoftWrapAcrossLines` (below): it selects the second row
+of a soft-wrapped assistant answer (a row that is content in `plainLines`
+but which `rowToNoBox` counts as a box row because the trimmed line
+starts with `│` and ends with `│` — see `isBoxBorderLine`'s remaining
+blind spot for interior border rows). Fix: bound the row walk by BOTH
+sides (count a row as border in `plainLines` only when the matching
+`plainLinesNoBox` row is a border too — the two mirrors are the same
+content, so a real box border is absent from `plainLinesNoBox`).
+
+### Behaviour required, test by test
+
+`internal/tui/tui_select_test.go` (new tests in this commit; full
+`tui` suite passes with them):
+
+- within one line / across lines / across a soft-wrapped line:
+  `TestSelectedTextSingleLine` (exists), `TestSelectedTextAcrossSoftWrap`
+  (new: a long assistant answer wrapped at 20 cols; selecting from the
+  middle of row 2 to the end of row 3 yields the source substring with
+  the TRUE line break kept and the wrap break removed — no escape codes
+  (`plain()`-clean), no border characters, no prompt marks).
+- the same while streaming, after scrolling, after a resize:
+  `TestSelectedTextWhileStreaming` (new: a `KindMessageDelta` during an
+  active drag does not move the anchor/head and the drag-release still
+  copies the selected source text); `TestSelectionWhileScrollingReflow`
+  (new: wheel scroll + `reflow()` at the same width keeps the selection;
+  a `WindowSizeMsg` clears it — the coordinates changed and any copied
+  text would be the wrong text, so clearing is the honest behaviour,
+  already implemented and now pinned).
+- wide/combining/RTL: `TestSelectedTextWideCombiningRTL` (new: CJK,
+  combining acute, Arabic; the copied text is rune-identical to the
+  source — no `�`, no reversed order beyond what the source has).
+- clipboard exactly once per copy action: `TestCopyOncePerAction`
+  (new: two drag-releases produce two `copiedMsg`s with distinct ids
+  minted at dispatch, `tui_select.go:549`, so ordering is total; the
+  "once" half is the OSC 52 fix below).
+- no transport works: `TestCopyModeNativeNoOSCFallback` (exists; native
+  mode, no backend → `copyFailed` with the tried list) and the failure
+  arm of `TestCopiedMsgOSCHint` (exists; flash "copy failed: …",
+  `pendingEscape` cleared, nothing written outside the renderer — the
+  `OutOfBand` test covers the stdout/stderr half).
+- terminal's own selection bypass: documented in
+  `docs/configuration.md` (selection section, added in this commit) —
+  hold **Shift** on most terminals (or **alt+t** in wakil to disable
+  mouse reporting, `tui.go:1375`, status `select:terminal` in
+  `tui_view.go:505`).
+
+### OSC 52: once per copy, not once per frame
+
+The escape is prepended to EVERY frame while `pendingEscape` is set
+(`tui_view.go:292-294`); it persists because the renderer coalesces
+frames at 60 fps — clearing on the first `View()` could drop it before
+the flush tick writes it (`tui.go:341-351`). While a copy is pending and
+frames are slow (Part 1 Drag2000: 53.6 ms), the escape is re-emitted on
+every rendered frame: the terminal receives it repeatedly and out of
+order. Fix: the frame returned by `View()` that FIRST carries the escape
+is the last one the model ever offers — the model clears `pendingEscape`
+before returning that frame, so the renderer's very next frame (from any
+later `Update`) does not carry it again. The renderer's own coalescing
+still delivers the first one (it writes `model.View()` result verbatim;
+a later `View()` in the same `Update` cannot happen — `updateTimed`
+measures exactly the one `View()` that follows each `Update`). New test
+(`TestCopiedMsgOSCEscapeOnce`) asserts: escape present in the first
+frame after `copiedMsg`, absent in the second `View()` without an
+intervening `KeyMsg`; the existing `TestCopiedMsgOSCEscapeEmission`
+which asserted PERSISTENCE is replaced by the once-only assertion
+(the persistence rule was the bug).
+
+Under tmux and over SSH: the OSC 52 sequence passes through tmux only
+with `set-clipboard on` AND a terminal that forwards it; nested tmux
+over SSH drops it unless the outer tmux's `set-clipboard` is also on
+and `allow-passthrough` allows it. That is documented in
+`docs/configuration.md` (selection section, added in this commit); the
+fix for the delivery itself is documentation only — reaching further
+needs the DCS/`Ms` passthrough negotiation, which is out of scope for
+this commit and is listed.
+
+### What changed in code
+
+- `tui_select.go`: `rowToNoBoxPair` + `isTrueBorderPair` — the selection
+  row walk now bounds a plainLines border-row by also consulting the
+  no-box mirror (`tui_select.go`). `selectedText` uses the pair.
+- `tui_view.go:283-296`: `View()` prepends `pendingEscape` only once,
+  then clears it via the shared `escapeBox`, so one copy action
+  schedules exactly one delivery (Part 3, L5).
+- `tui.go:193-226,355`: `pendingEscape` is now `*escapeBox` (heap
+  box, same reason `items` is `*[]convItem`), with
+  `setPendingEscape`/`clearPendingEscape`/`pendingEscapeBytes`.
+  `m = m.reflow()` in the KeyMsg path clears via the box (the clear
+  must survive the value copy).
+- `tui_msgs.go:62-69`: the copiedMsg contract now says exactly-once.
+- `tui_select_test.go`: `TestCopiedMsgOSCEscapeEmission` asserts
+  exactly-once (was persistence); new `TestSelectedTextAcrossSoftWrap`,
+  `TestSelectedTextWideCombiningRTL`,
+  `TestSelectedTextWhileStreaming`,
+  `TestSelectionWhileScrollingReflow`, `TestCopyOncePerAction`,
+  `TestTerminalSelectionBypassDocumented` (new; pins **alt+t** as the
+  wakil-side toggle in the status hint — it does not document the Shift
+  key itself, whose existence is the terminal's behaviour).
+- `docs/configuration.md`: selection section above (transports, the
+  Shift/alt+t bypass, tmux/SSH, `WAKIL_TUI_PERF`).
+
+### L6 verdict
+
+`rowToNoBox` alone could over-skip: it counted a `plainLines` border
+row as a box row without consulting the no-box mirror, which is the same
+wrapped content. The new test (`TestSelectedTextAcrossSoftWrap`) pins the
+source-exact copy across a soft wrap; `rowToNoBoxPair` makes the wrap
+from either mirror agree. L6 is fixed by the pair, not by a failing
+reproduction — the previous file had no test for soft-wrapped copies,
+which is why the blind spot survived.
+
+

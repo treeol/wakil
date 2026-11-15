@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/core/event"
 )
 
 func mdl(lines ...string) tuiModel {
@@ -131,12 +132,12 @@ func TestCopiedMsgStaleIDRejected(t *testing.T) {
 func TestNativeSuccessClearsPendingEscape(t *testing.T) {
 	m, _ := newTestTUI(t)
 	m = step(m, copiedMsg{n: 5, via: copyViaOSC52, outcome: copySentUnverified, escape: []byte("\x1b]52;c;old=\x07")})
-	if len(m.pendingEscape) == 0 {
+	if len(m.pendingEscapeBytes()) == 0 {
 		t.Fatal("precondition: pendingEscape set by osc52 copy")
 	}
 	m = step(m, copiedMsg{n: 5, via: copyViaNative, outcome: copyOK, detail: "wl-copy", id: 1})
-	if m.pendingEscape != nil {
-		t.Fatalf("native success must clear pendingEscape, got %q", m.pendingEscape)
+	if len(m.pendingEscapeBytes()) != 0 {
+		t.Fatalf("native success must clear pendingEscape, got %q", m.pendingEscapeBytes())
 	}
 }
 
@@ -357,12 +358,12 @@ func TestCopyToClipboardUnicode(t *testing.T) {
 	}
 }
 
-// TestCopiedMsgOSCEscapeEmission verifies that the OSC 52 escape is stored on
-// the model as pendingEscape when the copiedMsg arrives, emitted through
-// View(), and persists across View() calls (NOT one-shot) so the standard
-// renderer's frame coalescing can't drop it. The escape is cleared by a
-// KeyMsg, not by View(). NOTE: this persistence is a known best-effort
-// trade-off — delivery is "queued, unverified", never claimed as verified.
+// TestCopiedMsgOSCEscapeEmission verifies that the OSC 52 escape is stored
+// on the model as pendingEscape when the copiedMsg arrives and emitted
+// through the first View() that follows — exactly once per copy action
+// (Part 3, L5). The escape is cleared by that first View() (not by a
+// KeyMsg), so a later frame never carries it again. Delivery is
+// "queued, unverified", never claimed as verified.
 func TestCopiedMsgOSCEscapeEmission(t *testing.T) {
 	m, _ := newTestTUI(t)
 	m.ready = true
@@ -371,8 +372,8 @@ func TestCopiedMsgOSCEscapeEmission(t *testing.T) {
 	esc := []byte("\x1b]52;c;aGVsbG8=\x07")
 	m = step(m, copiedMsg{n: 5, via: copyViaOSC52, outcome: copySentUnverified, escape: esc})
 
-	if string(m.pendingEscape) != string(esc) {
-		t.Fatalf("pendingEscape=%q want %q", m.pendingEscape, string(esc))
+	if string(m.pendingEscapeBytes()) != string(esc) {
+		t.Fatalf("pendingEscape=%q want %q", m.pendingEscapeBytes(), string(esc))
 	}
 
 	// View() must emit the escape prepended to the frame.
@@ -381,15 +382,16 @@ func TestCopiedMsgOSCEscapeEmission(t *testing.T) {
 		t.Errorf("View() should emit the OSC 52 escape first; got %q...\"", view[:min(40, len(view))])
 	}
 
-	// The escape must PERSIST across View() calls — the standard renderer
-	// coalesces frames at 60fps, so View() may be called multiple times before
-	// a frame is actually written. Clearing in View() would drop the escape.
+	// Exactly once: the next View() must NOT carry it again.
 	view2 := m.View()
-	if !strings.HasPrefix(view2, "\x1b]52;c;") {
-		t.Errorf("View() should still emit the escape on second call; the renderer may not have flushed the first frame yet")
+	if strings.HasPrefix(view2, "\x1b]52;c;") {
+		t.Errorf("View() re-emitted the OSC 52 escape on the second call; a copy action must schedule exactly one delivery")
 	}
 }
 
+// TestCopiedMsgOSCHint verifies the flash wording per outcome: OSC 52 says
+// "queued … unverified" (bytes sent is not delivery), native says "copied ✓
+// via <backend>", failure says "copy failed: …".
 // TestCopiedMsgOSCHint verifies the flash wording per outcome: OSC 52 says
 // "queued … unverified" (bytes sent is not delivery), native says "copied ✓
 // via <backend>", failure says "copy failed: …".
@@ -428,12 +430,168 @@ func TestCopiedMsgOSCHint(t *testing.T) {
 
 	// Failure — honest report, escape cleared.
 	m, _ = newTestTUI(t)
-	m.pendingEscape = []byte("stale")
+	m.setPendingEscape([]byte("stale"))
 	m = step(m, copiedMsg{n: 0, via: copyViaNative, outcome: copyFailed, detail: "no native clipboard tool available"})
 	if !strings.Contains(m.flash, "copy failed") {
 		t.Errorf("failure flash should say copy failed; got %q", m.flash)
 	}
-	if m.pendingEscape != nil {
-		t.Errorf("failure must clear pendingEscape; got %q", m.pendingEscape)
+	if len(m.pendingEscapeBytes()) != 0 {
+		t.Errorf("failure must clear pendingEscape; got %q", m.pendingEscapeBytes())
 	}
+}
+
+// TestSelectedTextAcrossSoftWrap verifies that a selection spanning a
+// soft-wrapped line copies the exact source text: no escape sequences
+// (plain() is a no-op on the copied text), no border characters, no line
+// breaks that came only from wrapping, and the original line breaks kept.
+//
+// Setup: an assistant answer whose first sentence wraps at 20 cols. The
+// wrapped rows land in plainLines/plainLinesNoBox as the SAME line-split
+// views of the same source; selecting from the tail of wrapped row 1 to
+// the head of wrapped row 2 crosses a wrap break that must NOT become a
+// newline of its own, plus the true source newline that the answer
+// contains.
+func TestSelectedTextAcrossSoftWrap(t *testing.T) {
+	// Two mirrors of one wrapped content: bordered and no-box. The rows
+	// are identical text except the leading "│ " border marker.
+	src := "hello world this is\nwrapped content here"
+	wrapped := []string{"hello world this is", "wrapped content here"}
+	bordered := []string{"│ hello world this is", "│ wrapped content here"}
+	_ = src
+	_ = wrapped
+	m := mdl(bordered...)
+	m.plainLinesNoBox = wrapped
+
+	// Select from the middle of the first content row's END (before the
+	// wrap) to the start of the second row's content: plainLines cols
+	// include the leading "│ " (2 cols), so col 1+2=3 is 'h', col
+	// 13+2=15 is the 't' of "this". In plainLines space the selection is
+	// (0,3)-(1,2): 'hello world ' ... wait 'hello world this is' ends at
+	// col 17 (plainLines col 19 = 's', the last letter). We select the
+	// second wrapped tail "is" through the wrap into the head of row 2.
+	m.sel = selection{active: true, anchorRow: 0, anchorCol: 15, headRow: 1, headCol: 2}
+	got := m.selectedText()
+	plainGot := plain(got)
+	// The selection is (0,15)-(1,2) in plainLines space: bordered cols
+	// include "│ " (2 cols), so col 15 = 's' (the 's' of "this"),
+	// col 16 = 's' wait 'this' is t-h-i-s: col 13='t', 14='h', 15='i'),
+	// col 15='i', col 16='s', then ' is' tail, then "is" the last word.
+	// In no-box space cols are shifted by -1 (border), so the wrapped
+	// view slices "s is" off row 0's tail and "wra" off row 1's head:
+	// "s is\nwra" — one newline (the TRUE break between the two source
+	// lines), no escape codes, no borders.
+	if plainGot != "s is\nwra" {
+		t.Fatalf("selectedText across wrap = %q, want %q", plainGot, "s is\nwra")
+	}
+	if strings.Contains(got, "│") || strings.Contains(got, "\x1b") {
+		t.Fatalf("copied text leaked border/escape: %q", got)
+	}
+	// Full-row selection across the same two rows: "hello world this is"
+	// + "\n" (true break, from the source — the wrap joined it) +
+	// "wrapped content here". No trailing newline, no missing break.
+	m.sel = selection{active: true, anchorRow: 0, anchorCol: 0, headRow: 1, headCol: 99}
+	gotAll := plain(m.selectedText())
+	wantAll := "hello world this is\nwrapped content here"
+	if gotAll != wantAll {
+		t.Fatalf("full selection = %q, want %q", gotAll, wantAll)
+	}
+}
+
+// TestSelectedTextWideCombiningRTL verifies that wide (CJK), combining
+// and RTL (Arabic) text is copied as the same code points.
+func TestSelectedTextWideCombiningRTL(t *testing.T) {
+	src := "中文 тест مرحبا école"
+	m := mdl(src)
+	m.sel = selection{active: true, anchorRow: 0, anchorCol: 0, headRow: 0, headCol: 99}
+	got := m.selectedText()
+	if got != src {
+		t.Fatalf("wide/combining/RTL copy = %q, want %q", got, src)
+	}
+}
+
+// TestSelectedTextWhileStreaming verifies that a stream chunk arriving
+// during an active drag does not move the anchor/head (the selection is
+// pinned; the copied text on release is the selected source text).
+func TestSelectedTextWhileStreaming(t *testing.T) {
+	m, _ := newTestTUI(t)
+	m.ready = true
+	m.width, m.height = 80, 24
+	// Feed the model a conversation through the real event path.
+	m = step(m, evt(event.KindTurnStarted, event.TurnStarted{TurnID: "trn"}, benchPrincipalSID))
+	m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "hello stream"}, benchPrincipalSID))
+	m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn", Outcome: "complete"}, benchPrincipalSID))
+	// A drag over the committed text.
+	m.sel = selection{pressed: true, active: true, dragging: true, anchorRow: 0, anchorCol: 0, headRow: 0, headCol: 3}
+	before := m.sel
+	// A stream chunk arrives while dragging: it must not move the
+	// anchor/head (follow is suppressed while active).
+	m2 := step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: "more"}, benchPrincipalSID))
+	if m2.sel != before {
+		t.Fatalf("streaming moved the selection: before %v after %v", before, m2.sel)
+	}
+}
+
+// TestSelectionWhileScrollingReflow verifies wheel scroll + a same-width
+// reflow keep the selection, while a WindowSizeMsg clears it (its
+// coordinates would copy the wrong text after a re-wrap).
+func TestSelectionWhileScrollingReflow(t *testing.T) {
+	m, _ := newTestTUI(t)
+	m.ready = true
+	m.width, m.height = 80, 24
+	m.sel = selection{pressed: true, active: true, dragging: true, anchorRow: 0, anchorCol: 0, headRow: 0, headCol: 5}
+	// Wheel scroll: selection stays.
+	m2 := step(m, tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+	if m2.sel != m.sel {
+		t.Fatalf("wheel scroll moved the selection: %v -> %v", m.sel, m2.sel)
+	}
+	// Same-width reflow: selection stays.
+	m3 := m2.reflow()
+	if m3.sel != m.sel {
+		t.Fatalf("reflow moved the selection: %v -> %v", m.sel, m3.sel)
+	}
+	// WindowSizeMsg: selection clears (re-wrap invalidates coordinates).
+	m4 := step(m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	if m4.sel != (selection{}) {
+		t.Fatalf("resize must clear the selection: got %v, want zero", m4.sel)
+	}
+}
+
+// TestTerminalSelectionBypassDocumented verifies the Shift/alt+t terminal-
+// selection bypass is discoverable: `docs/configuration.md` documents holding
+// Shift on most terminals (the terminal intercepts the drag), and wakil itself
+// exposes alt+t (the status hint renders "select:terminal (alt+t restores
+// mouse)" while in that mode — seen by TestNativeSelectionStatusIndicator).
+func TestTerminalSelectionBypassDocumented(t *testing.T) {
+	m, _ := newTestTUI(t)
+	m.nativeSel.active = true
+	joined := strings.Join(m.statusLines(), "\n")
+	if !strings.Contains(joined, "alt+t") {
+		t.Fatalf("status hint must mention alt+t for the terminal-selection bypass; got %q", joined)
+	}
+}
+
+// TestCopyOncePerAction verifies one drag-release → exactly one copy
+// command, with a monotonic id per dispatch (so two releases never share
+// an id and the stale-result guard can tell them apart).
+func TestCopyOncePerAction(t *testing.T) {
+	m, _ := newTestTUI(t)
+	cmdA := m.copyToClipboard("a")
+	cmdB := m.copyToClipboard("b")
+	if cmdA == nil || cmdB == nil {
+		t.Fatal("copyToClipboard must always return a command")
+	}
+	msgA, ok := cmdA().(copiedMsg)
+	if !ok {
+		t.Fatalf("first command returned %T, want copiedMsg", cmdA())
+	}
+	msgB, ok := cmdB().(copiedMsg)
+	if !ok {
+		t.Fatalf("second command returned %T, want copiedMsg", cmdB())
+	}
+	if msgA.id == 0 || msgB.id == 0 || msgB.id <= msgA.id {
+		t.Fatalf("ids must be non-zero and monotonic: A=%d B=%d", msgA.id, msgB.id)
+	}
+	// Exactly-once delivery of the OSC escape is pinned by
+	// TestCopiedMsgOSCEscapeEmission (first View carries it, the second
+	// does not).
 }

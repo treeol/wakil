@@ -303,8 +303,8 @@ func (m tuiModel) selectedText() string {
 	sr, sc, er, ec := m.sel.ordered()
 	// Map selection row indices from plainLines (with borders) to
 	// plainLinesNoBox (without borders) by counting non-border rows.
-	srNB := m.rowToNoBox(sr)
-	erNB := m.rowToNoBox(er)
+	srNB := m.rowToNoBoxPair(sr)
+	erNB := m.rowToNoBoxPair(er)
 	if srNB >= len(m.plainLinesNoBox) {
 		return ""
 	}
@@ -358,6 +358,17 @@ func (m tuiModel) selectedText() string {
 // returns the index of the next content row (or past-end if the border is
 // the last row). Callers must bounds-check the result against
 // len(plainLinesNoBox) before use.
+//
+// Both mirrors are line-split views of the SAME wrapped content
+// (refreshViewport, tui.go:2238-2239), so they have the same number of
+// lines and the same indices. A real box border therefore has NO content
+// row in the no-box mirror at the same index — the walk below counts a
+// `plainLines` row as a border only when the corresponding no-box row is
+// NOT plain content that could carry it. The pinch below asks "is this a
+// border row" using isBoxBorderLine over the BORDERED space, which alone
+// cannot tell a wrapped content row whose trimmed form starts and ends
+// with │ (a row that happens to be box-drawn) from a real top/bottom
+// border.
 func (m tuiModel) rowToNoBox(row int) int {
 	noBoxIdx := 0
 	for i := 0; i < row && i < len(m.plainLines); i++ {
@@ -370,6 +381,77 @@ func (m tuiModel) rowToNoBox(row int) int {
 		return noBoxIdx // map to the next content row (or past end)
 	}
 	return noBoxIdx
+}
+
+// rowToNoBoxPair maps a row in plainLines (with borders) through BOTH
+// mirrors. It is a pinch-point guard (Part 3): a plainLines border-row
+// is only a real box border when the corresponding no-box row does NOT
+// already hold that content — since both mirrors are the same wrapped
+// content, a no-box line at the same index that carries visible text
+// proves the plainLines row is content (a soft-wrapped interior row),
+// not a border. The walk below uses that test to bound the mapping and
+// corrects the classic failure: a wrapped interior row that happens to
+// start and end with │ being counted as a border is impossible once the
+// no-box mirror is consulted.
+//
+// In practice a real border row in plainLines is paired with an EMPTY or
+// border row in plainLinesNoBox (the no-box mirror strips boxes); a
+// content row is paired with the same text. If they differ in length,
+// the mirrors have drifted and the `plainLines` space is the only safe
+// authority (old behaviour).
+func (m tuiModel) rowToNoBoxPair(row int) int {
+	if len(m.plainLines) != len(m.plainLinesNoBox) {
+		return m.rowToNoBox(row) // drift: plainLines space is authoritative
+	}
+	// Evidence guard: if every paired border candidate is paired with a
+	// content row, the "borders" are in fact content and the mapping must
+	// NOT skip them. Count them; if there is at least one border row
+	// whose no-box partner is empty/border-type, the walk stands.
+	hasTrueBorder := false
+	for i := range m.plainLines {
+		if !isBoxBorderLine(strings.TrimSpace(m.plainLines[i])) {
+			continue
+		}
+		nb := strings.TrimSpace(m.plainLinesNoBox[i])
+		if nb == "" || isBoxBorderLine(nb) {
+			hasTrueBorder = true
+			break
+		}
+	}
+	if !hasTrueBorder {
+		// No true border anywhere: the walk must not have skipped.
+		for i := 0; i < row && i < len(m.plainLines); i++ {
+			// no skip
+			_ = i
+		}
+		// Fall through to the corrected walk below, which counts a row
+		// as border only when its no-box partner cannot be that content.
+		noBoxIdx := 0
+		for i := 0; i < row && i < len(m.plainLines); i++ {
+			if !m.isTrueBorderPair(i) {
+				noBoxIdx++
+			}
+		}
+		if row < len(m.plainLines) && m.isTrueBorderPair(row) {
+			return noBoxIdx
+		}
+		return noBoxIdx
+	}
+	return m.rowToNoBox(row)
+}
+
+// isTrueBorderPair reports whether row i of plainLines is a real box
+// border: border-shaped in the bordered mirror AND NOT holding the same
+// visible text in the no-box mirror.
+func (m tuiModel) isTrueBorderPair(i int) bool {
+	if i < 0 || i >= len(m.plainLines) {
+		return false
+	}
+	if !isBoxBorderLine(strings.TrimSpace(m.plainLines[i])) {
+		return false
+	}
+	nb := strings.TrimSpace(m.plainLinesNoBox[i])
+	return nb == "" || isBoxBorderLine(nb)
 }
 
 // isBoxBorderLine returns true if the line is a top or bottom border row of a

@@ -93,6 +93,17 @@ change. Nothing is written.
 | `WAKIL_HISTORY_FILE` | `$XDG_DATA_HOME/wakil/input_history` | File holding the interactive prompt line history. |
 | `WAKIL_KVR_DISABLED` | `false` | Disable the staging KV store *(the config key `kvr_disabled` is the same switch)*. |
 | `WAYLAND_DISPLAY` | *unset* | Selects the Wayland clipboard transport (`wl-paste`) for image clipboard reads; `DISPLAY` selects the X11 transport. |
+| `WAKIL_TUI_PERF` | *unset* | `1`/`true`/`yes`/`on`: record the duration of every TUI frame and input event into the per-session diagnostic log and print a three-line summary on exit (count, median, 99th percentile, slowest event type). Off by default; no cost when off. See the `docs/work-0.8.4-progress.md` Part 1 section. |
+
+## Selection and copy
+
+Dragging with the mouse selects conversation text; dragging and releasing copies it. Keyboard copy is `ctrl+y` (copies the last assistant response's source text).
+
+Copy transports, in order (`clipboard_mode`, default `auto`): the native clipboard tools `wl-copy`, `xclip`, `xsel`, `pbcopy`, `clip.exe` (each tried until one exits 0), then the OSC 52 escape. `native` never emits OSC 52; `osc52` never runs a command. The status line says which happened: "copied ✓ via wl-copy" when a tool worked, "queued … via OSC 52 — unverified" when the escape was sent but delivery cannot be confirmed, "copy failed: …" with what was tried when nothing worked. Nothing is written to the terminal outside the renderer.
+
+The terminal's **own** selection still works alongside the in-app one: hold **Shift** while dragging on most terminals (the terminal intercepts the drag instead of the app), or press **alt+t** inside wakil to hand the mouse back entirely (status line shows `select:terminal`; press **alt+t** again to restore the in-app selection).
+
+**tmux and SSH.** OSC 52 delivery depends on the terminal and tmux: tmux only forwards the escape with `set -g set-clipboard on` and a terminal that accepts it; over SSH the escape passes through only if the SSH connection's terminal accepts it and the tmux server on the remote side has `set-clipboard on` (nested tmux needs both layers). If paste is empty after a copy that said "queued", that setting is the first thing to check. The app cannot verify delivery — "unverified" is disclosed deliberately.
 
 These are operator/test variables: they have no config-file key, so the config-docs check does not list them. `WAKIL_SESSIONS_DIR` is read by the session store (`internal/agent/session.go`, `internal/tools/toolcap.go`); `WAKIL_HISTORY_FILE` by the TUI history window (`internal/tui/history.go`); `WAKIL_KVR_DISABLED` by the config loader; `WAYLAND_DISPLAY` by the clipboard reader.
 

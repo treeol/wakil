@@ -62,11 +62,11 @@ type subTabCloseMsg struct {
 // The handler stores them on the model as pendingEscape so View() can emit
 // them through the renderer's synchronized output — writing them directly to
 // os.Stdout from the Cmd goroutine would race with the renderer in alt-screen
-// mode and garble the display. pendingEscape persists across View() calls
-// (NOT cleared in View()) so the standard renderer's frame coalescing can't
-// drop it; a KeyMsg clears it (alongside flash) as the lifecycle boundary, and
-// a subsequent native success also clears it (a native write supersedes the
-// older OSC payload — stale retransmission guard).
+// mode and garble the display. pendingEscape is emitted exactly ONCE: the
+// first View() that carries it clears it, so a copy action schedules one
+// delivery, not one per frame (Part 3, L5). A later native success also
+// clears it (a native write supersedes the older OSC payload — stale
+// retransmission guard), and the next copiedMsg replaces it.
 type copiedMsg struct {
 	n       int
 	via     string

@@ -190,6 +190,41 @@ type convItem struct {
 	cacheW int
 }
 
+// escapeBox is the heap-shared box for the pending OSC 52 escape. The
+// model is a value type and View() is a value receiver, so a plain []byte
+// field cannot be cleared by View() across copies (the clear would be
+// lost when the copy is discarded, and the next View() on the caller's
+// model would re-emit the same escape on every frame). The box survives
+// copies the way items (*[]convItem) does.
+type escapeBox struct {
+	payload []byte
+}
+
+func newEscapeBox(payload []byte) *escapeBox { return &escapeBox{payload: payload} }
+
+func (m *tuiModel) setPendingEscape(payload []byte) {
+	if m.pendingEscape == nil {
+		m.pendingEscape = newEscapeBox(payload)
+		return
+	}
+	m.pendingEscape.payload = payload
+}
+
+func (m *tuiModel) clearPendingEscape() {
+	if m.pendingEscape == nil {
+		return
+	}
+	m.pendingEscape.payload = nil
+}
+
+// pendingEscapeBytes returns the current pending escape payload, or nil.
+func (m tuiModel) pendingEscapeBytes() []byte {
+	if m.pendingEscape == nil {
+		return nil
+	}
+	return m.pendingEscape.payload
+}
+
 type tuiModel struct {
 	cancel     context.CancelFunc
 	cancelling bool // true after first Ctrl+C, until the turn completes
@@ -338,17 +373,29 @@ type tuiModel struct {
 	// copyToClipboard stamps each request with a monotonically increasing id.
 	lastCopyID uint64
 
-	// pendingEscape holds a raw terminal escape sequence prepended to every
-	// View() frame until a KeyMsg clears it. Used for OSC 52 clipboard writes:
-	// the escape must go through the renderer's synchronized output, not a
-	// direct os.Stdout write from a Cmd goroutine (which races with the renderer
-	// in alt-screen mode). Kept persistent across renders — NOT cleared in
-	// View() — because the standard renderer coalesces frames at 60fps: if
-	// View() cleared it, a subsequent View() (from a dotTick, stream chunk, or
-	// textarea blink) could replace the escape-bearing frame in the renderer's
-	// buffer before the flush tick writes it, silently dropping the escape.
-	// The keypress clear (alongside flash) is the lifecycle boundary.
-	pendingEscape []byte
+	// pendingEscape holds a raw terminal escape sequence prepended to the
+	// NEXT View() frame only. Used for OSC 52 clipboard writes: the escape
+	// must go through the renderer's synchronized output, not a direct
+	// os.Stdout write from a Cmd goroutine (which races with the renderer
+	// in alt-screen mode). It is cleared by View() after the first frame
+	// that carries it — one copy action, one delivery, not one per frame
+	// (Part 3, L5). Cleared by any KeyMsg alongside flash as well.
+	//
+	// It is a pointer into a shared box (see escapeBox below) because the
+	// model is a value type and View() has a value receiver: mutating a
+	// []byte field in View() would be lost when the copy is discarded,
+	// and the NEXT View() on the original model would re-emit the same
+	// escape forever. The box survives the copies the way items does
+	// (items is *[]convItem, same reason).
+	pendingEscape *escapeBox
+
+	// Double-press gate for destructive keys (quit / turn-cancel). The first
+	// press of ctrl+c/ctrl+d (idle) or esc/ctrl+c (streaming) arms the action
+	// and shows a banner; a second confirming press within armWindow performs
+	// it. armKey records which key armed it (quit = same-key confirm; cancel =
+	// esc or ctrl+c confirms). armSeq is a generation counter so a stale
+	// armTickMsg from a superseded arm can't clear a newer one. armUntil zero
+	// means no arm is active.
 
 	// Double-press gate for destructive keys (quit / turn-cancel). The first
 	// press of ctrl+c/ctrl+d (idle) or esc/ctrl+c (streaming) arms the action
@@ -856,7 +903,7 @@ func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Any keystroke dismisses an active selection and its highlight.
 		before := m.statusRows()
 		m.flash = ""
-		m.pendingEscape = nil
+		m.clearPendingEscape()
 		if m.sel.active || m.sel.pressed {
 			wasActive := m.sel.active
 			m.sel = selection{}

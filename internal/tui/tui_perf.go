@@ -118,7 +118,7 @@ func perfSummary() (count int, upMed, upP99, viewMed, viewP99 int64, slowest str
 	p99 := func(a []int64) int64 {
 		s := append([]int64(nil), a...)
 		sort.Slice(s, func(i, j int) bool { return s[i] < s[j] })
-		idx := (99*len(s) + 99) / 100 - 1
+		idx := (99*len(s)+99)/100 - 1
 		if idx < 0 {
 			idx = 0
 		}

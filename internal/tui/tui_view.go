@@ -280,17 +280,22 @@ func (m tuiModel) view() string {
 		sections = append(sections, m.renderMainTabBar())
 	}
 	out := lipgloss.JoinVertical(lipgloss.Left, sections...)
-	// Prepend the pending OSC 52 escape to every frame while it's set. The
-	// escape persists across renders (NOT cleared here) because the standard
-	// renderer coalesces frames at 60fps: if we cleared it, a subsequent
-	// View() (dotTick, stream chunk, textarea blink) could replace the
-	// escape-bearing frame in the renderer's buffer before the flush tick
-	// writes it, silently dropping the escape. The escape is cleared by a
-	// KeyMsg (alongside flash) — that's the lifecycle boundary. The escape
-	// is zero-width (ansi.StringWidth correctly treats OSC sequences as 0),
-	// so the renderer's line truncation won't mangle it.
-	if len(m.pendingEscape) > 0 {
-		out = string(m.pendingEscape) + out
+	// Prepend the pending OSC 52 escape once, then clear it: the frame
+	// returned by this View() is the only frame that carries the escape.
+	// The escape is zero-width (ansi.StringWidth correctly treats OSC
+	// sequences as 0), so the renderer's line truncation won't mangle it.
+	// Clearing here is safe with the standard renderer: Bubbletea writes
+	// model.View() verbatim (renderer.write(model.View())); a later View()
+	// is a NEW frame and must not carry it again (Part 3, L5). The old
+	// "persists across View() until KeyMsg" rule re-sent the escape on
+	// every frame while a copy was pending — late and duplicated on slow
+	// frames and dropped-then-resent on fast ones. The clear lives in the
+	// shared escapeBox (see tui.go): the model is a value type and View()
+	// has a value receiver, so a plain []byte field clear would be lost
+	// when the copy is discarded.
+	if len(m.pendingEscapeBytes()) > 0 {
+		out = string(m.pendingEscapeBytes()) + out
+		m.clearPendingEscape()
 	}
 	return out
 }

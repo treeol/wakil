@@ -277,7 +277,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		switch lm.outcome {
 		case copyFailed:
 			m.flash = sprint("copy failed: %s", lm.detail)
-			m.pendingEscape = nil
+			m.clearPendingEscape()
 		case copySentUnverified:
 			// Bytes queued for the renderer — NOT verified as delivered, and
 			// the clipboard is NOT verified as changed. "queued", not "copied".
@@ -286,13 +286,13 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			} else {
 				m.flash = sprint("queued %d chars via OSC 52 — unverified; if paste is empty, enable terminal/tmux clipboard", lm.n)
 			}
-			m.pendingEscape = lm.escape
+			m.setPendingEscape(lm.escape)
 		default: // copyOK
 			m.flash = sprint("copied %d chars ✓ via %s", lm.n, lm.detail)
 			// A native success supersedes any previously queued OSC 52
 			// payload — clear it so a later redraw can't retransmit the old
 			// clipboard contents (stale-retransmission guard).
-			m.pendingEscape = nil
+			m.clearPendingEscape()
 		}
 		m = m.reflowIfStatusHeightChanged(before)
 		return m, cmds, true
