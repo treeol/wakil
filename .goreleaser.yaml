@@ -104,6 +104,9 @@ release:
 
 changelog:
   sort: asc
+  # Release notes come from the CHANGELOG via scripts/release_notes.sh; the
+  # release workflow passes them in as {{ .ReleaseNotes }} and falls back to
+  # this git-generated list when the script finds no section.
   use: git
   groups:
     - title: Features
