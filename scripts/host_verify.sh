@@ -11,77 +11,29 @@
 # key, no network except Go module and tool downloads. Changes nothing in
 # the repo outside .tmp/.
 #
-# At the start it prints the branch and HEAD, and warns if a wakil process
-# is running on the machine.
-#
 # --fast skips the -race test (slow).
 set -eu
 
 fast=0
 if [ "${1:-}" = "--fast" ]; then
-  fast=1
-  shift
+  fast=1; shift
 fi
 
 base_ref="${1:?usage: host_verify.sh [--fast] <base-ref>}"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
-# --- preserve the user's Go caches before redirecting HOME ---
-# go.mod says "go 1.26.11" with GOTOOLCHAIN=auto, so Go would download
-# golang.org/toolchain@v0.0.1-go1.26.11 into $HOME/go/pkg/mod. Those files
-# are read-only, so rm -rf on the temp HOME fails. Export the real cache
-# dirs so Go keeps using them and never writes into the temp home.
-GOMODCACHE_REAL=$(go env GOMODCACHE 2>/dev/null || true)
-GOCACHE_REAL=$(go env GOCACHE 2>/dev/null || true)
-GOPATH_REAL=$(go env GOPATH 2>/dev/null || true)
-
-# --- setup ---
-tmproot="$(mktemp -d)"
-cleanup() {
-  # Make everything writable before removing so read-only toolchain files
-  # (if any slipped in) don't block the cleanup.
-  chmod -R u+w "$tmproot" 2>/dev/null || true
-  rm -rf "$tmproot" 2>/dev/null || true
-  # Print the summary from the trap so it appears even when a check aborts.
-  echo ""
-  echo "=== summary ==="
-  echo "PASS: $pass  FAIL: $fail  SKIP: $skip"
-}
-trap cleanup EXIT
-
-export TMPROOT="$tmproot"
-export HOME="$tmproot/home"
-export XDG_CONFIG_HOME="$tmproot/xdg-config"
-export XDG_DATA_HOME="$tmproot/xdg-data"
-# Keep Go caches pointing at the user's real dirs.
-if [ -n "$GOMODCACHE_REAL" ]; then export GOMODCACHE="$GOMODCACHE_REAL"; fi
-if [ -n "$GOCACHE_REAL" ];   then export GOCACHE="$GOCACHE_REAL"; fi
-if [ -n "$GOPATH_REAL" ];    then export GOPATH="$GOPATH_REAL"; fi
-mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+# --- header (read go and git info BEFORE redirecting HOME) ---
+go_version=$(go version 2>&1 || echo "go: not found")
+go_mod_line=$(head -3 go.mod 2>/dev/null | tail -1 || echo "unknown")
+gotoolchain=$(go env GOTOOLCHAIN 2>&1 || echo "unknown")
 
 outdir="$repo_root/.tmp/host-verify/$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$outdir"
 
-# --- header ---
-echo "=== host_verify.sh ==="
-echo "base-ref: $base_ref"
-echo "HEAD: $(git rev-parse HEAD)"
-echo "branch: $(git rev-parse --abbrev-ref HEAD)"
-echo "go: $(head -3 go.mod | tail -1)  GOTOOLCHAIN=$(go env GOTOOLCHAIN)"
-if pgrep -x wakil >/dev/null 2>&1; then
-  echo "WARN: a wakil process is running — some tests may fail"
-fi
-echo "output: $outdir"
-echo ""
-
 # --- helpers ---
-pass=0
-fail=0
-skip=0
+pass=0; fail=0; skip=0
 
-# check runs a command, logs it, and prints PASS/FAIL/SKIP. On FAIL,
-# prints the last 15 lines of the log so the user sees the error.
 check() {
   name="$1"; shift
   "$@" >"$outdir/$name.log" 2>&1
@@ -99,8 +51,26 @@ check() {
   fi
 }
 
-# --- 1. tracked tree clean ---
-unstaged=$(git status --short | grep -v '^??' | wc -l)
+# --- print header ---
+echo "=== host_verify.sh ==="
+echo "base-ref: $base_ref"
+echo "HEAD: $(git rev-parse HEAD)"
+echo "branch: $(git rev-parse --abbrev-ref HEAD)"
+echo "go: $go_version"
+echo "go.mod: $go_mod_line  GOTOOLCHAIN=$gotoolchain"
+if pgrep -x wakil >/dev/null 2>&1; then
+  echo "WARN: a wakil process is running — some tests may fail"
+fi
+echo "output: $outdir"
+echo ""
+
+# ------------------------------------------------------------------
+# Pre-HOME checks: these need the user's real git config, so they
+# run BEFORE HOME is redirected.
+# ------------------------------------------------------------------
+
+# --- 1. tracked tree clean (repo-local, no global config needed) ---
+unstaged=$(git status --short 2>/dev/null | grep -v '^??' | wc -l)
 if [ "$unstaged" -gt 0 ]; then
   echo "FAIL  tracked-tree-clean (unstaged: $unstaged)"
   fail=$((fail+1))
@@ -109,15 +79,63 @@ else
   pass=$((pass+1))
 fi
 
-# --- 2. every commit signed ---
-unsigned=$(git log --format='%h %G?' "$base_ref"..HEAD | grep -v ' G$' | wc -l)
-if [ "$unsigned" -gt 0 ]; then
-  echo "FAIL  signed-commits ($unsigned unsigned)"
-  fail=$((fail+1))
+# --- 2. every commit signed (needs global git config for SSH sigs) ---
+# git log --format='%G?' needs gpg.ssh.allowedSignersFile for SSH
+# signature verification. If HOME is empty or the signing setup is
+# missing, SKIP with a reason — never FAIL for a missing setup.
+sig_errfile="$outdir/sig.err"
+sig_stdout=$(git log --format='%h %G?' "$base_ref..HEAD" 2>"$sig_errfile")
+sig_rc=$?
+sig_err=$(cat "$sig_errfile" 2>/dev/null || true)
+if echo "$sig_err" | grep -q 'allowedSignersFile\|gpg.ssh\|no signing key\|secret key needed'; then
+  # git log ran but the signing setup is missing
+  echo "SKIP  signed-commits (signing setup unavailable)"
+  skip=$((skip+1))
+elif [ $sig_rc -ne 0 ]; then
+  echo "SKIP  signed-commits (git log failed: $(echo "$sig_err" | head -1))"
+  skip=$((skip+1))
 else
-  echo "PASS  signed-commits"
-  pass=$((pass+1))
+  unsigned=$(echo "$sig_stdout" | grep -v ' G$' | wc -l)
+  if [ "$unsigned" -gt 0 ]; then
+    echo "FAIL  signed-commits ($unsigned unsigned)"
+    fail=$((fail+1))
+  else
+    echo "PASS  signed-commits"
+    pass=$((pass+1))
+  fi
 fi
+
+# ------------------------------------------------------------------
+# Preserve Go caches, then redirect HOME for Wakil isolation.
+# ------------------------------------------------------------------
+GOMODCACHE_REAL=$(go env GOMODCACHE 2>/dev/null || true)
+GOCACHE_REAL=$(go env GOCACHE 2>/dev/null || true)
+GOPATH_REAL=$(go env GOPATH 2>/dev/null || true)
+
+tmproot="$(mktemp -d)"
+cleanup() {
+  chmod -R u+w "$tmproot" 2>/dev/null || true
+  rm -rf "$tmproot" 2>/dev/null || true
+  echo ""
+  echo "=== summary ==="
+  echo "PASS: $pass  FAIL: $fail  SKIP: $skip"
+}
+trap cleanup EXIT
+
+export TMPROOT="$tmproot"
+export HOME="$tmproot/home"
+export XDG_CONFIG_HOME="$tmproot/xdg-config"
+export XDG_DATA_HOME="$tmproot/xdg-data"
+if [ -n "$GOMODCACHE_REAL" ]; then export GOMODCACHE="$GOMODCACHE_REAL"; fi
+if [ -n "$GOCACHE_REAL" ];   then export GOCACHE="$GOCACHE_REAL"; fi
+if [ -n "$GOPATH_REAL" ];    then export GOPATH="$GOPATH_REAL"; fi
+mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
+
+# ------------------------------------------------------------------
+# Post-HOME checks: these run with HOME pointing at the temp dir.
+# git commands here (git show, git ls-files) don't need the global
+# signing config — they only read file contents.
+# ------------------------------------------------------------------
 
 # --- 3. build + version ---
 check build-and-version sh -c 'mkdir -p "$TMPROOT/bin" && go build -o "$TMPROOT/bin/wakil" ./cmd/wakil/ && "$TMPROOT/bin/wakil" --version'
@@ -144,8 +162,7 @@ else
 fi
 
 # --- 7. deadcode check ---
-# deadcode needs golang.org/x/tools downloaded; if the cache is missing or
-# the network is down, SKIP with a reason (never PASS without running).
+# deadcode needs golang.org/x/tools; probe first, SKIP if unavailable.
 if [ -f scripts/check_deadcode.sh ]; then
   if go run golang.org/x/tools/cmd/deadcode@v0.52.0 -test ./... >/dev/null 2>&1; then
     check deadcode sh -c 'bash scripts/check_deadcode.sh 2>&1'

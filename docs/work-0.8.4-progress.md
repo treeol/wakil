@@ -640,3 +640,12 @@ error output swamped the summary table.
 - `find /tmp/tmp.* -maxdepth 4 -name pkg` → no output (no Go
   files in any temp home).
 
+
+## host_verify.sh signature fix (d9e57d1 + 58df571)
+
+- Moved the `signed-commits` check (check 2) to run BEFORE `HOME` is redirected, so git reads the user's global config where `gpg.ssh.allowedSignersFile` is set.
+- Captured `git log --format='%G?'` stderr to `$outdir/sig.err`; if it contains `allowedSignersFile`/`gpg.ssh`/`no signing key`/`secret key needed`, SKIP with a reason instead of FAIL.
+- Normal run: `PASS signed-commits` (G signatures present).
+- Empty-HOME run: `SKIP signed-commits (signing setup unavailable)` — not FAIL.
+- `tracked-tree-clean` check also runs pre-HOME (repo-local, no global config needed).
+- Final `--fast master`: 15 PASS, 0 FAIL, 1 SKIP (race skipped).
