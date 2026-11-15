@@ -533,3 +533,34 @@ func IsSubagentResult(name string) bool {
 
 // The mashūra counsel tools (mashura__review / debug / decide / check) are
 // defined in mashura.go via mashuraToolDefs.
+
+// gatedToolList is the single production source for which built-in tools require
+// human confirmation (a.Confirm) before running. The tool handlers in
+// internal/agent/tool_handlers.go, skill_handlers.go, skill_template_handlers.go,
+// and app.go call a.Confirm with these tool names. The docs parity test
+// (internal/tools/toolsmd_parity_test.go) reads this map to keep the
+// user-facing tools.md table honest. MCP tools are gated dynamically by the
+// MCP manager (IsGatedTool checks at dispatch time), so they are not listed here.
+var gatedToolList = map[string]bool{
+	"run_shell":              true,
+	"write_file":             true,
+	"write_binary_file":      true,
+	"edit_file":              true,
+	"delete_file":            true,
+	"move_file":              true,
+	"run_background":         true,
+	"kill_process":           true,
+	"save_skill":             true,
+	"update_skill":           true,
+	"forget_skill":           true,
+	"apply_skill_template":   true,
+	"capture_skill_template": true,
+	// open_url opens a URL on the host desktop; the query string can carry
+	// data out, and every other outbound path needs consent.
+	"open_url": true,
+}
+
+// IsGatedTool reports whether a built-in tool requires human confirmation.
+// The docs parity test reads this map via IsGatedTool to verify the
+// tools.md table matches the production gate.
+func IsGatedTool(name string) bool { return gatedToolList[name] }

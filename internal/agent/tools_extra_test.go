@@ -980,7 +980,7 @@ func TestReadFileFullBudgetExhaustionStubs(t *testing.T) {
 // confirmation needed — it's read-only, same as read_file). The gate lives in
 // the handler's a.Confirm call; this test records the toolset membership and
 // that the ungated handler does not consult Confirm. The authoritative gate
-// list is internal/tools gatedToolList (see TestGatedToolListMatchesHandlers).
+// list is internal/tools.IsGatedTool (see TestGatedToolListMatchesHandlers).
 func TestReadFileFullNotGated(t *testing.T) {
 	exe := newFakeExecutor()
 	called := false

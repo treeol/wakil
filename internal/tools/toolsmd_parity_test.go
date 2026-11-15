@@ -16,29 +16,10 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 )
 
-// gatedToolList is the single source for which tools require human
-// confirmation before running. The list mirrors the tool handlers that call
-// a.Confirm (see TestGatedToolListMatchesHandlers).
-var gatedToolList = map[string]bool{
-	"run_shell":              true,
-	"write_file":             true,
-	"write_binary_file":      true,
-	"edit_file":              true,
-	"delete_file":            true,
-	"move_file":              true,
-	"run_background":         true,
-	"kill_process":           true,
-	"save_skill":             true,
-	"update_skill":           true,
-	"forget_skill":           true,
-	"apply_skill_template":   true,
-	"capture_skill_template": true,
-	// open_url opens a URL on the host desktop; the query string can carry
-	// data out, and every other outbound path needs consent.
-	"open_url": true,
-}
-
-func gatedTool(name string) bool { return gatedToolList[name] }
+// gatedTool is the production gate check. The list lives in tools.go
+// (gatedToolList) so the docs parity test and the tool handlers share one
+// source of truth.
+func gatedTool(name string) bool { return IsGatedTool(name) }
 
 // TestGatedTool verifies which tools require human confirmation.
 func TestGatedTool(t *testing.T) {
