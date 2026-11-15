@@ -85,6 +85,10 @@ func TestMaskedExitEcho(t *testing.T) {
 		{"plain print, no echo of $?", "grep -r x .", "exit=1", true},
 		{"echo with quoted $? and preceding output", `go test ./...; echo "exit=$?"`, "ok foo\nFAIL\n exit=1", false},
 		{"echo $? without exit= prefix is not guessed", `make check; echo $?`, "1", true},
+		{"echo exit= without the $? is not guessed", `make check; echo "exit=1"`, "exit=1", true},
+		{"bare echo exit=$?", `echo "exit=$?"`, "exit=2", false},
+		{"echo with quotes around $? only", `./check.sh; echo exit="$?"`, "exit=1", false},
+		{"newline-separated echo", "./check.sh\necho \"exit=$?\"", "exit=1", false},
 		{"no echo at all, failure via ERROR", `make check`, "ERROR: exit status 1", false},
 		{"error prefix still wins", `./check.sh; echo "exit=$?"`, "ERROR: exit status 1\nexit=0", false},
 	}

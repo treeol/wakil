@@ -32,9 +32,13 @@ func TestAutoCounselResultHeader(t *testing.T) {
 	// The bound form states the counts plainly (FACTS a): one automatic
 	// round, two panel members.
 	got := autoCounselHeader(1, 2, 2)
-	wantHeader := "[automatic mashura round one — Wakil started this round automatically; you did not call it two panel members, cap 2 per turn]\n\n"
+	wantHeader := "[automatic mashura round one — Wakil started this round automatically; you did not call it · two panel members, cap 2 per turn]\n\n"
 	if got != wantHeader {
 		t.Fatalf("autoCounselHeader(1,2,2) = %q, want %q", got, wantHeader)
+	}
+	// Singular member count uses the singular noun.
+	if got := autoCounselHeader(1, 1, 2); !strings.Contains(got, "one panel member,") || strings.Contains(got, "members,") {
+		t.Fatalf("autoCounselHeader(1,1,2) = %q, want singular 'panel member'", got)
 	}
 	_ = proxy.Message{}
 	_ = config.Config{}

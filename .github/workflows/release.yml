@@ -136,23 +136,24 @@ jobs:
       # Release notes come from the CHANGELOG section for the tag's version.
       # When the script finds no section, goreleaser falls back to its
       # git-generated notes — a release must never fail because of notes.
-      - name: release notes from changelog (fallback: git notes)
+      - name: 'release notes from changelog'
         env:
           TAG: ${{ github.ref_name }}
+          NOTES_FILE: ${{ runner.temp }}/release-notes.md
         run: |
           ver=${TAG#v}
-          if scripts/release_notes.sh "$ver" > release-notes.md; then
+          if scripts/release_notes.sh "$ver" > "$NOTES_FILE"; then
             echo "release notes source: CHANGELOG section for $ver"
           else
             echo "release notes source: git-generated (no CHANGELOG section for $ver)"
-            rm -f release-notes.md
+            rm -f "$NOTES_FILE"
           fi
 
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean ${{ hashFiles('release-notes.md') != '' && '--release-notes release-notes.md' || '' }}
+          args: release --clean ${{ hashFiles(runner.temp <> '/release-notes.md') != '' && '--release-notes ' + runner.temp + '/release-notes.md' || '' }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SANDBOX_IMAGE: ghcr.io/treeol/wakil-sandbox@${{ needs.sandbox-image.outputs.digest }}

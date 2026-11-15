@@ -74,12 +74,13 @@ func stringToToolResultFor(toolName, command, s string) toolResult {
 
 // dollarQuestionEcho reports whether a shell command's text ends with an
 // echo of the previous command's exit status — `; echo "exit=$?"`,
-// `&& echo exit=$?`, `(echo $?)` or a bare `echo exit=$?`. No other guessing
-// is done from output text: a command that merely prints "exit=1" without
-// echoing $? is not a masked failure. The `exit=` marker is required in the
-// command text (the shape the echo prints), so a bare `echo $?` is not
-// matched — only the masked-exit pattern the task calls for.
-var dollarQuestionEcho = regexp.MustCompile(`(;|&&|\|\||\()\s*echo\s+"?exit=\$?\?"?\s*\)?\s*$`)
+// `&& echo exit=$?`, `echo "exit=$?"` with quotes around the whole word, or
+// around just the `$?`. No other guessing is done from output text: a
+// command that merely prints "exit=1" without echoing $? is not a masked
+// failure. The `exit=` marker is required in the command text (the shape
+// the echo prints), so a bare `echo $?` is not matched — only the
+// masked-exit pattern the task calls for.
+var dollarQuestionEcho = regexp.MustCompile(`(^|[\n;]|\|\||&&|\()\s*echo\s+"?exit=(?:\$\?|"\$\?")"?\s*$`)
 
 // lastExitEcho parses the last non-empty line of output when it is exactly
 // "exit=<n>" (the shape such an echo prints) and returns n.
@@ -88,9 +89,9 @@ var lastExitEcho = regexp.MustCompile(`^exit=(\d+)$`)
 // maskedExitEcho reports whether command ends with an echo of $? and the
 // last output line carries a non-zero value in that echo — the only case
 // where a compound command's own exit status (the echo's, always 0) hides
-// a real failure from the struggle trace and the model.
+// a real failure from the struggle trace.
 func maskedExitEcho(command, out string) bool {
-	if !dollarQuestionEcho.MatchString(strings.TrimRight(command, " \t\n")) {
+	if !dollarQuestionEcho.MatchString(strings.TrimRight(command, " \t\r\n")) {
 		return false
 	}
 	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")

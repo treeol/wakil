@@ -71,9 +71,6 @@ func TestCounselOutputNotCutAtNarrowWidths(t *testing.T) {
 			t.Fatalf("width %d: no async-job tab", w)
 		}
 		rendered := m.renderSubTabContent(tab, w, 24)
-		if strings.Contains(rendered, "\x1b") == false {
-			// plain text render is fine; ANSI is not required
-		}
 		plain := plain(rendered)
 		if !strings.Contains(plain, "already fired for this symptom this turn") || !strings.Contains(plain, "done: no panel ran") {
 			t.Errorf("width %d: counsel text cut or lost\n%s", w, plain)

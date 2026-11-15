@@ -65,6 +65,13 @@ var anthropicNoticeOnce sync.Once
 // (a variable naming a non-empty env value) and, if so, prints the removal
 // notice once to out. It NEVER prints the key or the env var's value. Callers
 // invoke it the first time a panel resolves an anthropic: member.
+//
+// NOTE (Group 4, L7): it is currently uncalled — the only caller (in
+// mashuraPanelKeys) was removed in 0.8.4 when its readability was reviewed.
+// It stays because OracleAPIKeyEnv is still read at wiring/facade.go:289 and
+// agent/mashura.go:825, and because a panel resolving an anthropic: member
+// without the notice would leave users on a stale assumption. Wire it again
+// (or delete it deliberately) rather than letting it sit dead.
 func NoteAnthropicKeyIgnored(out interface{ Write([]byte) (int, error) }, envVar string) {
 	if envVar == "" || os.Getenv(envVar) == "" {
 		return
@@ -245,9 +252,13 @@ const autoCounselResultHeader = "[automatic mashura round"
 // same values that fill the console announce ("round %d of %d", "%d
 // members"), so the model-facing and console lines cannot disagree.
 func autoCounselHeader(round, members, cap int) string {
+	memberNoun := "panel members"
+	if members == 1 {
+		memberNoun = "panel member"
+	}
 	return "[automatic mashura round " + countPhrase(round) +
-		" — Wakil started this round automatically; you did not call it " +
-		countPhrase(members) + " panel members, cap " + fmt.Sprintf("%d", cap) + " per turn]\n\n"
+		" — Wakil started this round automatically; you did not call it · " +
+		countPhrase(members) + " " + memberNoun + ", cap " + fmt.Sprintf("%d", cap) + " per turn]\n\n"
 }
 
 // countPhrase renders a small positive count as a word ("one", "two", …)

@@ -29,12 +29,16 @@ if [ ! -f "$changelog" ]; then
 fi
 
 # Extract from the version heading up to (not including) the next "^## "
-# line. Turn on at a heading iff it is exactly this version ("## [X.Y.Z]"
-# or "## [X.Y.Z] - <date>"), so a shorter request like "0.8" never matches
-# "0.8.3". Sections are delimited by top-level headings ("## " at column 0).
+# line. The version is matched literally (index, not regex), so dots and
+# any '+' in a pre-release tag never act as metacharacters. Turn on at a
+# heading iff it is exactly this version ("## [X.Y.Z]" or "## [X.Y.Z] -"),
+# so a shorter request like "0.8" never matches "0.8.3".
 body=$(awk -v ver="$ver" '
-  $0 ~ ("^## \\[" ver "\\]( -|$)") { found=1 }
-  found && $0 ~ /^## / && $0 !~ ("^## \\[" ver "\\]( -|$)") { exit }
+  index($0, "## [" ver "]") == 1 {
+    rest = substr($0, length("## [" ver "]") + 1)
+    if (rest == "" || index(rest, " -") == 1) found = 1
+  }
+  found && index($0, "## ") == 1 && !(index($0, "## [" ver "]") == 1 && (rest == "" || index(rest, " -") == 1)) { exit }
   found { print }
 ' "$changelog")
 

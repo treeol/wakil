@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`--help` shows only built-in defaults.** The help output no longer shows your config-file or environment values as "(default …)" for endpoint host, port and model; those flags are now registered before your values are loaded. The endpoint flags are also worded neutrally ("endpoint host", "endpoint port (used with --host, default 11400)", "endpoint base URL (overrides host and port)").
-- **Automatic Mashūra rounds state their counts plainly.** The header given to the model now reads e.g. "[automatic mashura round one — Wakil started this round automatically; you did not call it two panel members, cap 2 per turn]", so one round with two members is never described as two rounds.
-- **Masked exit codes are recorded as failures.** A `run_shell` command that ends in an echo of `$?` and prints a non-zero `exit=` value is now recorded as failed in the struggle trace and shown to the model as such; nothing else is guessed from output text.
-- **Session start names the work folder.** When the work folder is not the current directory, the start banner adds one line naming it and says whether the workspace argument, a config `workdir` or `WAKIL_WORKDIR` set it. (No change to which folder is chosen.)
+- **`--help` shows only built-in defaults.** The help output no longer shows your config-file or environment values as "(default …)" for endpoint host, port and model; the defaults shown are now always the built-in ones. The endpoint flags are also worded neutrally ("endpoint host", "endpoint port (used with --host, default 11400)", "endpoint base URL (overrides host and port)").
+- **Automatic Mashūra rounds state their counts plainly.** The header given to the model now reads e.g. "[automatic mashura round one — Wakil started this round automatically; you did not call it · two panel members, cap 2 per turn]", so one round with two members is never described as two rounds.
+- **Masked exit codes are recorded as failures.** A `run_shell` command that ends in an echo of `$?` and prints a non-zero `exit=` value is now recorded as failed in the struggle trace; nothing else is guessed from output text.
+- **Session start names the work folder.** When the work folder is not the current directory, the start banner adds one line naming it and which setting put it there. (No change to which folder is chosen.)
 
 ### Removed
 

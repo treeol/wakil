@@ -1940,7 +1940,7 @@ func LoadConfig(argv []string) (Config, error) {
 				OracleTimeoutSeconds *int   `json:"oracle_timeout_seconds"`
 				GoogleAPIKey         string `json:"google_api_key"`
 				GoogleCX             string `json:"google_cx"`
-				CorrectionCapture    bool   `json:"correction_capture"`
+				CorrectionCapture    *bool  `json:"correction_capture"`
 			}
 			if err := json.Unmarshal(b, &probe); err == nil {
 				if probe.OracleEndpoint != "" {
@@ -1956,11 +1956,10 @@ func LoadConfig(argv []string) (Config, error) {
 					})
 				}
 				// correction_capture's feature was removed in 0.8.4: a config
-				// that still carries the key loads with one notice. Presence
-				// is probed via the struct — a bool cannot tell absent from
-				// false, so this fires only for true, which is the value a
-				// config would carry while the feature was on.
-				if probe.CorrectionCapture {
+				// that still carries the key loads with one notice, whatever
+				// value it carries. The probe is a *bool so presence is told
+				// from absent — the same shape as OracleTimeoutSeconds above.
+				if probe.CorrectionCapture != nil {
 					correctionCaptureRemovedNoticeOnce.Do(func() {
 						fmt.Fprintln(os.Stderr, "correction_capture was removed in 0.8.4 — the key is accepted and ignored")
 					})
@@ -3055,8 +3054,8 @@ func (c Config) StartupBanner() string {
 	}
 	// Name the work folder when it is not the current directory (FACTS c:
 	// `wakil` in a new folder worked in the config's folder with no visible
-	// reason, while `wakil .` worked in the current folder). The setting
-	// that put it there is named so the user can remove it.
+	// reason, while `wakil .` worked in the current folder). The line names
+	// the possible sources so the user can remove the one that applied.
 	if line := c.nonCwdWorkDirLine(); line != "" {
 		b += "\n" + line
 	}
@@ -3064,12 +3063,12 @@ func (c Config) StartupBanner() string {
 }
 
 // nonCwdWorkDirLine names the work folder when it is not the current
-// directory, and says which setting put it there. Empty when the work
-// folder IS the current directory (the common case: no line). The work
-// folder is HostWorkDir in docker mode and WorkDir in direct mode; both
-// paths are made absolute for the comparison so a relative spelling of
-// the cwd still counts as the cwd. The banner reports the HOST folder
-// (where the user launched wakil), not the in-container agent root.
+// directory, and names the settings that could have put it there. Empty when
+// the work folder IS the current directory (the common case: no line). The
+// work folder is HostWorkDir in docker mode and WorkDir in direct mode; both
+// paths are made absolute for the comparison so a relative spelling of the
+// cwd still counts as the cwd. The banner reports the HOST folder (where the
+// user launched wakil), not the in-container agent root.
 func (c Config) nonCwdWorkDirLine() string {
 	work := c.HostWorkDir
 	if c.ExecMode == "direct" {
@@ -3089,7 +3088,7 @@ func (c Config) nonCwdWorkDirLine() string {
 	if filepath.Clean(absWork) == filepath.Clean(cwd) {
 		return ""
 	}
-	return "work folder: " + absWork + " (not the current directory; set by the workspace argument, a config workdir, or WAKIL_WORKDIR)"
+	return "work folder: " + absWork + " (not the current directory; set by the workspace argument, --workdir/--host-workdir, a config workdir, or WAKIL_WORKDIR)"
 }
 
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty
