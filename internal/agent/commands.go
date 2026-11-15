@@ -75,12 +75,6 @@ func SuspendAuto(toolName string, app *App, detail string) string {
 	return ""
 }
 
-// shouldGateEvenWithAutoApprove is a thin predicate wrapper around suspendAuto
-// for callers that only need a boolean.
-func ShouldGateEvenWithAutoApprove(toolName string, app *App, detail string) bool {
-	return SuspendAuto(toolName, app, detail) != ""
-}
-
 // handleEndpointSwitch switches the session to the named endpoint from
 // cfg.Endpoints: reconfigures the client in place (kind, base_url, model,
 // auth, sampling) and re-resolves context limits. Subagent clients are built

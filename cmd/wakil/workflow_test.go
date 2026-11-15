@@ -1549,20 +1549,21 @@ func TestAllowDestructiveGrant(t *testing.T) {
 	}
 }
 
-// TestShouldGateEvenWithAutoApprove: the boolean wrapper is consistent with suspendAuto.
+// TestShouldGateEvenWithAutoApprove: SuspendAuto is the single rule — the
+// egress question and destructive commands still ask under /auto.
 func TestShouldGateEvenWithAutoApprove(t *testing.T) {
 	app := &agent.App{}
 	app.SetAutoApprove(true)
-	if agent.ShouldGateEvenWithAutoApprove("mashura__review", app, "detail") {
+	if agent.SuspendAuto("mashura__review", app, "detail") != "" {
 		t.Error("mashura__review should auto-approve in auto mode (same trust as headless --auto)")
 	}
-	if agent.ShouldGateEvenWithAutoApprove("write_file", app, "detail") {
+	if agent.SuspendAuto("write_file", app, "detail") != "" {
 		t.Error("write_file should not gate in auto mode")
 	}
-	if !agent.ShouldGateEvenWithAutoApprove("run_shell", app, "$ rm -rf /tmp\n  (exec)") {
+	if agent.SuspendAuto("run_shell", app, "$ rm -rf /tmp\n  (exec)") == "" {
 		t.Error("destructive run_shell must still gate in auto mode")
 	}
-	if !agent.ShouldGateEvenWithAutoApprove("external_backend", app, "") {
+	if agent.SuspendAuto("external_backend", app, "") == "" {
 		t.Error("external_backend must always gate in auto mode")
 	}
 }

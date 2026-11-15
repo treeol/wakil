@@ -184,12 +184,8 @@ func TestMashuraToolsAutoApproveInAutoMode(t *testing.T) {
 		if reason := SuspendAuto(name, app, "detail"); reason != "" {
 			t.Errorf("%s: suspendAuto returned %q — mashūra must auto-approve in /auto mode", name, reason)
 		}
-		if ShouldGateEvenWithAutoApprove(name, app, "detail") {
-			t.Errorf("%s: must not gate in auto mode", name)
-		}
 	}
 }
-
 // The human gate fires for every tool: a declining confirmer short-circuits the
 // call (no network, no cost) and the real tool name reaches Confirm.
 func TestMashuraGateDeclineShortCircuits(t *testing.T) {
