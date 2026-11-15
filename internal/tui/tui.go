@@ -901,7 +901,7 @@ func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Any keystroke dismisses an active selection and its highlight.
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		m.flash = ""
 		m.clearPendingEscape()
 		if m.sel.active || m.sel.pressed {
@@ -929,11 +929,12 @@ func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// quitting the program still works with the picker open.
 		if m.resumePicker.active {
 			prevActive := m.resumePicker.active
+			prevPickerH := m.resumePickerHeight()
 			var rCmd tea.Cmd
 			var rConsumed bool
 			m, rCmd, rConsumed = m.handleResumePickerKey(msg)
 			if rConsumed {
-				if m.resumePicker.active != prevActive {
+				if m.resumePicker.active != prevActive || m.resumePickerHeight() != prevPickerH {
 					m = m.reflow()
 				}
 				if rCmd != nil {
@@ -1153,11 +1154,16 @@ func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		prevComp := m.comp.active
+		prevCompH := m.completionHeight()
 		m.comp = computeCompletion(m.ta, m.compSources(), m.fetchSessionShortIDs)
-		// Picker opened or closed: reflow so the viewport height tracks the change.
-		// Without this the stale viewport overflows View() and Bubble Tea's cursor
-		// tracker drifts (same issue as the subagent tab bar, fixed at line ~402).
-		if m.comp.active != prevComp {
+		// Picker opened or closed, or its visible row count changed:
+		// reflow so the viewport height tracks the change. Without this the
+		// stale viewport overflows View() and Bubble Tea's cursor tracker
+		// drifts (same issue as the subagent tab bar, fixed at line ~402).
+		// (Part 4, item 1: the old code only reflowed on an active flip, so a
+		// candidate-count change that grew the picker without opening or
+		// closing it left the viewport one row too tall.)
+		if m.comp.active != prevComp || m.completionHeight() != prevCompH {
 			m = m.reflow()
 		}
 		m = m.reflowIfStatusHeightChanged(before)
@@ -1216,7 +1222,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			case sessionclient.ChoiceGrantTool:
 				outcome = core.ApprovalGrantTool
 			}
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			m.pendApproval = nil
 			m.state = stateStreaming
 			m.addItem(iSys, note)
@@ -1293,7 +1299,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				timeline.EnterOnce("exit")
 				return m, []tea.Cmd{tea.Quit}, true
 			}
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			tick := m.setArm(armQuit, "ctrl+c")
 			m = m.reflowIfStatusHeightChanged(before)
 			return m, []tea.Cmd{tick}, true
@@ -1313,7 +1319,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.cancelTurn()
 			return m, nil, true
 		}
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		tick := m.setArm(armCancel, "ctrl+c")
 		m = m.reflowIfStatusHeightChanged(before)
 		return m, []tea.Cmd{tick}, true
@@ -1331,7 +1337,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				m.cancelTurn()
 				return m, nil, true
 			}
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			tick := m.setArm(armCancel, "esc")
 			m = m.reflowIfStatusHeightChanged(before)
 			return m, []tea.Cmd{tick}, true
@@ -1357,7 +1363,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 				timeline.EnterOnce("exit")
 				return m, []tea.Cmd{tea.Quit}, true
 			}
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			tick := m.setArm(armQuit, "ctrl+d")
 			m = m.reflowIfStatusHeightChanged(before)
 			return m, []tea.Cmd{tick}, true
@@ -1375,7 +1381,7 @@ func (m tuiModel) handleKey(msg tea.KeyMsg) (tuiModel, []tea.Cmd, bool) {
 			m.searchRun(m.searchIdx + 1)
 			return m, nil, true
 		}
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		if len(m.inputHistory) == 0 {
 			// No history: enter search anyway so the prompt shows, but there
 			// will never be a match.
@@ -1982,7 +1988,7 @@ func (m tuiModel) flushQueuedPrompt(input string) (tuiModel, []tea.Cmd) {
 	}
 	m.followBottom = true
 	m.vp.GotoBottom()
-	before := m.statusRows()
+	before := m.effectiveStatusRows()
 	m.state = stateStreaming
 	m.turnStart = time.Now()
 	m.tps = 0
@@ -2536,6 +2542,23 @@ func (m tuiModel) reflowIfStatusHeightChanged(before int) tuiModel {
 	}
 	return m
 }
+
+// layoutHeightBox is the single change that fixes the ungated-vs-gated
+// guard mismatch (Part 4, item 1): `reflowIfStatusHeightChanged` and
+// every caller took `before := m.effectiveStatusRows()` (UNGATED: 1 even when the
+// status line is hidden) and compared it to `m.effectiveStatusRows()`
+// (GATED: 0 when hidden, `statusVisible()==false` in compact/headless).
+// If a transition crossed the visibility gate in EITHER direction (a
+// host-only TurnStarted is the canonical one: it must not reflow the
+// viewport for a status row the user cannot see — but the height DO
+// change once the zone becomes visible), the comparison 1==0 fired or
+// 0==1 skipped, and View() and sizes() disagreed by exactly one row for
+// one frame.
+//
+// The fix: the parameter is now the EFFECTIVE rendered row count
+// everywhere — `before := m.effectiveStatusRows()` at every call site
+// (all call sites were grepped; those that feed sizes() already did).
+// `reflowIfStatusHeightChanged` itself is unchanged.
 
 // startDotTick arms a single 200 ms tick for the pulsing activity dot.
 // The tick self-terminates: the dotTickMsg handler only re-arms when busy.

@@ -31,6 +31,15 @@ var _ sandbox.Backend = (*dockerBackend)(nil)
 func (b *dockerBackend) Start(context.Context, sandbox.Session) error { return nil }
 
 func (b *dockerBackend) Exec(ctx context.Context, spec sandbox.ExecSpec) (sandbox.ExecHandle, error) {
+	// The agent's command runs INSIDE the container, not on the host:
+	// `docker exec` without `-t` (a TTY) means the process has no terminal
+	// of its own, and its Stdin/Stdout/Stderr are the executor's pipes
+	// (spec.Stdin/spec.Stdout/spec.Stderr) — or, when spec.Stdin is nil,
+	// os/exec connects stdin to /dev/null. There is no `-t` anywhere in
+	// this path (Part 4, item 5), so a command the agent runs cannot
+	// read from or write to the user's terminal. hisn passes its own
+	// pipes (exec.go `startCopiers`); direct mode uses CommandContext
+	// with nil Stdin on the host (exec.go DirectExecutor.RunShell).
 	args := []string{"exec"}
 	if spec.Stdin != nil {
 		args = append(args, "-i")

@@ -68,7 +68,41 @@ func TestGo_PanicDoesNotCrashProcess(t *testing.T) {
 	}
 }
 
-// TestGo_NormalExecution verifies that a non-panicking goroutine runs and
+// TestGo_PanickingGoroutineRestoresTerminal pins the Part 4 item 6
+// guarantee end-to-end for the goroutines the TUI/exec/agent stack launches
+// through safe.Go: a deliberate panic neither crashes the process nor
+// writes raw bytes to the terminal (os.Stderr is the diagnostic sink's
+// predecessor — safe.Go routes to diag, and diag redirects here).
+//
+// The normal execution (TestGo_NormalExecution) and multi-goroutine
+// (TestGo_MultipleGoroutines) cases already pin that safe.Go recovers;
+// THIS test pins that the process is STILL ALIVE after, which is the
+// terminal-usability half of the guarantee.
+func TestGo_PanickingGoroutineRestoresTerminal(t *testing.T) {
+	var sb safeBuffer
+	diag.Redirect(&sb)
+	defer diag.Redirect(nil)
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	Go("test-terminal-restores", func() {
+		defer wg.Done()
+		panic("deliberate harness panic")
+	})
+	wg.Wait()
+	time.Sleep(10 * time.Millisecond)
+
+	// Still alive: the process continues.
+	out := sb.String()
+	if !strings.Contains(out, "test-terminal-restores") {
+		t.Fatalf("panic not captured by safe.Go: %q", out)
+	}
+	// No raw terminal bytes: diag captured it, os.Stdout/Stderr untouched.
+	if strings.Contains(out, "\x1b[") {
+		t.Fatalf("panic output leaked escape sequences to the terminal: %q", out)
+	}
+}
+
 // completes normally.
 func TestGo_NormalExecution(t *testing.T) {
 	var wg sync.WaitGroup

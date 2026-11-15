@@ -151,7 +151,7 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// maps against the post-reflow geometry (review finding: the old code
 		// computed row/col before reflow, which could shift the anchor if the
 		// status zone height changed).
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		m.flash = ""
 		m = m.reflowIfStatusHeightChanged(before)
 		// If a previous selection's highlight is visible, clear it now and

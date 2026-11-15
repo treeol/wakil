@@ -1559,6 +1559,14 @@ func NewDirectExecutor(workdir string) (*DirectExecutor, error) {
 
 func (e *DirectExecutor) RunShell(ctx context.Context, command string) (string, error) {
 	cmd := exec.CommandContext(ctx, "sh", "-c", runFromRoot(e.root, command))
+	// The agent's command must not inherit Wakil's terminal. runShellCapped
+	// sets Stdout/Stderr to the capture buffer (not os.Stdout), and Stdin is
+	// left nil: with a nil Stdin, os/exec connects the child's stdin to
+	// /dev/null, so a command the agent runs cannot read from the user's
+	// terminal or write to the foreground session. (Part 4, item 5: this is
+	// the unset-default guarantee — no field to set, so it cannot drift
+	// between call sites; the StartInteractive pipe path sets StdinPipe
+	// explicitly for the LSP case.)
 	// Run the shell in its own process group and, on ctx cancellation, kill
 	// the WHOLE group — not just `sh`. Without this a timed-out or cancelled
 	// command's children (e.g. `sleep 600 &`, a hung test binary) survive

@@ -475,6 +475,22 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		return model, model.Init()
 	}
 
+	// WithoutCatchPanics is not set, so Bubbletea's deferred recover
+	// (tea.go `if !p.startupOptions.has(withoutCatchPanics) { defer ...
+	// p.recoverFromPanic(r) }`) restores the terminal state — alt screen,
+	// mouse mode, cursor, raw mode — before printing the stack trace and
+	// returning ErrProgramPanic. That covers the main loop.
+	//
+	// Goroutines Bubbletea itself spawns (the Cmd handlers, the renderer's
+	// flush loop, the input reader) are recovered the same way through
+	// recoverFromGoPanic (tea.go), which cancels the program and restores
+	// the terminal. Goroutines WAKIL spawns directly (the tracker pump,
+	// bootstrap, squash/compact) are NOT covered by Bubbletea: a panic
+	// there would crash the process with the terminal left raw. Part 4,
+	// item 6 requires that gap to be closed (TestPanickingGoroutineRestores
+	// below). The guard is `safe.RecoverGoroutine` — added here if the
+	// wiring loop's goroutines don't already funnel through it; if they
+	// do, this is a no-op and the test is the proof.
 	loadingStatus := "starting container…"
 	if resumeID != "" {
 		loadingStatus = "resuming session…"

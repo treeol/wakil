@@ -13,6 +13,7 @@ import (
 	"github.com/treeol/wakil/internal/core"
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
+	"github.com/treeol/wakil/internal/safe"
 	"github.com/treeol/wakil/internal/timeline"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -274,7 +275,16 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	// SetProgramSend (the TUI package's replacement for main.go's globalProg).
 	if programSend != nil {
 		ctx := context.Background()
-		go func(f sessionclient.Facade, sid event.SessionID, principal core.Principal) {
+		// A panic in this goroutine must be recovered: it is NOT the main
+		// loop, so Bubbletea's deferred recover does not cover it — an
+		// unrecovered panic here crashes the process with the terminal left
+		// raw (Part 4, item 6). safe.Go funnels the panic to diag and the
+		// process continues with the terminal usable. The function body is
+		// unchanged; only the launch changes.
+		safe.Go("tui-subscribe", func() {
+			f := m.facade
+			sid := m.sessionID
+			principal := m.principal
 			head := event.Seq(0)
 			if ss, err := f.SessionSnapshot(ctx, principal, sid); err == nil {
 				head = ss.LastSeq
@@ -302,7 +312,7 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 					programSend(startupNoteMsg{text: "· handoff complete — continuation could not auto-start (" + err.Error() + "); the context is pinned, send your next message"})
 				}
 			}
-		}(rm.facade, m.sessionID, m.principal)
+		})
 	}
 	// (Final layout reconciliation is the unconditional reflow() above —
 	// the pre-apply snapshot is stale by this point, so the conditional

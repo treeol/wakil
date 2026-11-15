@@ -1210,4 +1210,166 @@ from either mirror agree. L6 is fixed by the pair, not by a failing
 reproduction — the previous file had no test for soft-wrapped copies,
 which is why the blind spot survived.
 
+## Part 4 — layout robustness (re-check each item on this branch)
+
+### Item 1 — status-line height: fixed (three defects)
+
+Re-checked against `tui.go`, `tui_view.go`, `tui_events.go` (two
+discovery dispatches; the first returned only item 1 — the second died
+on file access — and items 2–7 were verified directly against the
+source read back above).
+
+What was already correct: every state transition that changes the
+rendered status zone (idle/streaming/waiting/confirm/compacting, t/s/tool/
+async progress changes) was followed by `reflowIfStatusHeightChanged`;
+search enter/abort/exit and the info-panel toggle reflow unconditionally;
+arm set/tick and `copiedMsg` flash-set use the guard. That is the
+1-row↔2-row guarantee for a transition through `statusLines` — it held.
+
+Defect A (guard compared the wrong space): every call site used
+`before := m.statusRows()` (UNGATED: 1 even when the status zone is
+hidden) and the guard compared it against `m.effectiveStatusRows()`
+(GATED: 0 when hidden, because `statusVisible()==false` in compact mode
+or on the splash). A transition that crossed the visibility gate in
+either direction — a host-only `TurnStarted` is the canonical one — fired
+a reflow for a row the user cannot see, or skipped one. Fixed by
+changing every call site to `before := m.effectiveStatusRows()`
+(30 call sites in `tui.go`, `tui_copy.go`, `tui_events.go`,
+`tui_select.go`): the parameter is now the EFFECTIVE rendered row
+count, matching `sizes()`'s own call. `reflowIfStatusHeightChanged`
+itself is unchanged. No failing reproduction run against a live program;
+the mismatch is a type-level one (two functions, different
+definitions of "status rows", compared with `!=`).
+
+Defect B (completion/resume pickers): `computeCompletion` changes that
+changed `completionHeight()` (candidate count 0..9 → picker height
+1..11) only reflowed on an `active` flip. Typing a query that grew or
+shrank the candidate list while the picker stayed open left the viewport
+one row too tall (AltScreen overflow class). The same shape in the
+resume picker (`handleResumePickerKey`'s "a" reload changes the session
+count while `active` stays true). Fixed in `tui.go:930-945` (resume
+picker) and `tui.go:1155-1163` (completion): both now reflow when the
+height changes as well as when `active` flips.
+
+Defect C (`KindSessionError`): `clearWiringTurnState` removes the
+running-tool row (`runningTool`/`lastTool` nil, state back to idle) but
+the case had no reflow guard at all — only `refreshViewport`. Fixed in
+`tui_events.go:593-604`: `before := m.effectiveStatusRows()` → clear →
+`m = m.reflowIfStatusHeightChanged(before)`.
+
+`go test -count=1 ./internal/tui/` passes with these (see commit);
+the geometry guarantee is pinned by the existing
+`TestViewFitsAcrossSizes`/`TestCompactLayout` height assertions plus
+the new guard-consistency reasoning. No test on a running program: the
+defects are comparison-level, not render-level.
+
+### Item 2 — small terminals: held already
+
+80x24, 60x18 and 40x12 all fit in `TestViewFitsAcrossSizes`
+(`compact_test.go:145`): the frame height never exceeds the terminal and
+no line's width exceeds it, in both layouts. `compact()` (`tui_view.go:
+387-390`) collapses the chrome to a one-row textarea with no status line
+below 60x18, which is what makes 40x12 fit. `sizesWithStatusHeight`
+clamps both viewport dimensions to ≥1 and lipgloss crops over-height.
+
+No "window too small" notice was added. The existing compact threshold
+already degrades to a usable one-row input instead of overflowing; a
+notice would be a new visual element (Part 0 / task constraint: no visual
+redesign) and the below-compact frame is usable, not broken. If a
+future report shows an unreadable 40x12, this is the first line to
+revisit.
+
+### Item 3 — resize during streaming/approval/selection: held already
+
+`WindowSizeMsg` in streaming state re-renders the content at the new
+width (`refreshViewport` + `reflow`); the viewport height is recomputed
+from `sizesWithStatusHeight`; in approval state the same reflow happens
+and `pendApproval` is untouched (the prompt box is not in the viewport);
+during a selection, the anchor/head coordinates are viewport-space
+`plainLines` rows, which a re-wrap invalidates wholesale — the model
+already clears the selection on `WindowSizeMsg` (pinned by
+`TestSelectionWhileScrollingReflow`'s resize arm in Part 3). No stale
+frame survives the first frame after a resize in any of the three
+states: `reflow()` is unconditional on `WindowSizeMsg`.
+
+### Item 4 — long lines/tool output/10000-line burst: held already
+
+A single very long line: `wrapAnsi` is cached per width (`item.cache`,
+`item.cacheW`) and is invoked only when the item or the width changes.
+A very long tool result: shell output is bounded host-side by
+`runShellCapped` (1 MB default) before it ever reaches an item, so the
+item text is bounded; the agent layer's tool_result_cap sits on top.
+A burst of 10000 lines: no path re-wraps all of history per keypress —
+the typing path only calls `statusRows()` + `updateViewport` on the
+delta; the 33 ms throttle (`refreshTickInterval`) coalesces streaming
+tail renders. The streaming tail does re-wrap per refresh, which is the
+O(chunk) path the throttle exists for. No freeze found; no fix needed.
+
+### Item 5 — child processes cannot take the terminal: held already (documented + test)
+
+Verified by reading the wiring, not by a claim:
+
+- Direct (`internal/exec/exec.go:1560`, `DirectExecutor.RunShell`):
+  `cmd.Stdin` is left nil → /dev/null; `cmd.Stdout`/`cmd.Stderr` are the
+  capture buffer via `runShellCapped`, never `os.Stdout`. `SysProcAttr`
+  sets `Setpgid`, it does not set a controlling terminal.
+- Docker (`internal/exec/docker_backend.go:33`, `Exec`; `exec.go:1212,
+  1221`): `docker exec` never carries `-t` (no TTY allocated), and
+  `cmd.Stdin = spec.Stdin` is the executor's pipe (ebnf: `nil` →
+  /dev/null by os/exec). Inside the container there is no terminal for
+  the process to take.
+- hisn (`internal/sandbox/hisn/cmd.go:280`): the supervisor's
+  `cmd.Stdin = nil`, `SysProcAttr` is `Pdeathsig: SIGTERM, Setsid: true`
+  (`sysproc_linux.go:19-21`) — a new session with NO controlling
+  terminal, so tty-generated signals (Ctrl-C / SIGHUP / SIGTSTP) that
+  reach Wakil's foreground group never reach the supervisor. The
+  exec client's stdin/stdout/stderr are the pipes in `exec.go:178-183`
+  (`startCopiers`).
+
+The existing pin is `supervisor_test.go:762` (`stdin must be nil
+(/dev/null)`) for hisn. New this commit: `TestDirectExecutorRunShellStdinIsDevNull`
+(`internal/exec/exec_ops_test.go`), which runs a real direct shell and
+asserts stdin is not a TTY and reads EOF immediately (0 bytes) — the
+direct backend's version of the same pin. No end-to-end three-backend
+live test: docker/hisn need daemons that do not run in this environment.
+
+### Item 6 — panics restore the terminal: held already (main loop)
+
+Bubbletea's `recoverFromPanic` (tea.go) defers over `p.Run()` and calls
+`p.renderer`'s restore path (alt screen, mouse mode, cursor) BEFORE
+printing the stack trace and BEFORE `prog.Run()` returns `ErrProgramPanic`.
+`tea.NewProgram` in `runTUI` does not pass `tea.WithoutCatchPanics`, so
+the recover is live. Goroutines Bubbletea spawns (Cmd handlers, input
+reader, renderer) funnel through `recoverFromGoPanic` identically.
+
+Wakil's own goroutines: the subscription goroutine in
+`tui_wiring_loop.go:277` was a bare `go func() { ... }()` — a panic
+there would NOT be covered (it is not the main loop, and it is not a
+Bubbletea Cmd handler). Fixed this commit: it now runs under
+`safe.Go` (`internal/safe/safe.go`, which recovers in the goroutine and
+routes to diag — the log, never the raw terminal). New test
+`TestGo_PanickingGoroutineRestoresTerminal`
+(`internal/safe/safe_test.go`): a deliberate `panic(...)` is recovered
+and logged by `safe.Go` while the process continues and never writes
+escape sequences to the terminal. A full TUI-integration test (panic
+inside `Update`) is not run — that is Bubbletea's documented behaviour,
+verified by reading `tea.go:638`/`838`, and by the task's rule: not
+demonstrated here, so not claimed.
+
+### Item 7 — exit paths: held already (read, not run)
+
+Normal quit, Ctrl+C (double-press arm/confirm), and the `prog.Run()`
+error return all leave `runTUI` after Bubbletea has restored the
+renderer (alt screen, mouse, raw mode, cursor) — `prog.Run()` always
+restores on the way out in both the success and `ErrProgramPanic`
+paths. SIGTERM is handled by Bubbletea's signal handler the same way.
+A failed start (`err != nil` from `prog.Run()`) hits
+`main.go`'s error branch: `restoreStderr()` + a plain `Fprintln` to
+`os.Stderr`, then the process exits — the terminal is already restored
+by the time that branch runs (it is after `prog.Run()` returns). None
+of these was driven end-to-end in a running program here (no
+interactive harness in this environment); the verdict is by reading the
+code path, and Part 5 is where the real-output tests live.
+
+
 

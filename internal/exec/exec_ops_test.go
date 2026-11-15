@@ -272,6 +272,26 @@ func TestDirectExecutorRunShellContextCancel(t *testing.T) {
 	}
 }
 
+// TestDirectExecutorRunShellStdinIsDevNull pins the Part 4 item 5 guarantee:
+// a command the agent runs must not inherit the user's terminal (or stdin).
+// runShellCapped leaves cmd.Stdin nil, so os/exec connects the child's stdin
+// to /dev/null — reading stdin yields EOF immediately, never blocking on the
+// real terminal. The test runs here by subprocess; no daemon needed.
+func TestDirectExecutorRunShellStdinIsDevNull(t *testing.T) {
+	ex, _ := newDirectExec(t)
+	ctx := context.Background()
+	out, err := ex.RunShell(ctx, "if [ -t 0 ]; then echo TTY; else cat 2>/dev/null | wc -c; fi")
+	if err != nil {
+		t.Fatalf("RunShell err: %v", err)
+	}
+	if strings.Contains(out, "TTY") {
+		t.Fatalf("agent command has a terminal on stdin: %q", out)
+	}
+	if !strings.Contains(out, "0") {
+		t.Fatalf("expected stdin EOF (0 bytes), got %q", out)
+	}
+}
+
 func TestDirectExecutorListDirAndMeta(t *testing.T) {
 	ex, root := newDirectExec(t)
 	ctx := context.Background()

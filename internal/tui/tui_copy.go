@@ -68,7 +68,7 @@ func (m tuiModel) lastAssistantSource() string {
 func (m tuiModel) copyLastResponseCmd() (tuiModel, tea.Cmd) {
 	text := m.lastAssistantSource()
 	if text == "" {
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		m.flash = "nothing to copy — no assistant response yet"
 		return m.reflowIfStatusHeightChanged(before), nil
 	}

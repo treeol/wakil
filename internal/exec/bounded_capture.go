@@ -67,6 +67,12 @@ func (b *boundedTailBuffer) Snapshot() (tail string, omitted int64) {
 // regardless of the cap (Write never fails), so a chatty child cannot
 // deadlock on a full pipe.
 //
+// Stdin is left nil (→ /dev/null): a command the agent runs cannot read
+// from the user's terminal, and Stdout/Stderr are captured here, not
+// os.Stdout, so a command the agent runs cannot write to the user's
+// terminal either. The supervisor/exec paths for hisn pass explicit pipes
+// instead (Part 4, item 5).
+//
 // WaitDelay guarantees Wait returns even if a grandchild inherits the pipe
 // and outlives the leader. NOTE: this is a visible behavior change vs
 // CombinedOutput — a leader that exits successfully while a descendant holds

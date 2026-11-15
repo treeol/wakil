@@ -84,7 +84,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			// last reflow, shifting segment widths and potentially flipping
 			// the status zone between 1 and 2 rows. Check and reflow so the
 			// viewport height stays in sync with the rendered status zone.
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			m = m.reflowIfStatusHeightChanged(before)
 		} else {
 			m.dotArmed = false
@@ -108,7 +108,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// Clear the arm only if this tick belongs to the current arm and the
 		// deadline has actually passed.
 		if lm.seq == m.armSeq && !m.armUntil.IsZero() && !time.Now().Before(m.armUntil) {
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			m.clearArm()
 			m = m.reflowIfStatusHeightChanged(before)
 		}
@@ -264,7 +264,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		}
 		return m, cmds, true
 	case copiedMsg:
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		// Drop stale results: an older, slower copy command finishing after a
 		// newer one must not overwrite the newer copy's status. (It cannot
 		// un-write an older native clipboard write — only its status.)
@@ -384,7 +384,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// The TUI's display state was already set optimistically at send; this
 		// is the authoritative transition (e.g. for workflow-continuation
 		// turns the TUI did NOT initiate).
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		if m.state == stateIdle || m.state == stateWaiting {
 			m.state = stateStreaming
 			m.turnStart = time.Now()
@@ -404,7 +404,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// shell, discovery subagent). Transition to stateWaiting so the
 		// status line shows "waiting" and Enter-while-waiting can
 		// cancel-and-send.
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		if m.state == stateStreaming {
 			m.state = stateWaiting
 			m.asyncProgress = nil // clear any stale snapshot from a prior suspension
@@ -420,7 +420,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// subsequent prompts would take the streaming-queue path (no
 		// flushOnCancel) and get stuck. The in-flight cancel will produce
 		// a TurnCompleted{cancelled} which flushes the queued prompt.
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		if m.state == stateWaiting && !m.cancelling {
 			m.state = stateStreaming
 			// Clear the progress snapshot — no longer waiting.
@@ -443,7 +443,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		if m.state == stateWaiting {
 			p := ev.Payload.(event.AsyncProgress)
 			m.asyncProgress = p.Ops
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			m = m.reflowIfStatusHeightChanged(before)
 		}
 
@@ -490,7 +490,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case event.KindTokRate:
 		p := ev.Payload.(event.TokRate)
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		m.tps = p.Rate
 		if p.Rate > 0 {
 			m.lastTps = p.Rate
@@ -500,7 +500,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case event.KindToolCallStarted:
 		// ArgDigest carries the display command (projection convention).
 		p := ev.Payload.(event.ToolCallStarted)
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		tool := &runningToolState{
 			toolCallID: string(p.ToolCallID),
 			name:       p.Name,
@@ -513,7 +513,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case event.KindToolCallCompleted:
 		p := ev.Payload.(event.ToolCallCompleted)
 		if m.runningTool != nil && m.runningTool.toolCallID == string(p.ToolCallID) {
-			before := m.statusRows()
+			before := m.effectiveStatusRows()
 			m.runningTool = nil
 			m = m.reflowIfStatusHeightChanged(before)
 		}
@@ -552,7 +552,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 
 	case event.KindApprovalRequested:
 		p := ev.Payload.(event.ApprovalRequested)
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		if m.searchActive {
 			m.searchExit(false)
 		}
@@ -574,7 +574,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		// matching approval clears the pending state (a stale resolution for
 		// an already-answered approval is ignored).
 		p := ev.Payload.(event.ApprovalResolved)
-		before := m.statusRows()
+		before := m.effectiveStatusRows()
 		if m.pendApproval != nil && m.pendApproval.approvalID == string(p.ApprovalID) {
 			m.pendApproval = nil
 			m.state = stateStreaming
@@ -599,7 +599,9 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		m.flushStreaming()
 		m.commitToolTrailSummary()
 		m.addItem(iSys, styleErr("error: "+p.Err))
+		before := m.effectiveStatusRows()
 		m = m.clearWiringTurnState()
+		m = m.reflowIfStatusHeightChanged(before)
 
 	case event.KindSubagentSpawned:
 		p := ev.Payload.(event.SubagentSpawned)
@@ -730,7 +732,7 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 // of the AgentDoneMsg case. Outcome drives the display classification; the
 // deferred-grant and queue-flush gates key off Outcome/WorkflowWillContinue.
 func (m tuiModel) finishWiringTurn(p event.TurnCompleted, cmds []tea.Cmd) (tuiModel, []tea.Cmd) {
-	before := m.statusRows()
+	before := m.effectiveStatusRows()
 	m.flushStreaming()
 	// Commit the turn's tool activity as ONE collapsed summary line (the
 	// live in-place trail line disappears with the tail; this is what
