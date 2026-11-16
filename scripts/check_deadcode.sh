@@ -25,17 +25,28 @@ trap 'rm -f "$report"' EXIT
 # deadcode exits 0 on success, non-zero on analyzer failure. We must
 # distinguish "analyzer ran and found nothing" from "analyzer crashed".
 # A real report has lines like "file.go:LINE:COL: unreachable func: Name".
-go run golang.org/x/tools/cmd/deadcode@v0.52.0 -test ./... >"$report" 2>&1
-deadcode_rc=$?
+# stderr is kept out of the report: `go run` writes "go: downloading ..."
+# lines to stderr on a cold module cache, and the loop below treated
+# those as unreachable entries that must be allow-listed. Only stdout is
+# the analyzer report. A real analyzer failure (non-zero exit) is also
+# fatal — without the `|| rc=$?` guard, `set -e` aborts on it before
+# the exit-code branch below can print a useful message, so the
+# deadcode_rc branch was unreachable; use the guarded form.
+errfile=$(mktemp "${TMPDIR:-/tmp}/deadcode-err.XXXXXXXX")
+trap 'rm -f "$report" "$errfile"' EXIT
+deadcode_rc=0
+go run golang.org/x/tools/cmd/deadcode@v0.52.0 -test ./... >"$report" 2>"$errfile" || deadcode_rc=$?
 
 if [ "$deadcode_rc" -ne 0 ]; then
 	echo "check_deadcode: deadcode analyzer failed (exit $deadcode_rc):" >&2
-	cat "$report" >&2
+	cat "$report" "$errfile" >&2
 	exit 1
 fi
 
 # A clean report has no lines matching the "path:symbol" pattern.
-if ! grep -Eq '^[^ ]+\.go:[0-9]+:[0-9]+: .* ' "$report"; then
+# Match only lines containing "unreachable func:" so non-report lines
+# (e.g. a future go-run note on stdout) are not treated as entries.
+if ! grep -q 'unreachable func:' "$report"; then
 	echo "check_deadcode: deadcode clean, nothing to allow"
 	exit 0
 fi
@@ -44,6 +55,10 @@ fail=0
 while IFS= read -r line; do
 	case "$line" in
 		"" | \#*) continue ;;
+	esac
+	case "$line" in
+		*"unreachable func:"*) ;;
+		*) continue ;;
 	esac
 	# deadcode prints one entry per line: "file.go:LINE:COL: unreachable func: Name".
 	# Match on the "package.Symbol" suffix (after "unreachable func: ") so
