@@ -87,6 +87,10 @@ fi
 # git log --format='%G?' needs gpg.ssh.allowedSignersFile for SSH
 # signature verification. If HOME is empty or the signing setup is
 # missing, SKIP with a reason — never FAIL for a missing setup.
+# Empty-range guard: `git log master..master` prints nothing, and
+# `echo "" | grep -v ' G$'` counts one blank line as one unsigned
+# commit. Skip empty lines so running on the base branch itself
+# (0.8.4 fix-forward on master) reports PASS, not a phantom FAIL.
 sig_errfile="$outdir/sig.err"
 sig_stdout=$(git log --format='%h %G?' "$base_ref..HEAD" 2>"$sig_errfile")
 sig_rc=$?
@@ -99,13 +103,14 @@ elif [ $sig_rc -ne 0 ]; then
   echo "SKIP  signed-commits (git log failed: $(echo "$sig_err" | head -1))"
   skip=$((skip+1))
 else
-  unsigned=$(echo "$sig_stdout" | grep -v ' G$' | wc -l)
-  if [ "$unsigned" -gt 0 ]; then
-    echo "FAIL  signed-commits ($unsigned unsigned)"
-    fail=$((fail+1))
-  else
+  unsigned=$(printf '%s\n' "$sig_stdout" | grep -v '^$' | grep -vc ' G$' || true)
+  # grep -c returns 1 when no lines match; the logical count is then 0.
+  if [ "$unsigned" -eq 0 ]; then
     echo "PASS  signed-commits"
     pass=$((pass+1))
+  else
+    echo "FAIL  signed-commits ($unsigned unsigned)"
+    fail=$((fail+1))
   fi
 fi
 
