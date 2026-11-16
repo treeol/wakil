@@ -25,21 +25,95 @@ func TestStartupBannerNamesNonCwdWorkDir(t *testing.T) {
 	if line := c.nonCwdWorkDirLine(); line != "" {
 		t.Errorf("work dir == cwd must print no line, got %q", line)
 	}
-	// Work dir != cwd, from the config file: the line names the folder.
+	// Work dir != cwd, from the config file: the line names the folder
+	// and the one setting that chose it.
 	other := filepath.Join(cwd, "..", "other-project")
 	c.HostWorkDir = other
+	c.workDirLoaded = true
 	line := c.nonCwdWorkDirLine()
 	if !strings.Contains(line, filepath.Clean(other)) {
 		t.Errorf("line = %q, want folder %q", line, filepath.Clean(other))
 	}
-	if !strings.Contains(line, "workdir") {
-		t.Errorf("line = %q, want the workdir source named", line)
+	if !strings.Contains(line, "work_dir in the config file") {
+		t.Errorf("line = %q, want the choosing setting named (config file)", line)
+	}
+	if strings.Count(line, "WAKIL_WORKDIR") > 0 || strings.Count(line, "workspace argument") > 0 {
+		t.Errorf("line = %q, must name only ONE setting, not a list", line)
 	}
 	// Direct mode reads WorkDir.
 	c.ExecMode = "direct"
 	c.WorkDir = other
 	if line := c.nonCwdWorkDirLine(); !strings.Contains(line, filepath.Clean(other)) {
 		t.Errorf("direct line = %q, want folder %q", line, filepath.Clean(other))
+	}
+}
+
+// TestStartupBannerSymlinkedCwd: the same directory spelled through
+// a symlink must not print the banner (the reported false positive:
+// cwd ~/coding → ~/Coding via symlink printed a line anyway).
+func TestStartupBannerSymlinkedCwd(t *testing.T) {
+	real := t.TempDir()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.Chdir(oldWd) }()
+	if err := os.Chdir(link); err != nil {
+		t.Fatal(err)
+	}
+	c := DefaultConfig()
+	c.HostWorkDir = real
+	if line := c.nonCwdWorkDirLine(); line != "" {
+		t.Errorf("symlinked cwd must print no line, got %q", line)
+	}
+	// And genuinely different: line prints, naming the source.
+	c.HostWorkDir = filepath.Join(real, "..", "elsewhere")
+	if line := c.nonCwdWorkDirLine(); line == "" {
+		t.Error("different folder must print the line")
+	}
+}
+
+// TestWorkDirSourceNaming: the one-setting source for each layer,
+// in precedence order (positional > flags > env > config file).
+func TestWorkDirSourceNaming(t *testing.T) {
+	cwd, _ := os.Getwd()
+	other := filepath.Join(cwd, "..", "other")
+	mk := func(mut func(*Config)) Config {
+		c := DefaultConfig()
+		c.HostWorkDir = other
+		if mut != nil {
+			mut(&c)
+		}
+		return c
+	}
+	pos := mk(func(c *Config) { c.workDirPositional = true; c.WorkDirFlag = true; c.workDirLoaded = true })
+	if got := pos.workDirSource(); got != "the workspace argument" {
+		t.Errorf("positional source = %q, want the workspace argument", got)
+	}
+	wd := mk(func(c *Config) { c.WorkDirFlag = true; c.workDirLoaded = true })
+	if got := wd.workDirSource(); got != "--workdir" {
+		t.Errorf("flag source = %q, want --workdir", got)
+	}
+	hwd := mk(func(c *Config) { c.hostWorkDirFlag = true; c.workDirLoaded = true })
+	if got := hwd.workDirSource(); got != "--host-workdir" {
+		t.Errorf("host flag source = %q, want --host-workdir", got)
+	}
+	t.Setenv("WAKIL_WORKDIR", "/somewhere")
+	env := mk(func(c *Config) { c.workDirLoaded = true })
+	if got := env.workDirSource(); got != "WAKIL_WORKDIR" {
+		t.Errorf("env source = %q, want WAKIL_WORKDIR", got)
+	}
+	file := mk(func(c *Config) { c.workDirLoaded = true })
+	t.Setenv("WAKIL_WORKDIR", "")
+	t.Setenv("ILM_WORKDIR", "")
+	t.Setenv("WAKIL_HOST_WORKDIR", "")
+	t.Setenv("ILM_HOST_WORKDIR", "")
+	if got := file.workDirSource(); got != "work_dir in the config file" {
+		t.Errorf("file source = %q, want work_dir in the config file", got)
 	}
 }
 

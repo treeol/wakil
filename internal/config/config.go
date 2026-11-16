@@ -203,6 +203,12 @@ type Config struct {
 	// It, and a WorkDir set on a Config that did not come from LoadConfig, are
 	// the explicit project choice (0.5.0): file and env values never are.
 	WorkDirFlag bool `json:"-"`
+	// hostWorkDirFlag is true only when --host-workdir was passed on the
+	// command line (the banner names the setting that chose the work folder).
+	hostWorkDirFlag bool
+	// workDirPositional marks that the positional workspace argument set
+	// the work folder (the banner names it as the chosing setting).
+	workDirPositional bool
 	// workDirLoaded marks a Config produced by LoadConfig, so an unloaded
 	// literal's WorkDir can be told apart from a file/env-derived one.
 	workDirLoaded bool
@@ -2194,6 +2200,9 @@ func LoadConfig(argv []string) (Config, error) {
 		if f.Name == "workdir" {
 			cfg.WorkDirFlag = true
 		}
+		if f.Name == "host-workdir" {
+			cfg.hostWorkDirFlag = true
+		}
 	})
 
 	// Record which flags were explicitly passed — needed to distinguish
@@ -2318,6 +2327,7 @@ func LoadConfig(argv []string) (Config, error) {
 			return cfg, fmt.Errorf("workspace path %q is not a directory", workspace)
 		}
 		workspace = abs
+		cfg.workDirPositional = true
 	}
 
 	cfg.Sandbox.WorkDirExplicit = cfg.WorkDir != ""
@@ -3054,12 +3064,14 @@ func (c Config) StartupBanner() string {
 }
 
 // nonCwdWorkDirLine names the work folder when it is not the current
-// directory, and names the settings that could have put it there. Empty when
-// the work folder IS the current directory (the common case: no line). The
-// work folder is HostWorkDir in docker mode and WorkDir in direct mode; both
-// paths are made absolute for the comparison so a relative spelling of the
-// cwd still counts as the cwd. The banner reports the HOST folder (where the
-// user launched wakil), not the in-container agent root.
+// directory, and names the ONE setting that chose it. Empty when the
+// work folder IS the current directory (the common case: no line).
+// The work folder is HostWorkDir in docker mode and WorkDir in direct
+// mode; both paths are made absolute AND symlink-resolved for the
+// comparison, so the same directory under different path spellings
+// (e.g. ~/coding vs ~/Coding where one is a symlink to the other)
+// still counts as the cwd. The banner reports the HOST folder (where
+// the user launched wakil), not the in-container agent root.
 func (c Config) nonCwdWorkDirLine() string {
 	work := c.HostWorkDir
 	if c.ExecMode == "direct" {
@@ -3068,19 +3080,63 @@ func (c Config) nonCwdWorkDirLine() string {
 	if work == "" {
 		return ""
 	}
-	cwd, err := os.Getwd()
+	absWork, err := resolveWorkDirForBanner(work)
 	if err != nil {
 		return ""
 	}
-	absWork, err := filepath.Abs(work)
+	cwd, err := resolveWorkDirForBanner(".")
 	if err != nil {
 		return ""
 	}
-	if filepath.Clean(absWork) == filepath.Clean(cwd) {
+	if absWork == cwd {
 		return ""
 	}
-	return "work folder: " + absWork + " (not the current directory; set by the workspace argument, --workdir/--host-workdir, a config workdir, or WAKIL_WORKDIR)"
+	return "work folder: " + absWork + " (not the current directory; set by " + c.workDirSource() + ")"
 }
+
+// resolveWorkDirForBanner makes a path absolute and resolves
+// symlinks when it exists (a work folder that does not exist yet
+// falls back to the cleaned absolute spelling).
+func resolveWorkDirForBanner(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved, nil
+	}
+	return filepath.Clean(abs), nil
+}
+
+// workDirSource names the setting that chose the displayed work
+// folder, in LoadConfig precedence order (positional workspace >
+// flags > env > config file). Exactly one name per line — not the
+// list of all possible settings.
+func (c Config) workDirSource() string {
+	switch {
+	case c.workDirPositional:
+		return "the workspace argument"
+	case c.WorkDirFlag:
+		return "--workdir"
+	case c.hostWorkDirFlag:
+		return "--host-workdir"
+	case os.Getenv("WAKIL_HOST_WORKDIR") != "" || os.Getenv("ILM_HOST_WORKDIR") != "":
+		if os.Getenv("WAKIL_HOST_WORKDIR") != "" {
+			return "WAKIL_HOST_WORKDIR"
+		}
+		return "ILM_HOST_WORKDIR"
+	case os.Getenv("WAKIL_WORKDIR") != "" || os.Getenv("ILM_WORKDIR") != "":
+		if os.Getenv("WAKIL_WORKDIR") != "" {
+			return "WAKIL_WORKDIR"
+		}
+		return "ILM_WORKDIR"
+	case c.workDirLoaded:
+		return "work_dir in the config file"
+	}
+	return "a setting"
+}
+
+
 
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty
 // exactly when hisn is usable as the default backend.
