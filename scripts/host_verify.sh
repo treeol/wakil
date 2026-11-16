@@ -262,7 +262,11 @@ check changelog-heading sh -c '
 # pipefail` is not POSIX (dash exits 2 on it, which would kill this
 # check). The rewritten form below has no pipe and no non-POSIX option.
 if command -v go >/dev/null 2>&1; then
-  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log" | tail -10; exit $rc'
+  # Frame-cost regression (incl. the resize limit), the deferred
+  # resize re-wrap test, the per-frame allocation budget and the
+  # benchmark smoke. Part C: resize limit + allocation budget are
+  # asserted here, not just logged.
+  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke|TestResizeDeferredRewrap|TestKeypressFrameAllocs" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log" | tail -10; exit $rc'
 else
   echo "SKIP  tui-perf (go not available)"
   skip=$((skip+1))
@@ -278,7 +282,11 @@ fi
 # Same exit-code care as 14: go test's status is propagated; `go test`
 # exit 77 = skip-all, which check() maps to SKIP with a reason.
 if command -v go >/dev/null 2>&1; then
-  check tui-screen sh -c 'go test -count=1 -run "TestScreen" ./internal/tui/ >"$TMPROOT/tui-screen.log" 2>&1; rc=$?; cat "$TMPROOT/tui-screen.log" | tail -10; exit $rc'
+  # Screen tests on real output + the Part A raw-input selection
+  # tests (SGR bytes through the real tea.Program): TestScreen,
+  # TestSelection, TestOSC52Escape. Part C: the raw-input drag
+  # regression tests run here, so a mid-drag jump fails this gate.
+  check tui-screen sh -c 'go test -count=1 -run "TestScreen|TestSelection|TestOSC52Escape" ./internal/tui/ >"$TMPROOT/tui-screen.log" 2>&1; rc=$?; cat "$TMPROOT/tui-screen.log" | tail -10; exit $rc'
 else
   echo "SKIP  tui-screen (go not available)"
   skip=$((skip+1))
