@@ -145,21 +145,27 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_DATA_HOME"
 check build-and-version sh -c 'mkdir -p "$TMPROOT/bin" && go build -o "$TMPROOT/bin/wakil" ./cmd/wakil/ && "$TMPROOT/bin/wakil" --version'
 
 # --- 4. vet, gofmt, lint ---
-check vet sh -c 'go vet ./... 2>&1 | head -20'
+# Exit-code honesty: a check must report the status of the command it
+# runs, not of a trailing `| tail`/`| head` — those return their own
+# (always-zero) status and masked real FAILs (e.g. golangci-lint `unused`
+# findings in the TUI screen harness, 0.8.4 CI lint job). The checks
+# below write to a log and propagate the runner's exit code; the log
+# snippet in `check()` still shows the tail of the output.
+check vet sh -c 'go vet ./... >"$TMPROOT/vet.log" 2>&1; rc=$?; tail -20 "$TMPROOT/vet.log"; exit $rc'
 check gofmt sh -c 'out=$(gofmt -l $(git ls-files "*.go") 2>&1); if [ -n "$out" ]; then echo "$out"; exit 1; fi; echo "gofmt clean"'
 if command -v golangci-lint >/dev/null 2>&1; then
-  check golangci-lint sh -c 'golangci-lint run 2>&1 | tail -10'
+  check golangci-lint sh -c 'golangci-lint run >"$TMPROOT/golangci-lint.log" 2>&1; rc=$?; tail -10 "$TMPROOT/golangci-lint.log"; exit $rc'
 else
   echo "SKIP  golangci-lint (not installed)"
   skip=$((skip+1))
 fi
 
 # --- 5. go test ---
-check go-test sh -c 'go test -count=1 ./... 2>&1 | tail -10'
+check go-test sh -c 'go test -count=1 ./... >"$TMPROOT/go-test.log" 2>&1; rc=$?; tail -10 "$TMPROOT/go-test.log"; exit $rc'
 
 # --- 6. go test -race (skipped with --fast) ---
 if [ "$fast" -eq 0 ]; then
-  check go-test-race sh -c 'go test -race -count=1 -p 2 ./... 2>&1 | tail -20'
+  check go-test-race sh -c 'go test -race -count=1 -p 2 ./... >"$TMPROOT/go-test-race.log" 2>&1; rc=$?; tail -20 "$TMPROOT/go-test-race.log"; exit $rc'
 else
   echo "SKIP  go-test-race (--fast)"
   skip=$((skip+1))
@@ -239,7 +245,7 @@ check release-notes sh -c '
 '
 
 # --- 12. e2e harness tests in cmd/wakil ---
-check e2e-harness sh -c 'go test -count=1 -run "E2E" ./cmd/wakil/ 2>&1 | tail -10'
+check e2e-harness sh -c 'go test -count=1 -run "E2E" ./cmd/wakil/ >"$TMPROOT/e2e-harness.log" 2>&1; rc=$?; tail -10 "$TMPROOT/e2e-harness.log"; exit $rc'
 
 # --- 13. CHANGELOG unreleased heading ---
 check changelog-heading sh -c '
