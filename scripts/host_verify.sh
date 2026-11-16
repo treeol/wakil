@@ -36,8 +36,12 @@ pass=0; fail=0; skip=0
 
 check() {
   name="$1"; shift
-  "$@" >"$outdir/$name.log" 2>&1
-  rc=$?
+  # `set -e` would abort the script on the first failing check
+  # before rc=$? ran (POSIX: a failing unconditioned command
+  # exits). Guard with `|| rc=$?` so every check runs and the
+  # summary counts all of them.
+  rc=0
+  "$@" >"$outdir/$name.log" 2>&1 || rc=$?
   if [ $rc -eq 0 ]; then
     echo "PASS  $name"
     pass=$((pass+1))
