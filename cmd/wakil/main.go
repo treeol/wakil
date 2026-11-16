@@ -262,6 +262,9 @@ type tuiHooks struct {
 // returns the process exit code. It owns the stderr redirect, the async
 // bootstrap, the program loop and the teardown.
 func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
+	// Honor WAKIL_TUI_PERF read at process start (init ran before
+	// the variable could be set by a parent scheduler embedding us).
+	tui.RefreshPerfFromEnv()
 	// Redirect os.Stderr to a temp file so any fmt.Fprintln(os.Stderr, ...)
 	// during the async bootstrap (NewExecutor, BuildApp, BootstrapTUI) cannot
 	// garble the alt-screen terminal. The temp file contents are copied into
@@ -295,6 +298,8 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 	// log) set by the swap function and called after prog.Run() returns.
 	var postRunCleanup func()
 	var postRunExeClose func() error
+	// performance summary destination (log path captured at swap time)
+	var postRunLogPath string
 
 	// bsResult stores the bootstrap goroutine's result for cleanup if the
 	// user quits before the swap function runs.
@@ -462,6 +467,10 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		}
 		_ = os.Remove(stderrFile.Name())
 
+		// Capture the session-log path now: after sessionLogClose
+		// the diag sink is restored and CurrentPath is gone.
+		postRunLogPath = diag.CurrentPath()
+
 		// Store composed cleanup for after prog.Run() returns.
 		postRunCleanup = func() {
 			tui.PrintPerfSummary()
@@ -559,6 +568,10 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		} else {
 			fmt.Fprintln(os.Stderr, "startup aborted — a container may still be starting (Docker cannot be cancelled)")
 		}
+		// Quitting before the TUI started: still print the perf
+		// summary state (no frames recorded) so WAKIL_TUI_PERF=1
+		// users get an answer either way.
+		tui.PrintPerfSummaryTo(os.Stderr, postRunLogPath)
 		_ = os.Remove(stderrFile.Name())
 		return 1
 	}
@@ -584,6 +597,11 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 			fmt.Fprintln(os.Stderr, "timeline:", p)
 		}
 	}
+
+	// Frame-timing summary on stdout (WAKIL_TUI_PERF=1 only): the
+	// terminal is restored by now (prog.Run returned), so this is
+	// visible. The per-frame lines are in the named log file.
+	tui.PrintPerfSummaryTo(os.Stderr, postRunLogPath)
 
 	// End-of-session cost summary (printed to stderr after terminal is restored).
 	// The facade's Snapshot gives us the CostTracker, which is still valid

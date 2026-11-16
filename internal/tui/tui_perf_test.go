@@ -83,6 +83,37 @@ func TestPerfWritesToDiag(t *testing.T) {
 	}
 }
 
+// TestPerfSummaryToStdout: the exported stdout form writes the
+// three summary lines plus the log path, and the "no samples"
+// form when the switch is on but nothing was recorded.
+func TestPerfSummaryToStdout(t *testing.T) {
+	restore := setPerfForTest(true)
+	defer restore()
+	perfReset()
+	var buf strings.Builder
+	perfRecord(perfSample{typ: "KeyMsg", updateDur: 5 * time.Microsecond, viewDur: 7 * time.Microsecond, bytes: 42})
+	PrintPerfSummaryTo(&buf, "/tmp/x/diag-abc.log")
+	s := buf.String()
+	for _, want := range []string{"tuiperf summary count=1 slowest=KeyMsg maxframe=42bytes log=/tmp/x/diag-abc.log", "tuiperf update median=", "tuiperf view median="} {
+		if !strings.Contains(s, want) {
+			t.Fatalf("stdout summary missing %q\n%s", want, s)
+		}
+	}
+	perfReset()
+	buf.Reset()
+	PrintPerfSummaryTo(&buf, "/tmp/x/diag-abc.log")
+	if !strings.Contains(buf.String(), "no frames recorded") {
+		t.Fatalf("empty summary must say so: %q", buf.String())
+	}
+	off := setPerfForTest(false)
+	buf.Reset()
+	PrintPerfSummaryTo(&buf, "/tmp/x/diag-abc.log")
+	off()
+	if buf.Len() != 0 {
+		t.Fatalf("switch off must print nothing: %q", buf.String())
+	}
+}
+
 // TestPerfSummaryLines verifies the exit summary is exactly three
 // tuiperf lines (count/median/p99/slowest, update, view).
 func TestPerfSummaryLines(t *testing.T) {

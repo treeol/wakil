@@ -35,6 +35,7 @@ package tui
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
@@ -48,10 +49,15 @@ import (
 
 var perfEnabled atomic.Bool
 
-func init() {
-	if v := os.Getenv("WAKIL_TUI_PERF"); v == "1" || v == "true" || v == "yes" || v == "on" {
-		perfEnabled.Store(true)
-	}
+func init() { RefreshPerfFromEnv() }
+
+// RefreshPerfFromEnv (re)reads WAKIL_TUI_PERF into the switch.
+// main calls it once at program start so the variable is honored
+// even in binaries embedded without the package's init environment
+// (and so end-to-end tests can set it per run). Off by default.
+func RefreshPerfFromEnv() {
+	v := os.Getenv("WAKIL_TUI_PERF")
+	perfEnabled.Store(v == "1" || v == "true" || v == "yes" || v == "on")
 }
 
 // checkPerf reports whether frame timing is recording. It is the only
@@ -191,6 +197,28 @@ func perfPrintSummary() {
 // from postRunCleanup, before the session log closes). No-op when
 // WAKIL_TUI_PERF was unset or no samples were taken.
 func PrintPerfSummary() { perfPrintSummary() }
+
+// PrintPerfSummaryTo writes the exit summary to w (stdout after the
+// terminal is restored) so the user sees it. logPath names the
+// diagnostic log file that holds the per-frame lines. It prints
+// nothing when the switch was off; when on but no samples were
+// taken (quit before the model started) it prints one line saying so.
+func PrintPerfSummaryTo(w io.Writer, logPath string) {
+	count, upMed, upP99, viewMed, viewP99, slowest, maxBytes, ok := perfSummary()
+	where := "the diagnostic log"
+	if logPath != "" {
+		where = logPath
+	}
+	if !ok {
+		if checkPerf() {
+			fmt.Fprintf(w, "tuiperf: no frames recorded (quit before the TUI started); log: %s\n", where)
+		}
+		return
+	}
+	fmt.Fprintf(w, "tuiperf summary count=%d slowest=%s maxframe=%dbytes log=%s\n", count, slowest, maxBytes, where)
+	fmt.Fprintf(w, "tuiperf update median=%dns p99=%dns\n", upMed, upP99)
+	fmt.Fprintf(w, "tuiperf view median=%dns p99=%dns\n", viewMed, viewP99)
+}
 
 // perfMsgType names an Update message for the diagnostic log. It is a
 // short type name (no package path) so the log stays greppable.

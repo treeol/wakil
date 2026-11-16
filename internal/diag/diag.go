@@ -42,6 +42,17 @@ func Redirect(w io.Writer) {
 	writer = w
 }
 
+// CurrentPath returns the path of the file the sink currently
+// points to, or "" when it is not file-backed (os.Stderr).
+func CurrentPath() string {
+	mu.Lock()
+	defer mu.Unlock()
+	if f, ok := writer.(*os.File); ok && f != os.Stderr {
+		return f.Name()
+	}
+	return ""
+}
+
 // Write writes p to the current diagnostic destination. Writes are serialized
 // against each other (a non-thread-safe destination like a buffer or a
 // non-file writer is safe) and against Redirect, so a concurrent Redirect can

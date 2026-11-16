@@ -93,7 +93,7 @@ change. Nothing is written.
 | `WAKIL_HISTORY_FILE` | `$XDG_DATA_HOME/wakil/input_history` | File holding the interactive prompt line history. |
 | `WAKIL_KVR_DISABLED` | `false` | Disable the staging KV store *(the config key `kvr_disabled` is the same switch)*. |
 | `WAYLAND_DISPLAY` | *unset* | Selects the Wayland clipboard transport (`wl-paste`) for image clipboard reads; `DISPLAY` selects the X11 transport. |
-| `WAKIL_TUI_PERF` | *unset* | `1`/`true`/`yes`/`on`: record the duration of every TUI frame and input event into the per-session diagnostic log and print a three-line summary on exit (count, median, 99th percentile, slowest event type). Off by default; no cost when off. See the `docs/work-0.8.4-progress.md` Part 1 section. |
+| `WAKIL_TUI_PERF` | *unset* | `1`/`true`/`yes`/`on`: record the duration of every TUI frame and input event into the per-session diagnostic log (`~/.local/share/wakil/diag-<session>.log`, also `$XDG_DATA_HOME/wakil/`) and print a three-line summary on stderr after the terminal is restored on exit — `count`, `slowest` event type, largest frame in bytes, and separate `update`/`view` median+99th percentile, with the log path named in the summary line. Off by default; no cost when off. See the `docs/work-0.8.4-progress.md` Part 1 section. |
 
 ## Selection and copy
 
