@@ -210,25 +210,9 @@ func (h *screenHarness) settle() {
 // rows). A resize of the box frame shows up as a rewrite of the
 // box-border rows instead.
 
-// key sends one input line (a keystroke or a control sequence) to the
-// program and waits for the resulting frame to settle.
-func (h *screenHarness) key(b string) {
-	h.t.Helper()
-	// tea.Program's input parser expects raw sequences: keys arrive as
-	// their control bytes. The tests that need a real message use
-	// h.sendMsg instead; this helper is for typing into the textarea.
-	h.in.WriteString(b)
-	h.settle()
-}
-
-// sendMsg delivers a tea.Msg directly to the program's Send channel,
-// waiting for the frame that follows to settle. This is how the
-// key-event tests reach Update without emulating a terminal driver.
-func (h *screenHarness) sendMsg(m tea.Msg) {
-	h.t.Helper()
-	h.p.Send(m)
-	h.settle()
-}
+// TestScreenFreshStart's harness is created with newScreenHarness(t); the
+// harness drives the program via h.run()/h.settle() — no key/sendMsg
+// helpers remain (lint: unused).
 
 // freshStart asserts the first frame of a fresh session: the splash
 // (no items, no turn), no border overflow, no escape garbage.
@@ -428,24 +412,8 @@ func TestScreenFinalFrameIsModelsOwn(t *testing.T) {
 //     model does.
 // ---------------------------------------------------------------------------
 
-// rawInputHarness is the raw-input variant of screenHarness: the
-// input bytes are the terminal's own SGR/key sequences, written
-// into the program's input pipe, so bubbletea's terminal input
-// parser (the code a real terminal's mouse and keyboard hit) is
-// what produces the Msg. See the header above TestSelectionRaw*
-// for why h.p.Send (the internal Send queue) does not count.
-//
-// Implementation: screenHarness with the input buffer pre-filled
-// with a fresh model. The settled-screen probe is the SAME
-// settled-output-since-mark as the screenHarness probes: the
-// underlying screenHarness's screenLines/rawBytesSettledSince —
-// the collapsed state's earlier "probe bug" (h.m.View() returning a
-// stale model, or screenLines returning the whole accumulation)
-// is why the first reproduction reported the wrong thing, and is
-// fixed here by the mark-based probes.
-type rawInputHarness struct {
-	*screenHarness
-}
+// (rawInputHarness removed: lint `unused` — the raw-input path is driven by
+// screenHarness directly plus the mark-based probes below.)
 
 // screenGrid is a minimal VT model: it replays the renderer's raw
 // output stream (cursor-home, CRLF, erase-right, cursor position) and
