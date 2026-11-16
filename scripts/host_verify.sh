@@ -297,4 +297,7 @@ else
 fi
 
 # The EXIT trap (cleanup) prints the summary table.
-exit 0
+# STEP 2 (0.8.4 release): exit non-zero when any check FAILs, so the
+# script's exit status is honest. Previously this was an unconditional
+# `exit 0`, which meant a FAIL did not fail the run.
+exit "$fail"
