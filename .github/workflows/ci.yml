@@ -165,17 +165,26 @@ jobs:
       # goreleaser accepts it as --release-notes so the template field is
       # validated. (Release notes are only published from the tag workflow.)
       - name: release notes from changelog
+        id: notes
         run: |
           ver=$(grep -oE '^## \[v?[0-9]+\.[0-9]+\.[0-9]+' CHANGELOG.md | head -1 | sed -e 's/^## \[v\?//')
           echo "newest released version in CHANGELOG: $ver"
           scripts/release_notes.sh "$ver" > "$RUNNER_TEMP/release-notes.md"
           head -3 "$RUNNER_TEMP/release-notes.md"
+          echo "notes_arg=--release-notes $RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
 
+      # Same command as release.yml, in snapshot mode: `release --snapshot
+      # --clean --skip=publish --release-notes <file>` never publishes,
+      # never signs a real release, and never uploads — it exercises the
+      # exact code path the tag workflow uses, so a broken --release-notes
+      # invocation fails here on every push instead of on the tag push.
+      # `build --snapshot` cannot take --release-notes (goreleaser rejects
+      # unknown flag), so the CI job must use the release subcommand.
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: build --snapshot --clean --release-notes "$RUNNER_TEMP/release-notes.md"
+          args: release --snapshot --clean --skip=publish ${{ steps.notes.outputs.notes_arg }}
 
   # Docker image build gate — catches bit-rot in the Dockerfiles (e.g. the
   # kvr-server git-clone step, base-image digest drift, apt repo changes)
