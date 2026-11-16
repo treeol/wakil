@@ -34,7 +34,9 @@ func TestTUIPerfSummaryRealProgram(t *testing.T) {
 	if !e.waitExit(10 * time.Second) {
 		t.Fatalf("TUI did not exit on /exit\n%s", e.tail(1000))
 	}
-	_, stderr := e.outOfBand()
+	// The summary is written to stderr just before exit, and the harness
+	// drains stderr asynchronously: wait for it instead of reading once.
+	stderr := e.waitStderr("tuiperf view median=", 10*time.Second)
 	for _, want := range []string{
 		"tuiperf summary count=",
 		"slowest=",

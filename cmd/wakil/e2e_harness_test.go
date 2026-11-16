@@ -432,6 +432,24 @@ func (e *e2e) shutdown() {
 	})
 }
 
+// waitStderr waits until the captured stderr contains substr and returns
+// the stderr text. Stderr is a pipe drained by a separate goroutine, so a
+// write the program has already made may not be in the buffer yet when the
+// program exits; reading the buffer once after waitExit can miss it.
+func (e *e2e) waitStderr(substr string, timeout time.Duration) string {
+	e.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if _, stderr := e.outOfBand(); strings.Contains(stderr, substr) {
+			return stderr
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_, stderr := e.outOfBand()
+	e.t.Fatalf("timed out waiting for stderr text %q\n--- stderr ---\n%s\n--- tail ---\n%s", substr, stderr, e.tail(500))
+	return ""
+}
+
 func (e *e2e) outOfBand() (string, string) {
 	return e.stdoutLa.String(), e.stderrLa.String()
 }
