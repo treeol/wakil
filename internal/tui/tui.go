@@ -2421,11 +2421,15 @@ func (m *tuiModel) refreshViewport() {
 	// the post-copy frame, when the window's anchor (m.vp.YOffset at
 	// window time) disagreed with the rendered content's first line,
 	// putting content-line-0000's page at the top. The invariant now:
-	// while sel.active, highlightedWindow's `lo` is the viewport's
-	// CURRENT YOffset, and the post-window offset restore below is
-	// required to keep it self-consistent (SetContent + SetYOffset
-	// to the window's maximum offset would collapse it to 0 and put
-	// the next frame's window at the wrong anchor). The release
+	// while sel.active, highlightedWindow's `lo` is sel.windowLo —
+	// the plainLines offset captured on the FIRST motion, before
+	// renderSelection switched the viewport to page-space 0.
+	// (Reading vp.YOffset inside highlightedWindow re-derived lo=0
+	// on the second motion and rebuilt the window as
+	// plainLines[0:vpH] mid-drag — the jump the user saw on
+	// 62c5edc; see tui_select.go windowLo.) The post-window offset
+	// restore below keeps the page-space offset self-consistent.
+	// The release
 	// handler never calls renderSelection(), so this path only runs
 	// for the motion steps of an in-flight drag.
 	// sel.active is still true here (the release handler keeps

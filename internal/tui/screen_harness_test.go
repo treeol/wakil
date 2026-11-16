@@ -6,6 +6,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -451,6 +452,305 @@ func TestScreenFinalFrameIsModelsOwn(t *testing.T) {
 // fixed here by the mark-based probes.
 type rawInputHarness struct {
 	*screenHarness
+}
+
+// screenGrid is a minimal VT model: it replays the renderer's raw
+// output stream (cursor-home, CRLF, erase-right, cursor position) and
+// reconstructs what a terminal shows NOW — the screen the user
+// actually sees. The earlier probes returned only the bytes written
+// since a mark, which cannot answer "what is on screen": the renderer
+// skips unchanged rows, so a stale top row is invisible in the delta
+// and a rewritten partial row is indistinguishable from a page change.
+// That blindness is why the release-only tests passed while a real
+// drag jumped mid-drag (user FACT, 62c5edc).
+type screenGrid struct {
+	w, h    int
+	rows    []string // plain text per screen row
+	hl      []string // per-row bitmask of reverse-video cells ('#' = highlighted)
+	cx      int
+	cy      int
+	reverse bool
+}
+
+func newScreenGrid(w, h int) *screenGrid {
+	g := &screenGrid{w: w, h: h, rows: make([]string, h), hl: make([]string, h)}
+	for i := range g.rows {
+		g.rows[i] = strings.Repeat(" ", w)
+		g.hl[i] = strings.Repeat(" ", w)
+	}
+	return g
+}
+
+func (g *screenGrid) putRune(r rune) {
+	if g.cx < 0 {
+		g.cx = 0
+	}
+	if g.cx >= g.w || g.cy < 0 || g.cy >= g.h {
+		return
+	}
+	row := []rune(g.rows[g.cy])
+	for len(row) < g.w {
+		row = append(row, ' ')
+	}
+	row[g.cx] = r
+	g.rows[g.cy] = string(row)
+	mask := []rune(g.hl[g.cy])
+	for len(mask) < g.w {
+		mask = append(mask, ' ')
+	}
+	// Any write replaces the cell's reverse flag with the current one
+	// (a non-reverse write of a normal char clears a stale bit too).
+	if g.reverse {
+		mask[g.cx] = '#'
+	} else {
+		mask[g.cx] = ' '
+	}
+	g.hl[g.cy] = string(mask)
+	g.cx += max(1, runeWidth(r))
+}
+
+// feed consumes raw renderer bytes from the start of the stream.
+func (g *screenGrid) feed(s string) {
+	for i := 0; i < len(s); {
+		c := s[i]
+		switch {
+		case c == '\x1b' && i+1 < len(s) && s[i+1] == '[':
+			end := i + 2
+			for end < len(s) && !isCSIFinal(s[end]) {
+				end++
+			}
+			if end >= len(s) {
+				return
+			}
+			g.csi(s[i+2:end], s[end])
+			i = end + 1
+		case c == '\x1b' && i+1 < len(s) && s[i+1] == ']': // OSC: skip to BEL/ST
+			j := i + 2
+			for j < len(s) && s[j] != '\a' && !(s[j] == '\x1b' && j+1 < len(s) && s[j+1] == '\\') {
+				j++
+			}
+			if j < len(s) && s[j] == '\x1b' {
+				i = j + 2
+			} else {
+				i = j + 1
+			}
+		case c == '\x1b': // charset/other escapes: skip 2 bytes
+			i += 2
+		case c == '\r':
+			g.cx = 0
+			i++
+		case c == '\n':
+			g.cy++
+			if g.cy >= g.h {
+				g.cy = g.h - 1
+			}
+			i++
+		default:
+			r, sz := utf8.DecodeRuneInString(s[i:])
+			if r == utf8.RuneError && sz <= 1 {
+				i++
+				continue
+			}
+			g.putRune(r)
+			i += sz
+		}
+	}
+}
+
+func isCSIFinal(c byte) bool { return c >= 0x40 && c <= 0x7e }
+
+func (g *screenGrid) csi(params string, final byte) {
+	nums := parseCSIParams(params)
+	switch final {
+	case 'H', 'f': // cursor position (1-based); empty params => home
+		row, col := 0, 0
+		if len(nums) >= 1 && nums[0] > 0 {
+			row = nums[0] - 1
+		}
+		if len(nums) >= 2 && nums[1] > 0 {
+			col = nums[1] - 1
+		}
+		_ = params
+		if row < 0 {
+			row = 0
+		}
+		if col < 0 {
+			col = 0
+		}
+		g.cy, g.cx = row, col
+	case 'A':
+		g.cy -= max(1, firstOr(nums, 1))
+		if g.cy < 0 {
+			g.cy = 0
+		}
+	case 'B':
+		g.cy += max(1, firstOr(nums, 1))
+	case 'C':
+		g.cx += max(1, firstOr(nums, 1))
+	case 'D':
+		g.cx -= max(1, firstOr(nums, 1))
+	case 'G':
+		g.cx = max(0, firstOr(nums, 1)-1)
+	case 'K': // erase right of cursor
+		if g.cy >= 0 && g.cy < g.h {
+			row := []rune(g.rows[g.cy])
+			for ; len(row) < g.w; row = append(row, ' ') {
+			}
+			for k := g.cx; k < len(row); k++ {
+				row[k] = ' '
+			}
+			g.rows[g.cy] = string(row)
+			mask := []rune(g.hl[g.cy])
+			for k := g.cx; k < len(mask); k++ {
+				mask[k] = ' '
+			}
+			g.hl[g.cy] = string(mask)
+		}
+	case 'J': // erase below / erase whole screen (2J, alt-screen entry)
+		if len(nums) > 0 && nums[0] == 2 {
+			for y := 0; y < g.h; y++ {
+				g.rows[y] = strings.Repeat(" ", g.w)
+				g.hl[y] = strings.Repeat(" ", g.w)
+			}
+		} else if len(nums) == 0 || nums[0] == 0 {
+			for y := max(0, g.cy+1); y < g.h; y++ {
+				g.rows[y] = strings.Repeat(" ", g.w)
+				g.hl[y] = strings.Repeat(" ", g.w)
+			}
+		}
+	case 'm': // SGR: track reverse video only
+		for _, n := range nums {
+			switch n {
+			case 0:
+				g.reverse = false
+			case 7:
+				g.reverse = true
+			case 27:
+				g.reverse = false
+			}
+		}
+		if len(nums) == 0 {
+			g.reverse = false
+		}
+	}
+}
+
+func parseCSIParams(s string) []int {
+	var out []int
+	cur, have := 0, false
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			cur = cur*10 + int(s[i]-'0')
+			have = true
+		} else if s[i] == ';' {
+			out = append(out, cur)
+			cur, have = 0, false
+		} else {
+			// Private params (< ? > etc.) — ignore remaining bytes.
+			break
+		}
+	}
+	if have || len(out) > 0 {
+		out = append(out, cur)
+	}
+	return out
+}
+
+func firstOr(nums []int, d int) int {
+	if len(nums) > 0 {
+		return nums[0]
+	}
+	return d
+}
+
+func runeWidth(r rune) int {
+	if r >= 0x1100 && (r <= 0x115F || r == 0x2329 || r == 0x232A ||
+		(r >= 0x2E80 && r <= 0x303E) || (r >= 0x3041 && r <= 0x33FF) ||
+		(r >= 0x3400 && r <= 0x4DBF) || (r >= 0x4E00 && r <= 0x9FFF) ||
+		(r >= 0xA000 && r <= 0xA4CF) || (r >= 0xAC00 && r <= 0xD7A3) ||
+		(r >= 0xF900 && r <= 0xFAFF) || (r >= 0xFE30 && r <= 0xFE4F) ||
+		(r >= 0xFF00 && r <= 0xFF60) || (r >= 0xFFE0 && r <= 0xFFE6) ||
+		(r >= 0x20000 && r <= 0x2FFFD) || (r >= 0x30000 && r <= 0x3FFFD)) {
+		return 2
+	}
+	return 1
+}
+
+// gridLines returns the current screen's trimmed text rows.
+func (g *screenGrid) gridLines() []string {
+	out := make([]string, len(g.rows))
+	for i, r := range g.rows {
+		out[i] = strings.TrimRight(r, " ")
+	}
+	return out
+}
+
+// highlightedRuns returns, per highlighted row, the contiguous
+// highlighted rune runs in order.
+func (g *screenGrid) highlightedRuns() [][]string {
+	var out [][]string
+	for y := 0; y < g.h; y++ {
+		mask := g.hl[y]
+		row := []rune(g.rows[y])
+		var runs []string
+		var b strings.Builder
+		for x, m := range mask {
+			if m == '#' {
+				if x < len(row) {
+					b.WriteRune(row[x])
+				}
+			} else if b.Len() > 0 {
+				runs = append(runs, b.String())
+				b.Reset()
+			}
+		}
+		if b.Len() > 0 {
+			runs = append(runs, b.String())
+		}
+		if len(runs) > 0 {
+			out = append(out, runs)
+		}
+	}
+	return out
+}
+
+// highlightedText joins the highlighted runs, rows with \n.
+func (g *screenGrid) highlightedText() string {
+	var parts []string
+	for _, runs := range g.highlightedRuns() {
+		parts = append(parts, strings.Join(runs, " "))
+	}
+	return strings.Join(parts, "\n")
+}
+
+// screenGridNow replays the whole output stream into a fresh grid —
+// the actual current screen.
+func (h *screenHarness) screenGridNow() *screenGrid {
+	h.t.Helper()
+	g := newScreenGrid(120, 40)
+	g.feed(h.out.String())
+	return g
+}
+
+// firstContentLine returns the "content line NNNN" number visible in
+// the first screen row that carries one, or -1.
+func firstContentLine(rows []string) int {
+	for _, r := range rows {
+		idx := strings.Index(r, "content line ")
+		if idx < 0 {
+			continue
+		}
+		n := 0
+		ok := false
+		for j := idx + len("content line "); j < len(r) && r[j] >= '0' && r[j] <= '9'; j++ {
+			n = n*10 + int(r[j]-'0')
+			ok = true
+		}
+		if ok {
+			return n
+		}
+	}
+	return -1
 }
 
 // screenLines waits for one screen frame and returns the current

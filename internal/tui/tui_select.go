@@ -47,6 +47,16 @@ type selection struct {
 	// here; the release handler restores it so the content's page
 	// is the one the user released on.
 	pressYOffset int
+	// windowLo is the plainLines row of the drag window's first
+	// line, captured at the FIRST motion (the only moment the
+	// viewport offset is still plainLines-space before
+	// renderSelection switches it to page-space 0). Every later
+	// motion re-anchors the window here: deriving lo from
+	// m.vp.YOffset on the second motion reads the page-space 0
+	// left by the first SetYOffset(0) and rebuilds the window as
+	// plainLines[0:vpH] — the mid-drag jump to the first lines
+	// (user FACT on 62c5edc). -1 before the first motion.
+	windowLo int
 	// settleOffsetValid guards m.settleOffset (see tui.go): the
 	// plainLines-space offset pinned on release and restored by
 	// refreshViewport's active-but-not-dragging seam. A false
@@ -207,7 +217,7 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// a plain click from replacing styled content with the ANSI-stripped
 		// plainLines. The highlight activates only on the first real drag
 		// (motion to a different cell).
-		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col, pressYOffset: m.vp.YOffset}
+		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col, pressYOffset: m.vp.YOffset, windowLo: -1}
 		m.settleOffsetOK = false // a fresh drag re-pins the settle offset at its release
 		return m, true, nil
 
@@ -222,6 +232,17 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// jitter or a same-cell motion shouldn't turn a click into a selection.
 		if !m.sel.active && row == m.sel.anchorRow && col == m.sel.anchorCol {
 			return m, true, nil
+		}
+		if !m.sel.active {
+			// FIRST motion: the viewport offset is still the
+			// plainLines-space offset from the press. Capture it
+			// as the permanent window anchor before renderSelection
+			// switches the viewport to page space. Later motions
+			// must not re-derive it (they would read 0).
+			m.sel.windowLo = m.vp.YOffset
+			if m.sel.windowLo < 0 {
+				m.sel.windowLo = 0
+			}
 		}
 		m.sel.dragging = true
 		m.sel.active = true
@@ -388,51 +409,52 @@ func (m tuiModel) plainLinesOffsetNow() int { return 0 }
 
 // renderSelection re-overlays the highlight on the existing plainLines without
 // rebuilding the styled transcript, and pins the scroll offset so a drag never
-// jumps the view. Used for the fast press/motion/release path; refreshViewport
+// jumps the view. Used for the fast press/motion path; refreshViewport
 // handles the cases where the underlying content actually changed.
 //
-// Structure note (Part 3 / Mashūra 0.8.4 review): `highlightedWindow` returns
-// the visible page only (lo..hi, ≤ vpH lines). `SetContent(that page)`
-// replaces the viewport's line slice with that one page, and the Viewport's
-// SetYOffset clamps the restored offset to `maxYOffset() = len(lines)-
-// Height+frame` — which for a one-page content is 0. While the drag is in
-// flight, the viewport's TotalLineCount is therefore one page, not the full
-// transcript: the visible page is correctly highlighted (that is what the
-// user sees), but the selection's row numbers are in plainLines space while
-// the viewport's YOffset is in page space. On release, `refreshViewport`
-// rebuilds the full content and the coordinates are re-derived from
-// `mouseToContent` against the restored offset. That is why the copy is
-// correct even though the mid-drag viewport's TotalLineCount is not the
-// transcript's: coordinates are never read from the page's YOffset during
-// the drag (mouseToContent clamps against YOffset+Height, and the stored
-// sel coordinates are fixed by the caller at press/motion time).
+// Structure note: `highlightedWindow` returns the visible page only
+// (sel.windowLo .. windowLo+vpH). `SetContent(that page)` replaces the
+// viewport's line slice with that one page, so the viewport's
+// TotalLineCount is one page during the drag and its YOffset is
+// page-space (0). Selection coordinates stay in plainLines space:
+// mouseToContent/clampToContent map through contentYOffset()
+// (= windowLo while dragging), never through vp.YOffset. The window
+// is anchored at windowLo — captured on the first motion, before
+// this SetYOffset(0) — so every drag frame shows the press page.
 func (m *tuiModel) renderSelection() {
 	sr, sc, er, ec := m.sel.ordered()
-	// The window is anchored at the viewport's CURRENT YOffset
-	// (highlightedWindow's `lo`), so after SetContent the correct
-	// offset INTO the window is 0 — the window IS the page the user
-	// is looking at. Restoring the plainLines-space offset here
-	// (the pre-87ea601 behaviour, when the window was the whole
-	// transcript) collapsed to the window's max offset (0 for a
-	// one-page window) and, on the following frame, the restored
-	// offset disagreed with the content — the "jump to the first
-	// lines".
+	// The window starts at sel.windowLo (highlightedWindow), so
+	// after SetContent the correct offset INTO the window is 0.
+	// windowLo was captured on the first motion while vp.YOffset
+	// was still plainLines-space; this SetYOffset(0) is why later
+	// motions must never re-read vp.YOffset as the window anchor.
 	//
-	// What this must NEVER do again is restore a plainLines-space
-	// offset into the windowed viewport — that was the old
-	// behaviour and put the "jump to the first lines" on the next
-	// frame: the viewport's YOffset (0, page-space) and the model's
-	// YOffset (41, plainLines space) disagreed, and the post-release
-	// refresh re-derived plainLines coordinates from the stale
-	// offset.
-	//
-	// NOTE: the window path is only correct while sel.active. On
-	// RELEASE the handler must NOT call this function; it restores
-	// the full content with its true plainLines-space offset (see
-	// the release handler). The next frame's refreshViewport then
-	// re-pins the offset in the correct space.
+	// NOTE: on RELEASE the handler must NOT call this function; it
+	// restores the full content at the plainLines-space offset
+	// (see the release handler).
 	m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
 	m.vp.SetYOffset(0)
+}
+
+// contentYOffset is the plainLines-space offset of the first
+// visible content row. While a drag window is installed the
+// viewport's YOffset is page-space (0), so the anchor captured at
+// the first motion is the authority; otherwise it is vp.YOffset.
+func (m tuiModel) contentYOffset() int {
+	if m.sel.active && m.sel.windowLo >= 0 {
+		return m.sel.windowLo
+	}
+	return m.vp.YOffset
+}
+
+// totalContentLines is the plainLines-space line count for
+// coordinate clamping. While the drag window is installed
+// vp.TotalLineCount() is one page, not the transcript.
+func (m tuiModel) totalContentLines() int {
+	if m.sel.active && m.sel.windowLo >= 0 {
+		return len(m.plainLines)
+	}
+	return m.vp.TotalLineCount()
 }
 
 // mouseToContent maps a screen cell to content coordinates, reporting whether it
@@ -445,9 +467,9 @@ func (m tuiModel) mouseToContent(x, y int) (row, col int, in bool) {
 	if x < 1 || x > vpW || y < 1 || y > vpH {
 		return 0, 0, false
 	}
-	row = (y - 1) - m.bottomPad(vpH) + m.vp.YOffset
+	row = (y - 1) - m.bottomPad(vpH) + m.contentYOffset()
 	// Clicks in the blank padding above short content are not on any line.
-	if row < 0 || row >= m.vp.TotalLineCount() {
+	if row < 0 || row >= m.totalContentLines() {
 		return 0, 0, false
 	}
 	return row, x - 1, true
@@ -467,9 +489,9 @@ func (m tuiModel) clampToContent(x, y int) (row, col int) {
 	} else if y > vpH {
 		y = vpH
 	}
-	row = (y - 1) - m.bottomPad(vpH) + m.vp.YOffset
+	row = (y - 1) - m.bottomPad(vpH) + m.contentYOffset()
 	// Clamp to the valid content range [0, TotalLineCount-1].
-	total := m.vp.TotalLineCount()
+	total := m.totalContentLines()
 	if row < 0 {
 		row = 0
 	} else if row >= total {
@@ -736,14 +758,21 @@ func (m tuiModel) highlightedWindow(sr, sc, er, ec int) string {
 		return ""
 	}
 	_, vpH, _ := m.sizes()
-	// The window anchors at the CURRENT viewport YOffset (in
-	// plainLines space unless a previous window left it in
-	// window space — see highlightedWindow's anchor note in
-	// renderSelection). The returned content's first line is that
-	// row; SetYOffset(0) must follow (renderSelection).
+	// The window anchors at the drag anchor captured on the first
+	// motion (sel.windowLo, plainLines space). Reading vp.YOffset
+	// here was the mid-drag jump: after the first renderSelection
+	// the offset is page-space 0, so the next window was built as
+	// plainLines[0:vpH]. Fall back to vp.YOffset only when no drag
+	// anchor exists (e.g. direct calls outside a drag).
 	lo := m.vp.YOffset
+	if m.sel.windowLo >= 0 {
+		lo = m.sel.windowLo
+	}
 	if lo < 0 {
 		lo = 0
+	}
+	if lo > len(lines) {
+		lo = len(lines)
 	}
 	hi := lo + vpH
 	if hi > len(lines) {

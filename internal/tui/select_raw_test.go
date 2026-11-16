@@ -95,6 +95,12 @@ func newRawHarness(t *testing.T, nLines int) *rawHarness {
 	h.settle()
 	p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: sb.String()}, m.sessionID))
 	h.settle()
+	// The large transcript write can land one settle cycle after the
+	// output goes momentarily quiet; wait until content is on screen.
+	for i := 0; i < 20 && firstContentLine(h.screenGridNow().gridLines()) < 0; i++ {
+		time.Sleep(50 * time.Millisecond)
+		h.settle()
+	}
 	t.Cleanup(func() {
 		p.Quit()
 		<-done
@@ -354,6 +360,169 @@ func TestSelectionRawEscCancels(t *testing.T) {
 
 // sgrWheelUp sends a wheel-up event at x,y (b=64).
 func sgrWheelUp(x, y int) string { return fmt.Sprintf("\x1b[<%d;%d;%dM", 64, x, y) }
+
+// --- Every-frame drag assertions (regression: user FACT 62c5edc) ---
+//
+// The release-only assertions above passed while the real program
+// jumped DURING the drag: the first motion installs the highlighted
+// page window (anchored at the press offset), renderSelection then
+// sets YOffset=0 (page space), and the SECOND motion re-derives the
+// window anchor from that 0 — so the window becomes plainLines[0:vpH]
+// and the screen shows the first lines for the rest of the drag. The
+// release restored the right offset, hiding the bug from any test
+// that only looks at the last frame.
+//
+// These tests drive raw SGR bytes through the real tea.Program and
+// assert on EVERY frame from press to release, replayed through the
+// screen grid: (a) the first visible content line never changes, and
+// (b) the reverse-video cells sit on the text under the pointer.
+
+func dragFrame(t *testing.T, h *rawHarness, step, input string, wantFirst int) *screenGrid {
+	t.Helper()
+	if input != "" {
+		h.in.WriteString(input)
+	}
+	h.settle()
+	g := h.screenGridNow()
+	rows := g.gridLines()
+	got := firstContentLine(rows)
+	if got != wantFirst {
+		t.Fatalf("%s: first visible content line = %d, want %d (pre-press); screen:\n%s",
+			step, got, wantFirst, strings.Join(rows[:12], "\n"))
+	}
+	return g
+}
+
+func assertHighlightUnderPointer(t *testing.T, h *rawHarness, step string, wantFirst int) {
+	t.Helper()
+	g := h.screenGridNow()
+	ht := g.highlightedText()
+	if ht == "" {
+		t.Fatalf("%s: no highlighted cells on screen", step)
+	}
+	// The synthetic content is "content line NNNN the quick brown
+	// fox" repeated to fill each wrapped row, so every highlighted
+	// run must be a contiguous slice of a visible row — never text
+	// from a page the user is not on. Runs split at wrap boundaries
+	// carry fragments; require: the row containing the run contains
+	// the run text verbatim, and any complete "content line NNNN"
+	// token (digits, 4 of them) belongs to a row on this page with a
+	// number >= wantFirst.
+	rows := g.gridLines()
+	runs := g.highlightedRuns()
+	if len(runs) == 0 {
+		t.Fatalf("%s: no highlighted runs", step)
+	}
+	seen := false
+	for _, rowRuns := range runs {
+		for _, run := range rowRuns {
+			for _, row := range rows {
+				if strings.Contains(row, run) {
+					seen = true
+				}
+			}
+		}
+	}
+	if !seen {
+		t.Fatalf("%s: highlighted runs not found verbatim on any visible row: %q", step, ht)
+	}
+	// Every highlighted row must display a content number >= the
+	// first visible one (or contain no number — a trailing fragment).
+	hy := 0
+	for y := 0; y < g.h; y++ {
+		if !strings.Contains(g.hl[y], "#") {
+			continue
+		}
+		hy++
+		if n := firstContentLine([]string{rows[y]}); n >= 0 && n < wantFirst {
+			t.Fatalf("%s: highlighted row %d shows content line %d, below first visible %d", step, y, n, wantFirst)
+		}
+	}
+}
+
+func dragEveryFrame(t *testing.T, h *rawHarness, state string) {
+	t.Helper()
+	base := firstContentLine(h.screenGridNow().gridLines())
+	if base < 0 {
+		t.Fatalf("%s: no content line visible before press", state)
+	}
+	dragFrame(t, h, state+" press", sgrLeftPress(3, 2), base)
+	dragFrame(t, h, state+" motion1", sgrLeftMotion(10, 2), base)
+	assertHighlightUnderPointer(t, h, state+" motion1", base)
+	dragFrame(t, h, state+" motion2", sgrLeftMotion(20, 4), base)
+	assertHighlightUnderPointer(t, h, state+" motion2", base)
+	dragFrame(t, h, state+" motion3", sgrLeftMotion(25, 6), base)
+	assertHighlightUnderPointer(t, h, state+" motion3", base)
+	dragFrame(t, h, state+" release", sgrLeftRelease(25, 6), base)
+}
+
+func TestSelectionDragEveryFrameMiddle(t *testing.T) {
+	h := newRawHarness(t, 200)
+	for i := 0; i < 6; i++ {
+		h.in.WriteString(sgrWheelUp(5, 20))
+		h.settle()
+	}
+	// Wheel lines clamp at the top, so the middle is reached by
+	// pressing the mouse wheel up repeatedly; if it never moves the
+	// precondition fails loudly.
+	deadline := time.Now().Add(500 * time.Millisecond)
+	base := firstContentLine(h.screenGridNow().gridLines())
+	for time.Now().Before(deadline) && base <= 0 {
+		time.Sleep(50 * time.Millisecond)
+		h.settle()
+		h.in.WriteString(sgrWheelUp(5, 20))
+		h.settle()
+		base = firstContentLine(h.screenGridNow().gridLines())
+	}
+	if base <= 0 {
+		t.Fatalf("wheel-up did not scroll to the middle (first visible = %d)", base)
+	}
+	t.Logf("middle base first visible = %d", base)
+	dragEveryFrame(t, h, "middle")
+}
+
+func TestSelectionDragEveryFrameOneScreenAboveBottom(t *testing.T) {
+	h := newRawHarness(t, 200)
+	for i := 0; i < 3; i++ {
+		h.in.WriteString(sgrWheelUp(5, 20))
+		h.settle()
+	}
+	base := firstContentLine(h.screenGridNow().gridLines())
+	if base <= 0 {
+		t.Fatalf("wheel-up did not scroll above the bottom (first visible = %d)", base)
+	}
+	dragEveryFrame(t, h, "above-bottom")
+}
+
+func TestSelectionDragEveryFrameBottomFollow(t *testing.T) {
+	h := newRawHarness(t, 200)
+	dragEveryFrame(t, h, "bottom-follow")
+}
+
+func TestSelectionDragEveryFrameStreaming(t *testing.T) {
+	h := newRawHarness(t, 200)
+	h.p.Send(evt(event.KindTurnStarted, event.TurnStarted{TurnID: "trnS"}, h.m.sessionID))
+	h.settle()
+	base := firstContentLine(h.screenGridNow().gridLines())
+	dragFrame(t, h, "streaming press", sgrLeftPress(3, 2), base)
+	// A stream chunk lands while the button is held: the text under
+	// the pointer must not move.
+	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: "streamchunk while dragging "}, h.m.sessionID))
+	h.settle()
+	if got := firstContentLine(h.screenGridNow().gridLines()); got != base {
+		t.Fatalf("streaming chunk during drag moved first visible line: %d, want %d", got, base)
+	}
+	dragFrame(t, h, "streaming motion1", sgrLeftMotion(10, 2), base)
+	assertHighlightUnderPointer(t, h, "streaming motion1", base)
+	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: "more stream "}, h.m.sessionID))
+	h.settle()
+	if got := firstContentLine(h.screenGridNow().gridLines()); got != base {
+		t.Fatalf("second streaming chunk during drag moved first visible line: %d, want %d", got, base)
+	}
+	dragFrame(t, h, "streaming motion2", sgrLeftMotion(20, 4), base)
+	assertHighlightUnderPointer(t, h, "streaming motion2", base)
+	dragFrame(t, h, "streaming release", sgrLeftRelease(20, 4), base)
+}
 
 // rowsSince returns the settled frame rows since the harness's
 // last mark (the screen the user sees now): it is the correct
