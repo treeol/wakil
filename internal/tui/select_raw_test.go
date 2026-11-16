@@ -524,6 +524,43 @@ func TestSelectionDragEveryFrameStreaming(t *testing.T) {
 	dragFrame(t, h, "streaming release", sgrLeftRelease(20, 4), base)
 }
 
+// TestOSC52EscapeCoalesce demonstrates Part B5 in the screen
+// harness: the OSC 52 escape is prepended to exactly one View()
+// frame, but bubbletea's standard renderer buffers ONE frame
+// (write() resets the buffer on every Update) and flushes on a
+// ~60fps tick — so a second Update landing before the flush
+// overwrites the escape-carrying frame and the sequence never
+// reaches the terminal. This test drives that race through the
+// real program: a copy (via p.Send of copiedMsg), immediately
+// followed by another message, then inspects the raw wire bytes.
+// It PASSES when the drop is demonstrated (the sequence is
+// absent); if a flush happened to win the race it skips (the
+// window is ~16 ms against sub-ms processing).
+//
+// Verdict (Part B5): bubbletea v1.3.10 offers no undroppable
+// output path in alt-screen — tea.Println/Printf are explicitly
+// suppressed while the alt-screen is active
+// (standard_renderer.go: "If the altscreen is active no output
+// will be printed"), and there is no raw-write message. The
+// escape therefore stays on the View frame; the exposure is
+// limited to OSC 52 copies (native clipboard is unaffected) when
+// another update lands within one renderer tick of the copy.
+func TestOSC52EscapeCanBeCoalescedAway(t *testing.T) {
+	h := newRawHarness(t, 50)
+	esc := []byte("\x1b]52;c;aGVsbG8=\x07")
+	// Back-to-back: copy result, then a stream chunk — no settle
+	// between, so both Views run before the render tick flushes.
+	h.p.Send(copiedMsg{n: 5, via: copyViaOSC52, outcome: copySentUnverified, escape: esc})
+	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: " burst "}, h.m.sessionID))
+	h.settle()
+	time.Sleep(120 * time.Millisecond) // several renderer ticks
+	h.settle()
+	if strings.Contains(h.out.String(), "\x1b]52;c;") {
+		t.Skip("the flush won the race this run; the drop was not demonstrated (retry on a quieter host)")
+	}
+	// Drop demonstrated: the escape never reached the wire.
+}
+
 // rowsSince returns the settled frame rows since the harness's
 // last mark (the screen the user sees now): it is the correct
 // "current screen" probe for the FACT-1 assertion.

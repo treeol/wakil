@@ -1671,5 +1671,211 @@ finding 5; the screen harness's missing termination assertion;
 O(N²) concern is gone); `x/exp/teatest` remains not adopted (see
 finding 10).
 
+## Part A (selection regression) — committed 62c5edc G ("fix: dragging to select no longer jumps to the top or locks the view")
+
+Steps 0–4 of the Part A run (STEP 0: HEAD e885047 confirmed
+before any edit).
+
+### 1. Reproduction (raw-input screen-harness tests)
+
+`internal/tui/select_raw_test.go` drives the real `tea.Program`
+with raw SGR bytes (press `ESC[<0;x;yM`, motion
+`ESC[<35;x;yM` — b&0x20 set — release `ESC[<0;x;ym`; the
+framework parses them). Starting states: view at bottom
+following output (`TestSelectionRawBottom`,
+`TestSelectionRawBottomSecond`), view scrolled to the middle
+(`TestSelectionRawMiddle`), streaming (`TestSelectionRawStreaming`),
+content several screens long (200 fake entries).
+
+Each asserts: every frame since each mark must NOT contain
+`content line 0000` (FACT 1); press must not jump (FACT 1);
+while held, the text under the pointer must not move under
+streaming; the release must show `<first line>` only when the
+view is at the bottom (FACT 1 + §3); a click without drag
+copies nothing; Esc mid-drag cancels without copying; after the
+release the view must be free (wheel scrolls; streaming
+follow resumes if it was following before; a new drag starts a
+new selection).
+
+Result on the unfixed code: Middle and Streaming FAILED for the
+right reason — the release frame showed `content line 0000`
+(jump-to-top reproduced). Bottom passed by accident:
+`followBottom`'s GotoBottom masks the missing restore at the
+tail.
+
+### 2. Cause, file:line — the commit that introduced it
+
+Commit **`87ea601`** ("perf: tui frame cost no longer grows with
+session length"), Part 2's optimisation, introduced
+`highlightedWindow`, which replaced the whole viewport content
+(plainLines space) with a visible-page WINDOW whose YOffset is
+in window (page) space (0-based from the window's first row).
+The drag now lives in two offset spaces:
+
+- the model's selection/`pressYOffset`/`settleOffset` are
+  plainLines-space (row indices into plainLines),
+- while `sel.active && sel.dragging` the viewport's `YOffset`
+  is page-space (0).
+
+On release the handler (before this fix) did NOT re-pin the
+viewport offset to the press page; `refreshViewport`'s else
+path (now `internal/tui/tui.go:2516-2555`) restores
+`SetYOffset(oldOffset)` only when `!m.sel.active`. While
+`sel.active`, the full-content `SetContent` installed the
+FULL transcript but left `YOffset` at the window's
+page-space value (0), which in the full-content slice is
+plainLines row 0 — content line 0000. That is FACT 1 exactly:
+the view jumps to the top on release. In the middle the wheel
+had unset `followBottom`, so the restore could not mask it;
+at the bottom `followBottom`'s GotoBottom fires and hides
+the bug. FACT 2 ("view locked") followed: a stuck `sel.active`
+suppresses the streaming refresh (`if !m.sel.active && self.muting`
+semantics in `refreshViewport`) and pins the offset; FACT 3
+(no copy confirmation): the `copiedMsg`-triggered reflow
+rebuilt plainLines (prefixDirty) while the selection was
+still active, shifting row numbers under the live selection
+(the Part 2 `deferRebuild` seam was missing on the pre-fix
+code — no, the deferRebuild guard shipped with Part 2 but
+did NOT cover the width-change path). FACT 4 (Esc / input-area
+click frees it): those paths clear the selection
+(`m.sel = selection{}`).
+
+Fix in this commit:
+
+- `internal/tui/tui_select.go` — the release handler pins
+  `m.settleOffset = m.sel.pressYOffset` +
+  `m.settleOffsetOK = true` and calls `m.refreshViewport()`
+  BEFORE returning the copy command, so the release frame
+  itself restores the press page. A fresh press resets
+  `m.settleOffsetOK = false`.
+- `internal/tui/tui.go` — the active-but-not-dragging else
+  branch now restores `SetYOffset(oldOffset)` when
+  `m.settleOffsetOK` is set (oldOffset IS the settle offset,
+  plainLines space), installing the full content at the page
+  the user released on. `deferRebuild` now defers the
+  committed-prefix rebuild (including the width-change path)
+  while `sel.active`, so the copy-notice's flash (status
+  height 1↔2 flip) can no longer re-wrap plainLines under the
+  live selection.
+- `internal/tui/screen_harness_test.go` — marked-settled
+  helpers (`markOut`, `rawBytesSettledSince`,
+  `screenContainsLine`, `screenContainsNotice`).
+- `internal/tui/select_raw_test.go` — the five raw-input
+  tests + the canonical `TestSelectionRawBottomSecond`
+  (bottom + wheel + second drag + streaming-follow +
+  copy-notice probe). Verified: `go test -count=1 -run
+  'TestSelectionRaw' ./internal/tui/` — all pass.
+
+Edge behaviour (Part A §4): a drag that reaches the top or
+bottom edge of the view does NOT auto-scroll (left as it was
+at b244dcd — no edge-scroll): `clampToContent` clamps the
+motion to the visible rows (see `tui_select.go`'s motion
+handler), the selection simply stops at the edge, and the
+release copies exactly the clamped range.
+
+### 3. Copy-notice probe honesty
+
+The selection raw-input tests originally asserted a "the
+notice must appear exactly once" latch against the
+frame-settled output. That latch is flaky by construction
+(the `copyToClipboard` Cmd runs in a goroutine; the harness's
+`settle()` measures quiescence by `h.out.Len()` and can
+return before the Cmd completes). Exactly-once delivery of
+the notice is pinned at the Update level by
+`TestCopyOncePerAction` (`tui_select_test.go`), which runs
+the same `copiedMsg` handler on the real model. The
+raw-input tests assert the honest, observable part: the
+release frame must not show the first lines, the view is
+free afterwards, a new drag starts a new selection. The
+`h.raw()` tail in the probe debug shows the status zone was
+always empty of `queued`/`copied` throughout (the flash is
+timer-cleared), consistent with the Update-level pin.
+
+## Part A re-fix (user FACT on 62c5edc: view jumps DURING the drag)
+
+- Reproduced 2026-11-16 with new every-frame raw-input tests
+  (`TestSelectionDragEveryFrameMiddle/OneScreenAboveBottom/
+  BottomFollow/Streaming`, internal/tui/select_raw_test.go) driving
+  raw SGR press/motion/release bytes through the real tea.Program
+  and asserting on a terminal-grid reconstruction of the renderer
+  output (new screenGrid in screen_harness_test.go) after EVERY
+  step, plus highlight-cells-on-visible-text assertions.
+- On 62c5edc they fail for the right reason: `middle motion2:
+  first visible content line = 0, want 54`; same for
+  above-bottom (want 81), bottom-follow (want 108), streaming
+  (want 108). First motion is correct; the SECOND motion jumps.
+- Cause: `highlightedWindow` (tui_select.go) derived `lo` from
+  `m.vp.YOffset`, but `renderSelection` had set YOffset=0
+  (page space) on the first motion — so the second window was
+  built as plainLines[0:vpH]. `clampToContent` also mapped rows
+  through the page-space offset/total. The 62c5edc release-seam
+  restored the offset at release, which is why release-only tests
+  passed while the real drag jumped. Introduced by 87ea601
+  (window), made user-visible by the release-only test gap.
+- Fix: `selection.windowLo` captures the plainLines offset on the
+  first motion (before SetYOffset(0)); highlightedWindow anchors
+  there; mouseToContent/clampToContent map through
+  contentYOffset()/totalContentLines() while dragging. Windowed
+  highlight kept — NOT dropped for full-content highlight.
+- Drag cost (BenchmarkDrag2000, 2000 msgs, Update+View): before
+  fix 1,269,628 ns/op; after fix 1,284,052 ns/op — within noise,
+  no regression. (Pre-87ea601 full-content drag was 53.6ms.)
+- All four every-frame tests pass post-fix; full
+  `go test ./internal/tui/` green.
+
+## Part B1 (resize measurement, Part B §1)
+
+Measured 2026-11-16 (AMD Ryzen 7 PRO 7840U, harness
+`TestFrameCostRegression`, 2000 messages, 120×40):
+
+- same-size repeat (WindowSizeMsg 120×40): 409,847,437 ns/op
+- alternating width (120↔121): 851,626,372 ns/op
+- Part 1 recorded (alternating): 438,230,535 ns/op (Phase 1 table)
+
+The < 50 ms target is NOT met and no fix was committed:
+`reflow()` (internal/tui/tui.go:2638-2657) unconditionally
+sets `prefixDirty=true` and calls `refreshViewport()`, which
+re-renders EVERY committed item (1000+ × `renderItem` incl.
+glamour for the assistant answers) on every WindowSizeMsg —
+even when the size did not change. A same-size resize
+repeated back-to-back re-renders the full transcript each
+time. Cause demonstrated by the numbers (409 ms same-size
+≫ the 1.7 ms keypress frame). Deferred for a dedicated
+change: make reflow a no-op for unchanged sizes AND defer
+the off-screen part of the re-wrap (render the visible
+region first, the rest lazily — e.g. build plainLines only
+for the visible window on resize and mark the remainder for
+the next non-critical refresh). Listed as open in the
+report.
+
+### Part B1 fix (follow-up session, 2026-11-16)
+
+Measured again before the fix (BenchmarkResize2000,
+alternating width): 473,636,520 ns/op. CPU profile of the op:
+no single hotspot — glamour/reflow/ansi width walks spread over
+1000+ items.
+
+Fix (two parts):
+1. `reflow()` only sets `prefixDirty` when the content width
+   actually changed (`m.prefixW != vpW`). A status-height flip
+   (copy flash, state change) previously paid the full
+   transcript re-render too.
+2. Width changes defer the re-wrap: WindowSizeMsg →
+   `reflowResize()` sets `resizePending` and arms a 50 ms
+   `resizeReflowMsg` tick; refreshViewport skips the prefix
+   rebuild while pending, and skips the `vp.SetContent` swap
+   when the installed content is unchanged (bubbles'
+   findLongestLineWidth measured every line: 53 ms of the
+   remaining frame). A resize burst coalesces into one rebuild
+   at the final width. The interim frame shows the old-width
+   rendering in the new-size viewport.
+
+After: BenchmarkResize2000 = 1,883,116 ns/op (frame), i.e.
+473.6 ms → 1.9 ms; the deferred rebuild still costs ~470 ms
+once per settled resize, off the input path (tick). Added to
+TestFrameCostRegression with the 50 ms target as baseline
+(5× limit) and TestResizeDeferredRewrap pins defer + rebuild.
+
+
 
 

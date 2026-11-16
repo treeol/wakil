@@ -298,6 +298,72 @@ func TestFrameCostRegression(t *testing.T) {
 	}
 }
 
+// TestFrameBytesRaw measures actual bytes written to the terminal
+// (renderer output) per raw-input event in the screen harness at
+// conversation sizes 50/500/2000/5000 synthetic lines: the delta of
+// the output buffer across one keypress, one stream chunk, one
+// wheel step and one drag step. Logged, not asserted (Part B2
+// report); the offered-frame table is TestFrameBytes above.
+func TestFrameBytesRaw(t *testing.T) {
+	for _, n := range []int{50, 500, 2000, 5000} {
+		h := newRawHarness(t, n)
+		measure := func(name, input string, send func()) int {
+			before := h.out.Len()
+			if send != nil {
+				send()
+			} else {
+				h.in.WriteString(input)
+			}
+			h.settle()
+			return h.out.Len() - before
+		}
+		keyB := measure("keypress", "x", nil)
+		chunkB := measure("stream", "", func() {
+			h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: " wirechunk "}, h.m.sessionID))
+		})
+		wheelB := measure("wheel", sgrWheelUp(40, 20), nil)
+		h.in.WriteString(sgrLeftPress(3, 2))
+		h.settle()
+		dragB := measure("drag", sgrLeftMotion(20, 5), nil)
+		h.in.WriteString(sgrLeftRelease(20, 5))
+		h.settle()
+		t.Logf("lines=%d wire bytes/frame: keypress=%d stream=%d wheel=%d drag=%d", n, keyB, chunkB, wheelB, dragB)
+	}
+}
+
+// TestFrameBytes reports bytes the real tea.Program writes per
+// event at 50/500/2000/5000 messages (Part B2). It runs the model
+// through newBenchModel (real constructor) but measures the
+// View() string the renderer is offered, per event type — the
+// renderer's line-diff writes a subset of that (only changed
+// lines), so these are offered-frame bytes; the screen-harness
+// probe below (TestFrameBytesRaw) measures actual wire bytes.
+func TestFrameBytes(t *testing.T) {
+	for _, n := range []int{50, 500, 2000, 5000} {
+		m := newBenchModel(benchCorpus(n), 120, 40)
+		key := func(mm tuiModel) int {
+			u, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+			return len(u.(tuiModel).View())
+		}
+		stream := func(mm tuiModel) int {
+			mm.state = stateStreaming
+			u, _ := mm.Update(evt(event.KindMessageDelta, event.MessageDelta{Text: " chunk"}, benchPrincipalSID))
+			return len(u.(tuiModel).View())
+		}
+		wheel := func(mm tuiModel) int {
+			u, _ := mm.Update(tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown})
+			return len(u.(tuiModel).View())
+		}
+		drag := func(mm tuiModel) int {
+			mm.sel = selection{pressed: true, anchorRow: 0, anchorCol: 0, headRow: 0, headCol: 0}
+			u, _ := mm.Update(tea.MouseMsg{X: 20, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+			return len(u.(tuiModel).View())
+		}
+		t.Logf("msgs=%d offered frame bytes: keypress=%d stream=%d wheel=%d drag=%d",
+			n, key(m), stream(m), wheel(m), drag(m))
+	}
+}
+
 // TestResizeDeferredRewrap: a width change defers the prefix
 // re-wrap; the resizeReflowMsg tick performs it at the new width.
 func TestResizeDeferredRewrap(t *testing.T) {

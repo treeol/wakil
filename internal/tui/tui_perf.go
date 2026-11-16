@@ -18,9 +18,14 @@ package tui
 // On exit (runTUI's postRunCleanup, cmd/wakil/main.go) perfPrintSummary
 // prints a three-line summary to the same diagnostic log:
 //
-//	tuiperf summary count=N median=… p99=… slowest=<type> <ms>
+//	tuiperf summary count=N slowest=<type> maxframe=Nbytes
 //	tuiperf update median=… p99=…
 //	tuiperf view median=… p99=…
+//
+// The update leg is timed in updateTimed (never by calling View: a
+// measurement View would consume the pending OSC 52 escape — Part
+// B5/B3). The drawing leg is timed inside View() itself (tui_view.go),
+// which also records the frame's byte size.
 //
 // Off by default. With WAKIL_TUI_PERF unset, checkPerf returns false
 // (a single nil/atomic load) and the timed path is never taken, so there
@@ -99,20 +104,29 @@ func perfRecord(s perfSample) {
 }
 
 // perfSummary aggregates the recorded samples: count, median and 99th
-// percentile (ns) of update and view durations, and the slowest event
-// type by median update duration. ok is false when no samples exist.
-func perfSummary() (count int, upMed, upP99, viewMed, viewP99 int64, slowest string, ok bool) {
+// percentile (ns) of update and view durations, the largest frame in
+// bytes, and the slowest event type by median update duration.
+// Update legs are the samples updateTimed records (typ = msg type);
+// view legs are the samples View records (typ "View"). ok is false
+// when no samples exist.
+func perfSummary() (count int, upMed, upP99, viewMed, viewP99 int64, slowest string, maxBytes int, ok bool) {
 	samples := perfLoad()
 	if len(samples) == 0 {
-		return 0, 0, 0, 0, 0, "", false
+		return 0, 0, 0, 0, 0, "", 0, false
 	}
-	ups := make([]int64, len(samples))
-	views := make([]int64, len(samples))
+	var ups, views []int64
 	byType := map[string][]int64{}
-	for i, s := range samples {
-		ups[i] = s.updateDur.Nanoseconds()
-		views[i] = s.viewDur.Nanoseconds()
-		byType[s.typ] = append(byType[s.typ], s.updateDur.Nanoseconds())
+	for _, s := range samples {
+		if s.bytes > maxBytes {
+			maxBytes = s.bytes
+		}
+		if s.viewDur > 0 || s.typ == "View" {
+			views = append(views, s.viewDur.Nanoseconds())
+		}
+		if (s.updateDur > 0 || s.typ != "View") && s.typ != "" {
+			ups = append(ups, s.updateDur.Nanoseconds())
+			byType[s.typ] = append(byType[s.typ], s.updateDur.Nanoseconds())
+		}
 	}
 	med := func(a []int64) int64 {
 		s := append([]int64(nil), a...)
@@ -142,18 +156,33 @@ func perfSummary() (count int, upMed, upP99, viewMed, viewP99 int64, slowest str
 			slowest = typ
 		}
 	}
-	return len(samples), med(ups), p99(ups), med(views), p99(views), slowest, true
+	medOr0 := func(a []int64) int64 {
+		if len(a) == 0 {
+			return 0
+		}
+		return med(a)
+	}
+	p99Or0 := func(a []int64) int64 {
+		if len(a) == 0 {
+			return 0
+		}
+		return p99(a)
+	}
+	// count = number of frames: max(frames drawn, events handled)
+	// — one sample per View and one per Update are recorded, while
+	// a directly-recorded sample carries both legs.
+	count = max(len(views), len(ups))
+	return count, medOr0(ups), p99Or0(ups), medOr0(views), p99Or0(views), slowest, maxBytes, true
 }
 
 // perfPrintSummary writes the three-line exit summary to the diagnostic
 // log. It is a no-op when recording was off or no samples were taken.
 func perfPrintSummary() {
-	count, upMed, upP99, viewMed, viewP99, slowest, ok := perfSummary()
+	count, upMed, upP99, viewMed, viewP99, slowest, maxBytes, ok := perfSummary()
 	if !ok {
 		return
 	}
-	diag.Printf("tuiperf summary count=%d median=%dms p99=%dms slowest=%s\n",
-		count, upMed/1e6, upP99/1e6, slowest)
+	diag.Printf("tuiperf summary count=%d slowest=%s maxframe=%dbytes\n", count, slowest, maxBytes)
 	diag.Printf("tuiperf update median=%dns p99=%dns\n", upMed, upP99)
 	diag.Printf("tuiperf view median=%dns p99=%dns\n", viewMed, viewP99)
 }
