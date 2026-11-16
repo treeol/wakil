@@ -149,7 +149,7 @@
   "browser_path": "",
   "browser_idle_timeout_seconds": 0,
 
-  "_comment_mcp": "MCP tool servers. Each entry is a named server with stdio or http transport. Fields: name, transport (stdio|http), command/args/env (stdio), url (http), headers (http, optional map of header to value, e.g. {\"Authorization\": \"Bearer <token>\"}). Tools appear automatically when configured.",
+  "_comment_mcp": "MCP tool servers. Each entry is a named server with stdio or http transport. Tools appear automatically when configured.",
 
   "mcp_servers": [],
 

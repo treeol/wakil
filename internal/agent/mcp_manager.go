@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -300,66 +299,14 @@ func buildTransport(cfg config.MCPServerConfig) (gosdkmcp.Transport, error) {
 		cmd.Env = base
 		return &gosdkmcp.CommandTransport{Command: cmd}, nil
 	case "http", "https":
-		httpClient := &http.Client{Timeout: 60 * time.Second}
-		if len(cfg.Headers) > 0 {
-			base := httpClient.Transport
-			if base == nil {
-				base = http.DefaultTransport
-			}
-			// Host-gate the headers: http.Client follows redirects
-			// hop by hop, and a RoundTripper wrapper re-applies
-			// headers on every hop — a redirect to a different
-			// host would otherwise receive the credentials.
-			host := ""
-			if u, err := url.Parse(cfg.URL); err == nil {
-				host = u.Host
-			}
-			httpClient.Transport = &headerInjectingTransport{
-				base:    base,
-				headers: cfg.Headers,
-				host:    host,
-			}
-		}
 		return &gosdkmcp.StreamableClientTransport{
 			Endpoint:             cfg.URL,
-			HTTPClient:           httpClient,
+			HTTPClient:           &http.Client{Timeout: 60 * time.Second},
 			DisableStandaloneSSE: true,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unknown transport %q (want stdio|http)", cfg.Transport)
 	}
-}
-
-// headerInjectingTransport wraps an http.RoundTripper and adds static headers
-// to every outgoing request. It carries per-server Authorization/api-key
-// headers for HTTP MCP servers that go-sdk's StreamableClientTransport does
-// not expose directly (its only hook is an OAuthHandler). User config wins:
-// the headers are set on the cloned request, overriding any same-named
-// header the SDK set.
-type headerInjectingTransport struct {
-	base    http.RoundTripper
-	headers map[string]string
-	host    string // apply headers only to this host ("" = any)
-}
-
-func (t *headerInjectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	base := t.base
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	clone := req.Clone(req.Context())
-	if clone.Header == nil {
-		clone.Header = make(http.Header)
-	}
-	if t.host != "" && !strings.EqualFold(req.URL.Host, t.host) {
-		// A redirect hopped to a different host: do not send the
-		// configured credentials there.
-		return base.RoundTrip(clone)
-	}
-	for k, v := range t.headers {
-		clone.Header.Set(k, v)
-	}
-	return base.RoundTrip(clone)
 }
 
 // Servers returns the live server pointers (safe to copy the slice, NOT to

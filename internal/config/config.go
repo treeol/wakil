@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -1445,7 +1444,6 @@ type MCPServerConfig struct {
 	Args      []string          `json:"args,omitempty"`    // stdio: arguments
 	Env       map[string]string `json:"env,omitempty"`     // stdio: extra env vars
 	URL       string            `json:"url,omitempty"`     // http: endpoint URL
-	Headers   map[string]string `json:"headers,omitempty"` // http: extra request headers (e.g. "Authorization": "Bearer <token>")
 }
 
 // LSPServer declares one language server for the native LSP tools.
@@ -3138,6 +3136,8 @@ func (c Config) workDirSource() string {
 	return "a setting"
 }
 
+
+
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty
 // exactly when hisn is usable as the default backend.
 type HisnAvailability struct {
@@ -3456,25 +3456,6 @@ func validateExternalCommands(cfg Config) error {
 		default:
 			return fmt.Errorf("mcp_servers[%s]: unknown transport %q (want stdio or http)", srvName, transport)
 		}
-		// headers: fail fast (config is user-owned, so this is a
-		// UX guard, not a security boundary). Duplicate
-		// case-insensitive keys would otherwise apply in random
-		// map-iteration order; an empty/CRLF name errors obscurely
-		// at connect time instead.
-		seen := make(map[string]string, len(srv.Headers))
-		for name, value := range srv.Headers {
-			if !validHTTPHeaderName(name) {
-				return fmt.Errorf("mcp_servers[%s].headers: invalid header name %q", srvName, name)
-			}
-			if strings.ContainsAny(value, "\r\n") {
-				return fmt.Errorf("mcp_servers[%s].headers: header %q value contains CR or LF", srvName, name)
-			}
-			canon := http.CanonicalHeaderKey(name)
-			if prev, dup := seen[canon]; dup {
-				return fmt.Errorf("mcp_servers[%s].headers: duplicate header %q (conflicts with %q — header names are case-insensitive)", srvName, name, prev)
-			}
-			seen[canon] = name
-		}
 	}
 
 	// LSP servers: validate only when LSP is enabled.
@@ -3487,24 +3468,6 @@ func validateExternalCommands(cfg Config) error {
 	}
 
 	return nil
-}
-
-// validHTTPHeaderName reports whether name is a valid HTTP header
-// field name (RFC 9110 token): non-empty, no separators or spaces.
-func validHTTPHeaderName(name string) bool {
-	if name == "" {
-		return false
-	}
-	for _, r := range name {
-		if r <= ' ' || r >= 0x7f {
-			return false
-		}
-		switch r {
-		case '(', ')', '<', '>', '@', ',', ';', ':', '\\', '"', '/', '[', ']', '?', '=', '{', '}':
-			return false
-		}
-	}
-	return true
 }
 
 // validateTimeouts rejects negative timeout values that would cause

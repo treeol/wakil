@@ -741,40 +741,6 @@ func TestValidateExternalCommands_MCPStdioWithCommand(t *testing.T) {
 	}
 }
 
-func TestValidateExternalCommands_MCPHTTPHeaders(t *testing.T) {
-	mk := func(headers map[string]string) Config {
-		cfg := DefaultConfig()
-		cfg.MCPServers = []MCPServerConfig{
-			{Name: "test", Transport: "http", URL: "http://localhost/mcp", Headers: headers},
-		}
-		return cfg
-	}
-	// Valid headers pass.
-	if err := validateExternalCommands(mk(map[string]string{"Authorization": "Bearer x", "X-Api-Key": "k"})); err != nil {
-		t.Fatalf("valid headers should pass: %v", err)
-	}
-	// Empty name.
-	if err := validateExternalCommands(mk(map[string]string{"": "v"})); err == nil ||
-		!strings.Contains(err.Error(), "invalid header name") {
-		t.Errorf("empty header name: got %v", err)
-	}
-	// Name with a space is not a valid token.
-	if err := validateExternalCommands(mk(map[string]string{"Bad Name": "v"})); err == nil ||
-		!strings.Contains(err.Error(), "invalid header name") {
-		t.Errorf("space in header name: got %v", err)
-	}
-	// CRLF in the value.
-	if err := validateExternalCommands(mk(map[string]string{"Authorization": "a\r\nb"})); err == nil ||
-		!strings.Contains(err.Error(), "CR or LF") {
-		t.Errorf("CRLF in header value: got %v", err)
-	}
-	// Case-insensitive duplicates.
-	if err := validateExternalCommands(mk(map[string]string{"Authorization": "a", "authorization": "b"})); err == nil ||
-		!strings.Contains(err.Error(), "duplicate header") {
-		t.Errorf("case-duplicate headers: got %v", err)
-	}
-}
-
 func TestValidateExternalCommands_MCPHTTPRequiresURL(t *testing.T) {
 	cfg := DefaultConfig()
 	cfg.MCPServers = []MCPServerConfig{
