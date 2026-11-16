@@ -95,12 +95,13 @@ func newRawHarness(t *testing.T, nLines int) *rawHarness {
 	h.settle()
 	p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: sb.String()}, m.sessionID))
 	h.settle()
-	// The large transcript write can land one settle cycle after the
-	// output goes momentarily quiet; wait until content is on screen.
-	for i := 0; i < 20 && firstContentLine(h.screenGridNow().gridLines()) < 0; i++ {
-		time.Sleep(50 * time.Millisecond)
-		h.settle()
-	}
+	// settle only sees that the output went quiet; while the program is
+	// still computing a large transcript's frame (about 1.7 s for 2000
+	// lines under -race) the output is quiet too. Wait for the content
+	// itself, so a test never starts timing against the setup's backlog.
+	h.waitFor("transcript content on screen", func() bool {
+		return firstContentLine(h.screenGridNow().gridLines()) >= 0
+	})
 	t.Cleanup(func() {
 		p.Quit()
 		<-done
@@ -398,6 +399,11 @@ func dragFrame(t *testing.T, h *rawHarness, step, input string, wantFirst int) *
 
 func assertHighlightUnderPointer(t *testing.T, h *rawHarness, step string, wantFirst int) {
 	t.Helper()
+	// The selection frame is drawn after the program finishes the motion's
+	// render, which can outlast settle's quiet window under -race.
+	h.waitFor(step+": highlighted cells", func() bool {
+		return h.screenGridNow().highlightedText() != ""
+	})
 	g := h.screenGridNow()
 	ht := g.highlightedText()
 	if ht == "" {

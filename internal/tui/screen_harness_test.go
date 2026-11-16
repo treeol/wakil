@@ -201,6 +201,25 @@ func (h *screenHarness) settle() {
 	h.t.Fatalf("renderer did not settle within 2s (still writing after %d bytes)", h.out.Len())
 }
 
+// waitForTimeout bounds waitFor. It is a failure bound, not a delay: waitFor
+// returns as soon as the condition holds.
+const waitForTimeout = 30 * time.Second
+
+// waitFor polls cond until it holds, failing the test with what after
+// waitForTimeout. Use it where the test needs a program state rather than a
+// quiet output: settle cannot tell a finished program from a busy one.
+func (h *screenHarness) waitFor(what string, cond func() bool) {
+	h.t.Helper()
+	deadline := time.Now().Add(waitForTimeout)
+	for !cond() {
+		if time.Now().After(deadline) {
+			h.t.Fatalf("timed out after %s waiting for %s", waitForTimeout, what)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	h.settle()
+}
+
 // nonzeroFraction reports, for each written byte since the last
 // mark, whether the byte belongs to a line that carries real
 // content (non-space, non-newline). This is the correct probe for
