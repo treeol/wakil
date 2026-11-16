@@ -113,6 +113,7 @@ type e2eFakeServer struct {
 	turns     map[string][][]string
 	turnCalls map[string]int
 	reqs      [][]byte
+	props     int // GET /props probes served
 }
 
 // e2eLastUserText returns the text of the last message with the user role.
@@ -172,6 +173,9 @@ func (f *e2eFakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	// Startup probes first: they must not consume the chat script.
 	switch {
 	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/props"):
+		f.mu.Lock()
+		f.props++
+		f.mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"n_ctx":32768,"n_ctx_train":32768,"default_generation_settings":{"n_ctx":32768}}`))
 		return
@@ -227,6 +231,13 @@ func (f *e2eFakeServer) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	fmt.Fprint(w, "data: [DONE]\n\n")
 	flusher.Flush()
+}
+
+// propsServed returns how many GET /props startup probes have been served.
+func (f *e2eFakeServer) propsServed() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.props
 }
 
 func (f *e2eFakeServer) requests() [][]byte {
@@ -577,6 +588,66 @@ func (e *e2e) waitScreenLine(timeout time.Duration, desc string, pred func(line 
 	}
 	e.t.Fatalf("timed out waiting for screen line: %s\n%s", desc, e.tail(2000))
 	return ""
+}
+
+// clearScreenSeq is what Bubble Tea writes for tea.ClearScreen. The TUI
+// returns that command exactly when a rotation (/new, /resume, /handoff)
+// has been applied (internal/tui/tui_wiring_loop.go, end of applyRotation),
+// after the textarea was reset and the rotating guard cleared. The program
+// also writes it once when it enters the alt screen, so callers compare
+// counts, never presence.
+const clearScreenSeq = "\x1b[2J"
+
+// clearScreens counts the clear-screen sequences written so far, from the
+// raw (not ANSI-stripped) output.
+func (e *e2e) clearScreens() int { return strings.Count(e.out.String(), clearScreenSeq) }
+
+// submitRotation submits a command that rotates the session (/new,
+// /resume <id>, /handoff) and waits until the TUI has applied the rotation.
+// The host writes the new session row about 370 ms before the TUI swaps
+// facades, and the swap resets the textarea, so a line typed after seeing
+// the row can be erased by the swap and the following Enter submits nothing.
+// The count is read before the command is sent, so a rotation that finishes
+// before the wait starts is still seen.
+func (e *e2e) submitRotation(line string) {
+	e.t.Helper()
+	before := e.clearScreens()
+	e.submit(line)
+	deadline := time.Now().Add(30 * time.Second)
+	for time.Now().Before(deadline) {
+		if e.clearScreens() > before {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.t.Fatalf("timed out waiting for the TUI to apply the rotation after %q\n%s", line, e.tail(2000))
+}
+
+// waitFileContent waits until the file at path holds want.
+func (e *e2e) waitFileContent(path, want string, timeout time.Duration) {
+	e.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if data, err := os.ReadFile(path); err == nil && string(data) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.t.Fatalf("timed out waiting for %s to hold %q\n%s", path, want, e.tail(2000))
+}
+
+// waitProbes waits until the deferred startup probe (GET /props) has been
+// served at least once.
+func (e *e2e) waitProbes(timeout time.Duration) {
+	e.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if e.server.propsServed() >= 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	e.t.Fatalf("timed out waiting for the startup probe\n%s", e.tail(2000))
 }
 
 func (e *e2e) requests() [][]byte { return e.server.requests() }

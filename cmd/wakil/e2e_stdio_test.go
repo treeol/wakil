@@ -23,9 +23,9 @@ func TestE2EStdioCleanAcrossNewResume(t *testing.T) {
 	}
 	e := startE2E(t, e2eOpts{Turns: turns})
 	e2eReady(t, e)
-	// Deferred startup probes (GET /props) have no observable counter on
-	// e2eFakeServer; a bounded delay lets them settle before the check.
-	time.Sleep(time.Second)
+	// The deferred startup probe (GET /props) runs after the first frame;
+	// wait for the fake server to have served it before checking stdio.
+	e.waitProbes(30 * time.Second)
 	e2eAssertStdioClean(t, e, "ready")
 
 	e.submit("stdio one")
@@ -41,7 +41,7 @@ func TestE2EStdioCleanAcrossNewResume(t *testing.T) {
 	}
 	first := ids[0]
 
-	e.submit("/new")
+	e.submitRotation("/new")
 	e2eWaitSessions(t, e, 2)
 	e2eAssertStdioClean(t, e, "after /new")
 
@@ -49,7 +49,7 @@ func TestE2EStdioCleanAcrossNewResume(t *testing.T) {
 	e2eWaitTurns(t, e, 2)
 	e2eAssertStdioClean(t, e, "second turn")
 
-	e.submit("/resume " + first)
+	e.submitRotation("/resume " + first)
 	e2eWaitSessions(t, e, 3)
 	e2eAssertStdioClean(t, e, "after /resume")
 

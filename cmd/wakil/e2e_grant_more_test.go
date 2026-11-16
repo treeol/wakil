@@ -133,7 +133,7 @@ func TestE2EGrantSurvivesNew(t *testing.T) {
 	e.key("g")
 	e2eWaitTurns(t, e, 1)
 
-	e.submit("/new")
+	e.submitRotation("/new")
 	e2eWaitSessions(t, e, 2)
 
 	e.submit("bravo two")
@@ -191,37 +191,17 @@ func TestE2EGrantSurvivesResume(t *testing.T) {
 	}
 	first := before[0]
 
-	e.submit("/new")
+	e.submitRotation("/new")
 	e2eWaitSessions(t, e, 2)
 	e.submit("bravo two")
 	e2eWaitTurns(t, e, 2)
 
-	e.submit("/resume " + first)
-	// A resume may reuse or create a host session.
-	resumed := false
-	deadline := time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		ids, err := e.sessionIDs()
-		if err == nil && len(ids) >= 3 {
-			resumed = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if !resumed {
-		time.Sleep(2 * time.Second)
-	}
+	e.submitRotation("/resume " + first)
 
 	e.submit("charlie three")
 	// Resume replays completed-turn events into a new host session. Do
 	// not mistake those historical events for this write's completion.
-	deadline = time.Now().Add(30 * time.Second)
-	for time.Now().Before(deadline) {
-		if data, err := os.ReadFile(filepath.Join(e.workdir, "c.txt")); err == nil && string(data) == "C" {
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	e.waitFileContent(filepath.Join(e.workdir, "c.txt"), "C", 30*time.Second)
 	e2eWaitTurns(t, e, 3)
 	e2eNotAsked(t, e, 1)
 	e2eFileIs(t, e, filepath.Join(e.workdir, "c.txt"), "C")

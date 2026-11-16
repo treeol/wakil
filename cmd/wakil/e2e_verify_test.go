@@ -106,7 +106,7 @@ func TestE2EHandoffKeepsTaskText(t *testing.T) {
 	e.waitTurnDone(30 * time.Second)
 
 	beforeHandoff := len(e.requests())
-	e.submit("/handoff")
+	e.submitRotation("/handoff")
 	var ids []string
 	rotated := false
 	deadline := time.Now().Add(30 * time.Second)
