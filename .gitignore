@@ -39,6 +39,13 @@ docs/archive/
 # plan/audit markdown — session artifacts, not tracked
 b2-b5-plan*.md
 branch-audit.md
+AUDIT-*.md
+docs/mashura-*.md
+docs/work-*-progress.md
+SHA256SUMS
+hisn-*-linux-gnu
+.tmp*
+.tmp-gomod/
 
 # experiment / run directories
 runs/
