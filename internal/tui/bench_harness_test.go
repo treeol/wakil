@@ -298,6 +298,17 @@ func TestFrameCostRegression(t *testing.T) {
 	}
 }
 
+// frameBytesSizes is the set of transcript sizes the two frame-bytes
+// reports cover. They log numbers and assert nothing, and the 2000 and
+// 5000 sizes cost about 80 s together under -race, so the race build
+// reports the two small sizes only.
+func frameBytesSizes() []int {
+	if raceEnabled {
+		return []int{50, 500}
+	}
+	return []int{50, 500, 2000, 5000}
+}
+
 // TestFrameBytesRaw measures actual bytes written to the terminal
 // (renderer output) per raw-input event in the screen harness at
 // conversation sizes 50/500/2000/5000 synthetic lines: the delta of
@@ -305,7 +316,7 @@ func TestFrameCostRegression(t *testing.T) {
 // wheel step and one drag step. Logged, not asserted (Part B2
 // report); the offered-frame table is TestFrameBytes above.
 func TestFrameBytesRaw(t *testing.T) {
-	for _, n := range []int{50, 500, 2000, 5000} {
+	for _, n := range frameBytesSizes() {
 		h := newRawHarness(t, n)
 		measure := func(name, input string, send func()) int {
 			before := h.out.Len()
@@ -339,7 +350,7 @@ func TestFrameBytesRaw(t *testing.T) {
 // lines), so these are offered-frame bytes; the screen-harness
 // probe below (TestFrameBytesRaw) measures actual wire bytes.
 func TestFrameBytes(t *testing.T) {
-	for _, n := range []int{50, 500, 2000, 5000} {
+	for _, n := range frameBytesSizes() {
 		m := newBenchModel(benchCorpus(n), 120, 40)
 		key := func(mm tuiModel) int {
 			u, _ := mm.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
@@ -417,7 +428,17 @@ func TestResizeDeferredRewrap(t *testing.T) {
 // status/Info + View, not item re-render). The per-frame numbers are
 // BenchmarkKeypress/Stream/Wheel/Drag/Resize above.
 func TestBenchSoak(t *testing.T) {
-	conv := benchCorpus(600)
+	// Every turn rebuilds the committed prefix, so the cost is turns x
+	// items, and the race detector makes the width and wrap work about
+	// 9x slower (484 s against 58 s here). Under -race the session is
+	// smaller; the counts of rotations (20) and Mashūra rounds (10)
+	// stay the same, so the invariants below are exercised the same way.
+	turns, convN := 200, 600
+	if raceEnabled {
+		turns, convN = 100, 100
+	}
+	rotateEvery, mashuraEvery := turns/20, turns/10
+	conv := benchCorpus(convN)
 	m := newBenchModel(conv, 200, 60)
 
 	var m0 runtime.MemStats
@@ -428,7 +449,7 @@ func TestBenchSoak(t *testing.T) {
 
 	// 200 turns: each turn is a message delta + tool start/complete +
 	// turn completed. State moves idle→streaming→idle.
-	for turn := 0; turn < 200; turn++ {
+	for turn := 0; turn < turns; turn++ {
 		m = step(m, evt(event.KindTurnStarted, event.TurnStarted{TurnID: "trn"}, benchPrincipalSID))
 		m = step(m, evt(event.KindMessageDelta, event.MessageDelta{Text: " answer text with some content"}, benchPrincipalSID))
 		m = step(m, evt(event.KindToolCallStarted, event.ToolCallStarted{
@@ -439,15 +460,15 @@ func TestBenchSoak(t *testing.T) {
 		}, benchPrincipalSID))
 		m = step(m, evt(event.KindTurnCompleted, event.TurnCompleted{TurnID: "trn", Outcome: "complete"}, benchPrincipalSID))
 		// 10 Mashūra rounds spread over the soak.
-		if turn%20 == 0 {
-			opID := fmt.Sprintf("op_soak_%d", turn/20)
+		if turn%mashuraEvery == 0 {
+			opID := fmt.Sprintf("op_soak_%d", turn/mashuraEvery)
 			m = step(m, jobStarted(opID, "mashura__review", benchPrincipalSID))
 			m = step(m, jobDone(opID, "mashura__review", "review result", "", benchPrincipalSID))
 		}
 		// 20 rotations: alternate /new (empty conv) and /resume (conv).
-		if turn%10 == 0 {
+		if turn%rotateEvery == 0 {
 			f2 := &benchFacade{sid: benchPrincipalSID, chat: "chat_bench"}
-			if (turn/10)%2 == 0 {
+			if (turn/rotateEvery)%2 == 0 {
 				f2.conv = conv
 			}
 			m = step(m, rotationMsg{facade: f2, kind: rotateNew})
