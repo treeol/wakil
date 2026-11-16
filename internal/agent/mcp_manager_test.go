@@ -698,6 +698,17 @@ func TestBuildTransport_HeadersHostGated(t *testing.T) {
 	if got := cap.last.Header.Get("Authorization"); got != "Bearer x" {
 		t.Errorf("same-host Authorization = %q, want %q", got, "Bearer x")
 	}
+	// Same host, downgraded scheme (https→http on a redirect hop): no
+	// credentials on the plaintext request.
+	downgradeReq, _ := http.NewRequest(http.MethodGet, "http://good.example/mcp", nil)
+	resp, err = hit.RoundTrip(downgradeReq)
+	if err != nil {
+		t.Fatalf("RoundTrip scheme-downgrade: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := cap.last.Header.Get("Authorization"); got != "" {
+		t.Errorf("scheme-downgrade request got Authorization %q, want none", got)
+	}
 }
 
 // TestBuildTransport_NoHeadersNoWrap: a config without Headers keeps

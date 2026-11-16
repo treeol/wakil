@@ -2719,11 +2719,16 @@ func (m tuiModel) reflow() tuiModel {
 // buffer POINTER (tabBuf), not its index: closing the focused
 // tab can put a different tab at the same index with an equal
 // buffer length, and index+length would serve its output from
-// the cache under the new tab (a stale pane aliasing).
+// the cache under the new tab (a stale pane aliasing). tabBufLen
+// (the active tab buffer's byte length) is carried too: sub-tab
+// output is appended to tabBuf in place (SubagentProgress /
+// AsyncJobProgress handlers), which changes neither the pointer
+// nor any other key field — without the length the cache would
+// serve the stale pane while the watched tab streams.
 type convPaneKey struct {
-	ver, yOff, w, h, nItems int
-	tabBuf                  *strings.Builder
-	splash                  bool
+	ver, yOff, w, h, nItems, tabBufLen int
+	tabBuf                             *strings.Builder
+	splash                             bool
 }
 
 // convPaneCache is the heap-shared pane render cache (see view()).

@@ -229,8 +229,12 @@ func (m tuiModel) view() string {
 	// render instead of paying vp.View + border (~0.7 MB of
 	// allocations per frame at 2000 messages).
 	var tabBuf *strings.Builder
+	var tabBufLen int
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 		tabBuf = m.subTabs[m.subCur].buf
+		if tabBuf != nil {
+			tabBufLen = tabBuf.Len()
+		}
 	}
 	nItems := -1
 	if m.items != nil {
@@ -242,7 +246,7 @@ func (m tuiModel) view() string {
 		(m.streaming == nil || m.streaming.Len() == 0)
 	key := convPaneKey{
 		ver: m.vpContentVer, yOff: m.vp.YOffset, w: vpW, h: vpH,
-		tabBuf: tabBuf, nItems: nItems, splash: splash,
+		tabBuf: tabBuf, tabBufLen: tabBufLen, nItems: nItems, splash: splash,
 	}
 	var conv string
 	if m.convCacheBox != nil && m.convCacheBox.key == key {

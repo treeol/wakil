@@ -309,15 +309,17 @@ func buildTransport(cfg config.MCPServerConfig) (gosdkmcp.Transport, error) {
 			// Host-gate the headers: http.Client follows redirects
 			// hop by hop, and a RoundTripper wrapper re-applies
 			// headers on every hop — a redirect to a different
-			// host would otherwise receive the credentials.
-			host := ""
+			// host or a different scheme would otherwise receive
+			// the credentials.
+			host, scheme := "", ""
 			if u, err := url.Parse(cfg.URL); err == nil {
-				host = u.Host
+				host, scheme = u.Host, u.Scheme
 			}
 			httpClient.Transport = &headerInjectingTransport{
 				base:    base,
 				headers: cfg.Headers,
 				host:    host,
+				scheme:  scheme,
 			}
 		}
 		return &gosdkmcp.StreamableClientTransport{
@@ -336,10 +338,16 @@ func buildTransport(cfg config.MCPServerConfig) (gosdkmcp.Transport, error) {
 // not expose directly (its only hook is an OAuthHandler). User config wins:
 // the headers are set on the cloned request, overriding any same-named
 // header the SDK set.
+//
+// Credentials are injected only for requests whose URL is the configured
+// endpoint itself: same host AND same scheme. A same-host redirect to a
+// different scheme (https→http) does not get them — a host-only check
+// would leak them over plaintext.
 type headerInjectingTransport struct {
 	base    http.RoundTripper
 	headers map[string]string
 	host    string // apply headers only to this host ("" = any)
+	scheme  string // apply headers only to this scheme ("" = any)
 }
 
 func (t *headerInjectingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -354,6 +362,11 @@ func (t *headerInjectingTransport) RoundTrip(req *http.Request) (*http.Response,
 	if t.host != "" && !strings.EqualFold(req.URL.Host, t.host) {
 		// A redirect hopped to a different host: do not send the
 		// configured credentials there.
+		return base.RoundTrip(clone)
+	}
+	if t.scheme != "" && !strings.EqualFold(req.URL.Scheme, t.scheme) {
+		// A redirect hopped to a different scheme (e.g. https→http):
+		// do not send the configured credentials there.
 		return base.RoundTrip(clone)
 	}
 	for k, v := range t.headers {

@@ -171,6 +171,34 @@ func TestSubTabDragDoesNotCopyMainPane(t *testing.T) {
 	}
 }
 
+// TestSubTabStreamInvalidatesPaneCache verifies the convPaneKey
+// invalidation for in-place sub-tab appends: sub-tab output is
+// appended to tab.buf in place (SubagentProgress / AsyncJobProgress),
+// which changes neither the buffer pointer nor any other key field —
+// the cache key must carry the buffer LENGTH or view() keeps serving
+// the stale pane while the watched tab streams.
+func TestSubTabStreamInvalidatesPaneCache(t *testing.T) {
+	m, _ := newTestTUI(t)
+	m.ready = true
+	m.width = 80
+	m.height = 24
+	buf := &strings.Builder{}
+	buf.WriteString("first line")
+	m.subTabs = []*subTab{{n: 1, task: "x", buf: buf, done: false}}
+	m.subCur = 0
+
+	first := ansi.Strip(m.view())
+	if !strings.Contains(first, "first line") {
+		t.Fatalf("precondition: first view missing sub-tab output:\n%s", first)
+	}
+	// In-place append, as the progress handlers do: same pointer.
+	buf.WriteString("\nsecond line appended")
+	second := ansi.Strip(m.view())
+	if !strings.Contains(second, "second line appended") {
+		t.Fatalf("view after in-place append served the stale pane:\n%s", second)
+	}
+}
+
 // TestCopyLastResponseSource verifies ctrl+y's source lookup: returns the
 // most recent committed assistant text verbatim (pre-glamour, blank lines
 // kept), ignores user/system items, trims only leading/trailing newlines, and
