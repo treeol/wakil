@@ -559,9 +559,6 @@ type tuiModel struct {
 	// re-wrap was deferred (resizeReflowMsg armed). The resize frame
 	// itself keeps the old-width rendering so it costs ~0; the tick
 	// performs the full re-wrap once, coalescing a resize burst.
-	// Any refreshViewport while pending skips the prefix rebuild so
-	// the expensive re-render cannot slip back into the resize frame
-	// via a streaming/key path.
 	resizePending bool
 
 	// Input history for UP/DOWN navigation (most-recent entry first).
@@ -2254,10 +2251,7 @@ func (m *tuiModel) refreshViewport() {
 	// computed against until the selection clears.
 
 	// --- committed prefix ---
-	// resizePending: a width change is waiting for its deferred
-	// re-wrap; keep the old-width prefix (and its plain mirrors)
-	// until the tick performs the rebuild once.
-	if !deferRebuild && !m.resizePending && (m.prefixDirty || m.prefixW != w) {
+	if !deferRebuild && (m.prefixDirty || m.prefixW != w) {
 		hideDiag := m.outputMode == config.OutputModeSimple
 		// Inner width for items rendered inside a turn box: the box border
 		// consumes turnBoxBorderW columns per side.
@@ -2483,12 +2477,6 @@ func (m *tuiModel) refreshViewport() {
 	if m.sel.active && m.sel.dragging {
 		sr, sc, er, ec := m.sel.ordered()
 		m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
-	} else if m.resizePending && len(tailStyled) == 0 {
-		// Deferred resize (Part B1): the installed content is
-		// already exactly prefixStyled; only vp.Width/Height
-		// changed. Skipping SetContent avoids bubbles'
-		// findLongestLineWidth measuring every transcript line
-		// (measured 53 ms of the resize frame at 2000 messages).
 	} else {
 		styled := m.prefixStyled
 		if len(tailStyled) > 0 && len(m.prefixStyled) > 0 {
@@ -2710,34 +2698,43 @@ const resizeTickInterval = 50 * time.Millisecond
 // resizeReflowMsg performs the deferred width-change re-wrap.
 type resizeReflowMsg struct{}
 
-// reflowResize handles a WindowSizeMsg: same cheap geometry work
-// as reflow, but a content-width change defers the expensive
-// prefix re-wrap to a tick so the resize frame itself is fast
-// (Part B1 target: <50 ms at 2000 messages; the full re-wrap
-// measured 474 ms). The frame meanwhile shows the old-width
-// rendering in the new-size viewport — correctly shaped, re-wrapped
-// 50 ms later. A height-only change reflows immediately (no
-// re-wrap needed). A burst of resizes coalesces: pending stays set
-// and the already-armed tick rebuilds at the final width.
+// reflowResize handles a WindowSizeMsg. A height-only change
+// reflows immediately (no re-wrap needed: the prefix caches are
+// width-keyed). A content-width change updates the geometry ONLY
+// and defers the expensive prefix re-wrap to a 50 ms tick, so the
+// resize frame is fast (Part B1 target: <50 ms at 2000 messages;
+// the re-wrap measured 474 ms). The frame meanwhile shows the
+// old-width rendering in the new-size viewport — correctly shaped,
+// re-wrapped 50 ms later. A burst of resizes coalesces: pending
+// stays set and the already-armed tick rebuilds at the final
+// width. While pending, any refreshViewport (streaming, addItem)
+// rebuilds the prefix early at the new width — correct; the tick
+// then finds prefixW == vp.Width and skips the duplicate rebuild.
+//
+// Do NOT gate refreshViewport on resizePending: model-level tests
+// never run the armed tick (Cmds are values), so a gate left the
+// prefix unbuilt forever and broke every refresh-after-resize
+// test (TestFollow_* / TestOutputMode*). Deferral applies only to
+// the resize frame itself, which simply does not refresh.
 func (m tuiModel) reflowResize() (tuiModel, tea.Cmd) {
-	vpW, _, _ := m.sizes()
-	widthChanged := m.prefixW != vpW && !m.resizePending
-	if widthChanged {
-		// Gate BEFORE reflow so its refreshViewport skips the
-		// prefix rebuild (see the resizePending gate there).
-		m.resizePending = true
+	vpW, vpH, _ := m.sizes()
+	widthChanged := m.prefixW != vpW
+	if !widthChanged {
+		return m.reflow(), nil
 	}
-	m = m.reflow()
-	if widthChanged {
-		return m, tea.Tick(resizeTickInterval, func(time.Time) tea.Msg { return resizeReflowMsg{} })
+	// Geometry only: vp dims + textarea. No refreshViewport here —
+	// the viewport keeps its installed content until the tick.
+	m.vp.Width = vpW
+	m.vp.Height = vpH
+	m.ta.SetHeight(m.inputRows())
+	m.ta.SetWidth(m.width - textareaChromeW - promptBarW)
+	wasPending := m.resizePending
+	m.resizePending = true
+	m.prefixDirty = true // the tick rebuilds; early refreshes rebuild too
+	if wasPending {
+		return m, nil // tick already armed
 	}
-	// Height-only, or already pending (tick armed): geometry only.
-	if m.resizePending {
-		// Dims changed under a pending re-wrap: refresh geometry
-		// now; the armed tick rebuilds the prefix at final width.
-		m.refreshViewport()
-	}
-	return m, nil
+	return m, tea.Tick(resizeTickInterval, func(time.Time) tea.Msg { return resizeReflowMsg{} })
 }
 
 // reflowIfStatusHeightChanged reflows only when the status zone's row count
