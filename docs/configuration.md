@@ -239,7 +239,7 @@ reference covering every section below.
 | `style_guides_enabled` | `false` | Enable built-in and user-configured language style guides |
 | `style_guide_paths` | `{}` | Map language ID → replacement or custom host-side guide file; paths relative to the config file, `~/` expanded |
 | `browser_enabled` | `false` | Gate for `browser_*` headless-browser tools (chromedp + Chromium). Not forced off under `sandbox.backend: hisn`: Chromium runs inside the hisn session (needs Chromium and `python3` in it) |
-| `mcp_servers` | — | MCP tool servers (stdio or HTTP) |
+| `mcp_servers` | — | MCP tool servers (stdio or HTTP). Per-server fields: `name`, `transport` (`stdio`\|`http`), `command`/`args`/`env` (stdio), `url` (http), `headers` (http, optional map of header → value, e.g. `{"Authorization": "Bearer …"}`; set on every request by the transport) |
 | `backend` | `""` | Default `X-Ilm-Backend` (ilm-proxy only) |
 | `external_backends` | — | Backend names known to route to external providers |
 | `aux_model` | `""` | Pins `X-Ilm-Aux-Model` (empty = follow main) |

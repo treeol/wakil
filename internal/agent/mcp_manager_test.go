@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -573,6 +575,147 @@ func TestBuildTransport_Validation(t *testing.T) {
 	// behavior — empty URL fails later at connect time, not here).
 	if _, err := buildTransport(config.MCPServerConfig{Transport: "http"}); err != nil {
 		t.Fatalf("pinning: http transport builds without URL: %v", err)
+	}
+}
+
+// captureTransport is a RoundTripper that records the request it was
+// asked to send and answers with a canned response.
+type captureTransport struct {
+	mu   sync.Mutex
+	last *http.Request
+}
+
+func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.last = req
+	return &http.Response{
+		Status:     "200 OK",
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader("{}")),
+		Request:    req,
+	}, nil
+}
+
+// TestBuildTransport_InjectsHeaders: an http config carrying Headers
+// produces a client whose RoundTrip sets them on a dummy request,
+// and the caller's original request is not mutated.
+func TestBuildTransport_InjectsHeaders(t *testing.T) {
+	tr, err := buildTransport(config.MCPServerConfig{
+		Transport: "http",
+		URL:       "https://example.invalid/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer x", "X-Api-Key": "k"},
+	})
+	if err != nil {
+		t.Fatalf("buildTransport: %v", err)
+	}
+	st, ok := tr.(*gosdkmcp.StreamableClientTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *StreamableClientTransport", tr)
+	}
+	hit, ok := st.HTTPClient.Transport.(*headerInjectingTransport)
+	if !ok {
+		t.Fatalf("HTTPClient.Transport = %T, want *headerInjectingTransport", st.HTTPClient.Transport)
+	}
+	cap := &captureTransport{}
+	hit.base = cap
+	req, _ := http.NewRequest(http.MethodPost, "https://example.invalid/mcp", nil)
+	req.Header.Set("Authorization", "Bearer original")
+	resp, err := hit.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := cap.last.Header.Get("Authorization"); got != "Bearer x" {
+		t.Errorf("Authorization on the wire = %q, want %q (config must win)", got, "Bearer x")
+	}
+	if got := cap.last.Header.Get("X-Api-Key"); got != "k" {
+		t.Errorf("X-Api-Key on the wire = %q, want %q", got, "k")
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer original" {
+		t.Errorf("caller's request was mutated: Authorization = %q", got)
+	}
+}
+
+// TestBuildTransport_HeadersDefaultsBase: the injected transport's
+// base is always non-nil (a freshly created http.Client has a nil
+// Transport field, which means DefaultTransport — wrapping nil
+// would panic on the first request).
+func TestBuildTransport_HeadersDefaultsBase(t *testing.T) {
+	tr, err := buildTransport(config.MCPServerConfig{
+		Transport: "http",
+		URL:       "https://example.invalid/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer x"},
+	})
+	if err != nil {
+		t.Fatalf("buildTransport: %v", err)
+	}
+	st := tr.(*gosdkmcp.StreamableClientTransport)
+	hit := st.HTTPClient.Transport.(*headerInjectingTransport)
+	if hit.base == nil {
+		t.Fatal("base RoundTripper is nil — would panic on first request")
+	}
+	if hit.base != http.DefaultTransport {
+		t.Errorf("base = %T, want http.DefaultTransport", hit.base)
+	}
+}
+
+// TestBuildTransport_HeadersHostGated: headers (credentials) are
+// applied only to requests to the configured endpoint host; a
+// redirect hop to a different host gets none of them.
+func TestBuildTransport_HeadersHostGated(t *testing.T) {
+	tr, err := buildTransport(config.MCPServerConfig{
+		Transport: "http",
+		URL:       "https://good.example/mcp",
+		Headers:   map[string]string{"Authorization": "Bearer x"},
+	})
+	if err != nil {
+		t.Fatalf("buildTransport: %v", err)
+	}
+	st := tr.(*gosdkmcp.StreamableClientTransport)
+	hit := st.HTTPClient.Transport.(*headerInjectingTransport)
+	cap := &captureTransport{}
+	hit.base = cap
+	// Cross-host request (a redirect hop): no Authorization.
+	badReq, _ := http.NewRequest(http.MethodGet, "https://evil.example/mcp", nil)
+	badReq.Header = nil // also exercises the nil-header-map guard
+	resp, err := hit.RoundTrip(badReq)
+	if err != nil {
+		t.Fatalf("RoundTrip cross-host: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := cap.last.Header.Get("Authorization"); got != "" {
+		t.Errorf("cross-host request got Authorization %q, want none", got)
+	}
+	// Same host: headers applied.
+	goodReq, _ := http.NewRequest(http.MethodGet, "https://good.example/mcp", nil)
+	resp, err = hit.RoundTrip(goodReq)
+	if err != nil {
+		t.Fatalf("RoundTrip same-host: %v", err)
+	}
+	_ = resp.Body.Close()
+	if got := cap.last.Header.Get("Authorization"); got != "Bearer x" {
+		t.Errorf("same-host Authorization = %q, want %q", got, "Bearer x")
+	}
+}
+
+// TestBuildTransport_NoHeadersNoWrap: a config without Headers keeps
+// the plain http.Client transport (no custom wrapper).
+func TestBuildTransport_NoHeadersNoWrap(t *testing.T) {
+	tr, err := buildTransport(config.MCPServerConfig{Transport: "http", URL: "https://example.invalid/mcp"})
+	if err != nil {
+		t.Fatalf("buildTransport: %v", err)
+	}
+	st, ok := tr.(*gosdkmcp.StreamableClientTransport)
+	if !ok {
+		t.Fatalf("transport type = %T, want *StreamableClientTransport", tr)
+	}
+	if _, wrapped := st.HTTPClient.Transport.(*headerInjectingTransport); wrapped {
+		t.Error("no headers configured: Transport must not be wrapped")
+	}
+	if st.HTTPClient.Transport != nil {
+		t.Errorf("plain client should keep the default Transport, got %T", st.HTTPClient.Transport)
 	}
 }
 
