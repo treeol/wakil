@@ -255,13 +255,14 @@ check changelog-heading sh -c '
 # general). SKIP-partial: the soak is 98s; -run only targets the
 # regression test + smoke, which together are ~4s.
 #
-# Exit-code honesty (Mashūra 0.8.4 review): the piped `| tail` above
-# returns tail's status, NOT go test's — a failing test would still
-# exit 0 and print PASS. The sh -c here propagates go test's own status
-# via PIPESTATUS (bash) or, portably, by writing to a log and checking
-# the command's exit code before tail'ing.
+# Exit-code honesty (Mashūra 0.8.4 review): the earlier form piped
+# `go test ... | tail`, which returns tail's status, so a failing test
+# printed PASS. Writing to a log and checking the command's exit status
+# first is the portable fix: POSIX sh has no PIPESTATUS and `set -o
+# pipefail` is not POSIX (dash exits 2 on it, which would kill this
+# check). The rewritten form below has no pipe and no non-POSIX option.
 if command -v go >/dev/null 2>&1; then
-  check tui-perf sh -c 'set -o pipefail 2>/dev/null || true; go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log" | tail -10; exit $rc'
+  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log" | tail -10; exit $rc'
 else
   echo "SKIP  tui-perf (go not available)"
   skip=$((skip+1))
