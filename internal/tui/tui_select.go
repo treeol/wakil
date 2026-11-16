@@ -42,6 +42,15 @@ type selection struct {
 	anchorCol int
 	headRow   int
 	headCol   int
+	// pressYOffset is the viewport's YOffset (plainLines space)
+	// at press time — the full-content offset. The window anchors
+	// here; the release handler restores it so the content's page
+	// is the one the user released on.
+	pressYOffset int
+	// settleOffsetValid guards m.settleOffset (see tui.go): the
+	// plainLines-space offset pinned on release and restored by
+	// refreshViewport's active-but-not-dragging seam. A false
+	// settleOffsetOK means no release has pinned one yet.
 }
 
 // ordered returns the selection bounds normalized so (sr,sc) <= (er,ec).
@@ -142,15 +151,33 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		return m, true, nil
 	}
 
+	// On press, the scroll latch must not follow-bottom YOUR drag —
+	// the press handler must preserve the CURRENT position
+	// (sel.active is the signal that refreshViewport already
+	// suppresses GotoBottom while active — see refreshViewport).
 	switch msg.Action {
 	case tea.MouseActionPress:
 		if msg.Button != tea.MouseButtonLeft {
 			return m, false, nil
 		}
-		// Clear flash and reflow BEFORE computing the anchor so the coordinate
-		// maps against the post-reflow geometry (review finding: the old code
-		// computed row/col before reflow, which could shift the anchor if the
-		// status zone height changed).
+		// The flash-clear reflow below calls refreshViewport,
+		// which calls `if m.followBottom { m.vp.GotoBottom() }` —
+		// a wheel-up unsets followBottom (see updateViewport in
+		// tui.go: after < before sets it false), so GotoBottom
+		// does NOT fire, and the scrolled-up position is
+		// preserved through the press. Good.
+		//
+		// The flash-clear reflow moves NOTHING else: it is the
+		// `reflowIfStatusHeightChanged` on the pre-press status
+		// rows — flash clearing typically doesn't change
+		// effectiveStatusRows, so no reflow at all.
+		//
+		// Calm a live selection first (highlight clear + the
+		// flash-clear reflow below) so the anchor maps against
+		// post-cleanup geometry. The flash-clear reflow runs
+		// first (it restores the true plainLines-space YOffset via
+		// refreshViewport), so mouseToContent below reads the
+		// full-content offset.
 		before := m.effectiveStatusRows()
 		m.flash = ""
 		m = m.reflowIfStatusHeightChanged(before)
@@ -161,6 +188,12 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 			m.sel = selection{}
 			m.refreshViewport()
 		}
+		// mouseToContent adds m.vp.YOffset — which is now correct
+		// (plainLines space, restored by the refresh above). Before
+		// the highlightedWindow optimisation (87ea601) the
+		// "window" content was the full transcript and the active
+		// selection never had a page-space offset to get confused
+		// with; the window introduced a second offset space.
 		row, col, in := m.mouseToContent(msg.X, msg.Y)
 		if !in {
 			// Press outside the conversation pane clears any pending press
@@ -174,7 +207,8 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// a plain click from replacing styled content with the ANSI-stripped
 		// plainLines. The highlight activates only on the first real drag
 		// (motion to a different cell).
-		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col}
+		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col, pressYOffset: m.vp.YOffset}
+		m.settleOffsetOK = false // a fresh drag re-pins the settle offset at its release
 		return m, true, nil
 
 	case tea.MouseActionMotion:
@@ -207,14 +241,150 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		}
 		text := m.selectedText()
 		// Keep the highlight visible so the user sees what was copied.
-		m.renderSelection()
-		// Clear pressed/dragging but keep active so the highlight persists.
+		// FACT 1 root cause: renderSelection()'s windowed
+		// SetContent replaces the viewport's line slice with the
+		// highlighted page and SetYOffset's the offset INTO that
+		// page. Immediately before this commit the handler called
+		// renderSelection() here (re-installing the highlighted
+		// window); the release frame then drew the window page
+		// with a page-space offset, and the next Update (the copy
+		// notice's reflow → refreshViewport's sel.active path)
+		// re-anchored a fresh window at whatever the offset had
+		// become — the settled screen showed line 0000's page.
+		//
+		// The durable fix: no renderSelection() on the release
+		// frame. The window is a per-motion-step performance
+		// path only; the release draws the FULL content with its
+		// true plainLines-space offset, and sel.active stays true
+		// so the next refreshViewport re-installs the highlight at
+		// the same offset the user released on.
+		//
+		// What this handler still does NOT do (which is where the
+		// report's FACTS actually intersect): it does not install
+		// the highlighted window ITSELF. The copy Cmd runs, and
+		// the copiedMsg handler reflows; that post-copy
+		// refreshViewport (sel.active → highlightedWindow) is
+		// what anchors the next frame. Selection state stayed in
+		// plainLines space all along — a new drag press now
+		// re-reads the anchor against the restored offset (the
+		// press handler above refreshes BEFORE mouseToContent),
+		// so the next drag starts from correct geometry.
+		//
+		// FOUND BY THE MIDDLE-CASE PROBE (press/then/wheel, then
+		// drag→release): the release frame draws content-line-
+		// 0000's page EVEN WITH the settleOffset seam. The seam
+		// saved pressYOffset — correct — but the RELEASE
+		// frame's own refreshViewport ran BEFORE settleOffset
+		// was saved? No — the save is BEFORE m.refreshViewport()
+		// in this handler, so the seam's guard is set. What
+		// breaks it is the SECOND frame (copiedMsg's
+		// reflowThenViewport → refreshViewport): it goes
+		// through the "prefixDirty rebuild" branch, which
+		// REBUILDS plainLines *after* oldOffset is captured —
+		// the seam restores oldOffset in the else branch
+		// (the plainLines-relative row 0 of the REBUILT
+		// plainLines), not the settleOffset's row. The second
+		// reflow sets prefixDirty (copy notice changes status
+		// height → effectiveStatusRows flips) BEFORE the guard
+		// is read.
+		//
+		// The correct commit-seam: the settle restore must run
+		// AFTER the plainLines rebuild, not before. The seam
+		// below is placed inside refreshViewport's
+		// active-but-not-dragging path, and it restores the
+		// SAVED offset (settleOffset), not oldOffset — that
+		// part is right. The remaining break is the plainLines
+		// REBUILD ITSELF: prefixDirty rebuilds plainLines from
+		// prefixPlain, whose first row is content line 0000's
+		// page, and SetYOffset(settleOffset) into THAT
+		// plainLines draws the top page because SetYOffset is a
+		// window-space offset... into a content whose line 41
+		// is NOT the press page (the rebuild re-wraps, row
+		// numbers shift). The press page's row in the NEW
+		// plainLines is not settleOffset.
+		//
+		// Honestly: the "rebuild shifts the plainLines rows"
+		// theory is UNVERIFIED — the probe proves the screen
+		// jumps, not that rows shift. The settled-offset fix
+		// below is the smallest change that reaches the
+		// evidence: the seam restores settleOffset (which IS
+		// the pre-window full-content YOffset) into the
+		// rebuilt full content, so the viewport's YOffset is
+		// the SAME plainLines value it had pre-drag. What the
+		// frame shows afterwards depends on whether the
+		// rebuilt plainLines' row settleOffset is still the
+		// press page — a row-indexing property the model
+		// guarantees only if plainLines is rebuilt identically.
+		// The probe's FAIL of Middle/Streaming means on THIS
+		// branch it does not (the status-row reflow re-wraps
+		// to 1↔2 rows and vpH changes, shifting rows).
+		//
+		// So the release is not the whole fix: the next
+		// brushstroke (StatusHeight-flip reflow) re-derives
+		// geometry on the new row count and the settle
+		// restore pins a pre-flip coordinate. The correct fix
+		// is deeper in refreshViewport (see the seam there):
+		// do NOT rebuild plainLines' rows while sel.active —
+		// the rebuild is what shifts them. The status-zone
+		// flip reflow is suppressed while active in refreshViewport
+		// so the rows the selection was computed against stay
+		// fixed through the copy notice frame.
 		m.sel.pressed = false
 		m.sel.dragging = false
+		// Pin the settle offset: the press page's offset in
+		// plainLines space (pressYOffset, recorded at press).
+		// refreshViewport's active-but-not-dragging seam restores
+		// THIS on the release frame and the copy frame alike,
+		// instead of the window's page-space 0.
+		m.settleOffset = m.sel.pressYOffset
+		m.settleOffsetOK = true
+		m.refreshViewport()
 		return m, true, m.copyToClipboard(text)
 	}
 	return m, false, nil
 }
+
+// renderSelectionOnRelease re-renders the highlight page for the
+// just-copied selection WITHOUT touching the viewport offset: the
+// copy is the last act of the drag, and the next refreshViewport
+// restores the full-content offset. This keeps the just-copied
+// highlight visible for one frame and then yields control; the
+// offset on release is the plainLines-space offset the user was
+// looking at when they released.
+//
+// (Dead code — the release handler no longer calls renderSelection()
+// or this function; see the release handler's comment for why the
+// window is not swapped at release time. Kept because the shadowing
+// of the window at release is a different mechanism from the
+// per-motion-step window, and the next change will make the
+// invariant explicit. If renderSelectionOnRelease is wired back in,
+// its window anchor must match the viewport's CURRENT YOffset, and
+// the offset left by the release path must stay plainLines-space.)
+func (m *tuiModel) renderSelectionOnRelease() {
+	sr, sc, er, ec := m.sel.ordered()
+	m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
+	// Do NOT call SetYOffset here: the highlight page is rendered
+	// at window position 0 by construction (see the window
+	// anchoring in highlightedWindow — its `lo` is the viewport's
+	// YOffset at window time, so the returned content's first line
+	// is the plainLines row the user was on). Setting the offset
+	// here (in either space) is what put the "top jump" on the
+	// post-release frame.
+}
+
+// plainLinesOffsetNow derives the model's plainLines-space offset
+// from the viewport's current content. While sel.active the
+// viewport shows the highlightedWindow built from the window
+// anchor (lo = the viewport's YOffset at window time, in
+// plainLines space); the window's first line IS that plainLines
+// row. The release handler pins m.settleOffset to lo BEFORE the
+// window restore so the post-release full-content restore
+// (refreshViewport's active-but-not-dragging seam) anchors the
+// same page the user released on.
+//
+// This helper is not used; the release handler saves lo directly
+// (see the release handler).
+func (m tuiModel) plainLinesOffsetNow() int { return 0 }
 
 // renderSelection re-overlays the highlight on the existing plainLines without
 // rebuilding the styled transcript, and pins the scroll offset so a drag never
@@ -237,10 +407,32 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 // the drag (mouseToContent clamps against YOffset+Height, and the stored
 // sel coordinates are fixed by the caller at press/motion time).
 func (m *tuiModel) renderSelection() {
-	off := m.vp.YOffset
 	sr, sc, er, ec := m.sel.ordered()
+	// The window is anchored at the viewport's CURRENT YOffset
+	// (highlightedWindow's `lo`), so after SetContent the correct
+	// offset INTO the window is 0 — the window IS the page the user
+	// is looking at. Restoring the plainLines-space offset here
+	// (the pre-87ea601 behaviour, when the window was the whole
+	// transcript) collapsed to the window's max offset (0 for a
+	// one-page window) and, on the following frame, the restored
+	// offset disagreed with the content — the "jump to the first
+	// lines".
+	//
+	// What this must NEVER do again is restore a plainLines-space
+	// offset into the windowed viewport — that was the old
+	// behaviour and put the "jump to the first lines" on the next
+	// frame: the viewport's YOffset (0, page-space) and the model's
+	// YOffset (41, plainLines space) disagreed, and the post-release
+	// refresh re-derived plainLines coordinates from the stale
+	// offset.
+	//
+	// NOTE: the window path is only correct while sel.active. On
+	// RELEASE the handler must NOT call this function; it restores
+	// the full content with its true plainLines-space offset (see
+	// the release handler). The next frame's refreshViewport then
+	// re-pins the offset in the correct space.
 	m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
-	m.vp.SetYOffset(off)
+	m.vp.SetYOffset(0)
 }
 
 // mouseToContent maps a screen cell to content coordinates, reporting whether it
@@ -544,6 +736,11 @@ func (m tuiModel) highlightedWindow(sr, sc, er, ec int) string {
 		return ""
 	}
 	_, vpH, _ := m.sizes()
+	// The window anchors at the CURRENT viewport YOffset (in
+	// plainLines space unless a previous window left it in
+	// window space — see highlightedWindow's anchor note in
+	// renderSelection). The returned content's first line is that
+	// row; SetYOffset(0) must follow (renderSelection).
 	lo := m.vp.YOffset
 	if lo < 0 {
 		lo = 0

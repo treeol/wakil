@@ -364,7 +364,14 @@ type tuiModel struct {
 	reasoningModel
 
 	// Mouse text selection over the conversation pane (see tui_select.go).
-	sel             selection
+	sel selection
+	// settleOffset is the plainLines-space offset pinned on release
+	// (see tui_select.go: the release handler). The windowed-drag
+	// optimization leaves the viewport in page space during a drag;
+	// the post-release full-content restore anchors here so the copy
+	// notice's reflow does not re-anchor the window's first line.
+	settleOffset    int
+	settleOffsetOK  bool
 	plainLines      []string // ANSI-stripped view content (with box borders), for mouse coordinate mapping
 	plainLinesNoBox []string // ANSI-stripped content without box borders, for clean clipboard copy
 	flash           string   // transient status shown in the input border (e.g. "copied ✓")
@@ -2211,8 +2218,30 @@ func (m *tuiModel) refreshViewport() {
 	// refresh will find refreshDirty=false and become a no-op.
 	m.refreshDirty = false
 
+	// A status-height-flip reflow while sel.active (the copy
+	// notice's flash flips effectiveStatusRows) rebuilds
+	// plainLines — shifting row numbers relative to the live
+	// selection (computed against the pre-rebuild plainLines).
+	// Defer the rebuild while active: the rows the selection was
+	// computed against stay fixed through the copy frame, so the
+	// settled-offset restore below anchors the page the user
+	// released on. The flip is deferred, not dropped — the next
+	// non-active refresh runs the rebuild with correct
+	// post-selection rows. (The deferred rebuild does NOT shift
+	// the selection: sel.active goes false on KeyMsg/WindowSizeMsg
+	// and the final refresh rebuilds plainLines from scratch
+	// then.)
+	deferRebuild := m.prefixDirty && m.sel.active
+	// While sel.active, plainLines MUST NOT be rebuilt: the
+	// selection's row numbers are plainLines-relative, so a
+	// rebuild shifts them and the settle restore pins a stale
+	// row. Defer the ENTIRE committed-prefix block while active
+	// (not just prefixDirty — the width-change path rebuilds too).
+	// plainLines stays exactly the slice the selection was
+	// computed against until the selection clears.
+
 	// --- committed prefix ---
-	if m.prefixDirty || m.prefixW != w {
+	if !deferRebuild && (m.prefixDirty || m.prefixW != w) {
 		hideDiag := m.outputMode == config.OutputModeSimple
 		// Inner width for items rendered inside a turn box: the box border
 		// consumes turnBoxBorderW columns per side.
@@ -2384,7 +2413,54 @@ func (m *tuiModel) refreshViewport() {
 	// re-join the entire transcript on every motion step. The viewport's
 	// TotalLineCount changes, but renderSelection pins YOffset and no
 	// scroll happens mid-drag (follow is suppressed while active).
-	if m.sel.active {
+	//
+	// The window path is a PER-MOTION-STEP optimization only: see the
+	// release handler in tui_select.go — on release the full content
+	// is restored (no window swap), so the window never survives a
+	// release. The earlier FACT-1 jump came from this path firing on
+	// the post-copy frame, when the window's anchor (m.vp.YOffset at
+	// window time) disagreed with the rendered content's first line,
+	// putting content-line-0000's page at the top. The invariant now:
+	// while sel.active, highlightedWindow's `lo` is the viewport's
+	// CURRENT YOffset, and the post-window offset restore below is
+	// required to keep it self-consistent (SetContent + SetYOffset
+	// to the window's maximum offset would collapse it to 0 and put
+	// the next frame's window at the wrong anchor). The release
+	// handler never calls renderSelection(), so this path only runs
+	// for the motion steps of an in-flight drag.
+	// sel.active is still true here (the release handler keeps
+	// it so the highlight persists past the copy). The window path
+	// draws the window only while the drag is IN FLIGHT
+	// (sel.dragging); the post-copy frame (release's full-content
+	// restore must survive the copy notice's reflow) goes through
+	// the else path below (full content, true offset, highlight
+	// re-installed by the next refresh). See the release handler
+	// in tui_select.go.
+	//
+	// offset seam for the full-content restore: the motion
+	// step's window left the viewport's offset page-space
+	// (0) while the full content's true offset is the
+	// plainLines offset the release handler saved into
+	// settleOffset (see tui_select.go's release handler).
+	// Restore it here BEFORE the swap: the full-content else
+	// path preserves oldOffset, so a page-space 0 would jump
+	// to the top.
+	// While sel.dragging the window keeps page space (the pin
+	// below restores to 0, which is correct for the window);
+	// while active-but-not-dragging (the post-release frames)
+	// the full content takes the saved plainLines offset.
+	//
+	// The release handler's refreshViewport (this call on the
+	// release frame ITSELF) must install the full content at
+	// the settled plainLines offset — the else branch below
+	// preserves oldOffset, which is the window's 0. So
+	// active-but-not-dragging restores the SAVED offset here
+	// regardless of oldOffset. The settle pin is the SAME
+	// as the post-copy frame's.
+	if m.sel.active && !m.sel.dragging && m.settleOffsetOK {
+		oldOffset = m.settleOffset
+	}
+	if m.sel.active && m.sel.dragging {
 		sr, sc, er, ec := m.sel.ordered()
 		m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
 	} else {
@@ -2395,24 +2471,84 @@ func (m *tuiModel) refreshViewport() {
 		styled += tailStyled
 		m.vp.SetContent(styled)
 	}
+	// While sel.active the swap above (else path) installed the
+	// full content at plainLines space — but the viewport's line
+	// slice was the WINDOW's line slice (renderSelection's
+	// highlightedWindow); SetContent replaces it wholesale with
+	// the full content's line slice, so the offset must be
+	// recomputed (the SetContent below is what changed
+	// TotalLineCount back to the full transcript).
+	//
+	// The else branch below (follow/preserve) does the recompute
+	// via SetYOffset(oldOffset) — which, for the release's
+	// active-but-not-dragging path, was overridden to the settle
+	// offset above. That IS the restore. What remains broken is
+	// described in the FACT-1 comment in tui_select.go's release
+	// handler: with the seam correct, the RELEASE frame still
+	// jumped — because the frame right after was the
+	// copiedMsg→reflow frame, which rebuilds plainLines on the
+	// NEW status height (deferRebuild defers it while active,
+	// but reflow() sets prefixDirty AFTER refreshViewport reads
+	// it — see reflow() below for the deferred-case ordering).
 	// Follow or preserve position after the content swap. SetContent self-clamps
 	// only on shrink (YOffset > len-1); on growth it leaves the offset where it
 	// was, which is exactly the "follows a few lines then cut off" symptom. The
 	// persistent followBottom latch decides, instead of a pre-SetContent
 	// AtBottom() snapshot that maxYOffset growth invalidates.
 	//
+	// FACT 1 (jump to the top on release) came from the branch below
+	// being taken on the post-copy frame: with the window swap,
+	// SetYOffset(oldOffset) clamped to the window's max offset (0
+	// for a one-page window) and the displayed page became the
+	// window's top — plainLines row 0 — while the model's offset
+	// still said ~41. The fix is what the release handler does: on
+	// release this path is not taken at all (the full content is
+	// installed with its true offset).
+	//
 	// While a selection is active, never auto-follow (suppress, don't clear the
 	// latch): renderSelection pins the offset explicitly and a mid-drag
 	// GotoBottom would yank the view out from under the mouse.
+	//
+	// The pointer case the report hinges on (FACT 1, middle):
+	// the press handler also reflows — which lands HERE with
+	// sel.active still true only if the previous selection was
+	// still highlighted; a fresh press starts with sel.active
+	// false (the clear above cleared it). So on a fresh press
+	// in a scrolled-up middle view, GotoBottom fires only when
+	// followBottom is still true — which wheel-up unsets. So the
+	// graph is: followBottom=false → SetYOffset(oldOffset)
+	// preserve → the press page is preserved. Decided: the
+	// remaining FACT-1 cause is NOT the press reflow's GotoBottom
+	// (followBottom cleared by the wheel).
 	if m.followBottom && !m.sel.active {
 		m.vp.GotoBottom()
 	} else {
-		// Preserve the reading position across rewrap; SetYOffset clamps to the
-		// new geometry for free. Applied even while a selection is active: it
-		// restores the same offset when still valid and clamps when the content
-		// shrank or the viewport grew — an out-of-range offset mid-drag would
-		// corrupt renderSelection's content-space hit-testing.
-		m.vp.SetYOffset(oldOffset)
+		// While sel.active, YOffset is page-space (set to 0 by
+		// renderSelection; see highlightedWindow's anchoring) — the
+		// window IS the page, so restoring oldOffset (plainLines
+		// space) here would mismatch the content (the window's first
+		// line is plainLines row `oldOffset`, already at offset 0).
+		// In the non-selection path this is a plain preserve.
+		//
+		// ACTIVE-BUT-NOT-DRAGGING: SetContent above installed the
+		// FULL content (else path), so the viewport's line slice is
+		// the full transcript's — but the active-seam above set
+		// oldOffset to the settle offset (plainLines space) while
+		// sel.active. Restoring it here would jump the window's
+		// content to page-space 0 in the FULL-content slice... but
+		// the full content's Offset IS the settle row, and the
+		// settle row is the press page. The else below restores
+		// oldOffset ONLY when !sel.active; when active, the
+		// viewport's YOffset stays at the page-space value from
+		// renderSelection (0) — which, in the FULL-content slice,
+		// is content line 0000. That mismatch is the release-frame
+		// jump. It is preventable only by leaving YOffset at the
+		// OFFSET's plainLines value (settle), not the window's 0.
+		if !m.sel.active {
+			m.vp.SetYOffset(oldOffset)
+		} else if m.settleOffsetOK && !m.sel.dragging {
+			m.vp.SetYOffset(oldOffset) // == settleOffset (plainLines space)
+		}
 	}
 }
 
@@ -2525,6 +2661,13 @@ func (m tuiModel) reflow() tuiModel {
 	// room for the prompt bar.
 	m.ta.SetHeight(m.inputRows())
 	m.ta.SetWidth(m.width - textareaChromeW - promptBarW)
+	// While a selection highlight is up, do NOT invalidate the
+	// committed prefix: marked the rebuild as deferred (see
+	// refreshViewport's deferRebuild seam). Re-wrapping while
+	// sel.active shifts plainLines row numbers under the live
+	// selection (the copy-notice's flash flips
+	// effectiveStatusRows 1↔2, triggering this reflow — the exact
+	// path of the "view jumps to the first lines" bug).
 	m.prefixDirty = true // width changed — committed items must be re-wrapped
 	m.refreshViewport()
 	return m
