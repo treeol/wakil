@@ -559,7 +559,22 @@ type tuiModel struct {
 	// re-wrap was deferred (resizeReflowMsg armed). The resize frame
 	// itself keeps the old-width rendering so it costs ~0; the tick
 	// performs the full re-wrap once, coalescing a resize burst.
+	// Any refreshViewport while pending skips the prefix rebuild so
+	// the expensive re-render cannot slip back into the resize frame
+	// via a streaming/key path.
 	resizePending bool
+
+	// vpContentVer bumps at every vp.SetContent call site in this
+	// package. Together with the viewport offset/size it keys the
+	// conversation-pane render cache in view() (Part B4): a
+	// keypress re-rendered the pane (vp.View + border) for ~0.7 MB
+	// of allocations per frame although the pane only changes when
+	// content is installed or the offset moves.
+	vpContentVer int
+	// convCacheBox is heap-shared (like escapeBox): View has a
+	// value receiver, so the pane cache must live behind a pointer
+	// to survive into the next frame's model copy.
+	convCacheBox *convPaneCache
 
 	// Input history for UP/DOWN navigation (most-recent entry first).
 	// Extracted to history_model.go (WP-6.6); embedded so selector access is unchanged.
@@ -825,6 +840,12 @@ func (m tuiModel) Init() tea.Cmd {
 }
 
 func (m tuiModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// The pane render cache lives behind a pointer (View has a
+	// value receiver); create the box here so it exists before the
+	// first View and propagates via Update's return value.
+	if m.convCacheBox == nil {
+		m.convCacheBox = &convPaneCache{}
+	}
 	if checkPerf() {
 		return m.updateTimed(msg)
 	}
@@ -2477,6 +2498,7 @@ func (m *tuiModel) refreshViewport() {
 	if m.sel.active && m.sel.dragging {
 		sr, sc, er, ec := m.sel.ordered()
 		m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
+		m.vpContentVer++
 	} else {
 		styled := m.prefixStyled
 		if len(tailStyled) > 0 && len(m.prefixStyled) > 0 {
@@ -2484,6 +2506,7 @@ func (m *tuiModel) refreshViewport() {
 		}
 		styled += tailStyled
 		m.vp.SetContent(styled)
+		m.vpContentVer++
 	}
 	// While sel.active the swap above (else path) installed the
 	// full content at plainLines space — but the viewport's line
@@ -2689,6 +2712,20 @@ func (m tuiModel) reflow() tuiModel {
 	return m
 }
 
+// convPaneKey identifies a conversation-pane render: installed
+// content version, scroll offset, pane geometry, active tab (and
+// its buffer length), item count and the splash flag.
+type convPaneKey struct {
+	ver, yOff, w, h, subCur, tabBuf, nItems int
+	splash                                  bool
+}
+
+// convPaneCache is the heap-shared pane render cache (see view()).
+type convPaneCache struct {
+	key      convPaneKey
+	rendered string
+}
+
 // resizeTickInterval is how long a width change waits before the
 // deferred prefix re-wrap runs. Long enough to coalesce the burst
 // of WindowSizeMsgs a drag-resize sends, short enough that the
@@ -2710,12 +2747,6 @@ type resizeReflowMsg struct{}
 // width. While pending, any refreshViewport (streaming, addItem)
 // rebuilds the prefix early at the new width — correct; the tick
 // then finds prefixW == vp.Width and skips the duplicate rebuild.
-//
-// Do NOT gate refreshViewport on resizePending: model-level tests
-// never run the armed tick (Cmds are values), so a gate left the
-// prefix unbuilt forever and broke every refresh-after-resize
-// test (TestFollow_* / TestOutputMode*). Deferral applies only to
-// the resize frame itself, which simply does not refresh.
 func (m tuiModel) reflowResize() (tuiModel, tea.Cmd) {
 	vpW, vpH, _ := m.sizes()
 	widthChanged := m.prefixW != vpW

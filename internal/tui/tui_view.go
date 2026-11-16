@@ -9,6 +9,7 @@ import (
 
 	"github.com/treeol/wakil/internal/core/event"
 	"github.com/treeol/wakil/internal/core/sessionclient"
+	"github.com/treeol/wakil/internal/diag"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -191,7 +192,9 @@ func (m tuiModel) View() string {
 	if checkPerf() {
 		start := time.Now()
 		out := m.view()
-		perfRecord(perfSample{typ: perfMsgType(nil), viewDur: time.Since(start), bytes: len(out)})
+		dur := time.Since(start)
+		perfRecord(perfSample{typ: perfMsgType(nil), viewDur: dur, bytes: len(out)})
+		diag.Printf("tuiperf view %d bytes=%d\n", dur.Nanoseconds(), len(out))
 		return out
 	}
 	return m.view()
@@ -219,27 +222,48 @@ func (m tuiModel) view() string {
 	_ = inputOuterH // used implicitly via JoinVertical
 
 	// --- conversation pane ---
-	// When a sub tab is active render its output instead of the main viewport.
-	var convContent string
+	// Render cache (Part B4): the pane depends only on the
+	// installed viewport content (vpContentVer), the scroll
+	// offset, the pane size, and which tab/splash is showing.
+	// A keypress changes none of those, so reuse the last border
+	// render instead of paying vp.View + border (~0.7 MB of
+	// allocations per frame at 2000 messages).
+	tabBuf, nItems := 0, -1
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
-		convContent = m.renderSubTabContent(m.subTabs[m.subCur], vpW, vpH)
+		tabBuf = m.subTabs[m.subCur].buf.Len()
+	}
+	if m.items != nil {
+		nItems = len(*m.items)
+	}
+	splash := m.subCur < 0 && m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
+		m.state == stateIdle &&
+		(m.reasoning == nil || m.reasoning.Len() == 0) &&
+		(m.streaming == nil || m.streaming.Len() == 0)
+	key := convPaneKey{
+		ver: m.vpContentVer, yOff: m.vp.YOffset, w: vpW, h: vpH,
+		subCur: m.subCur, tabBuf: tabBuf, nItems: nItems, splash: splash,
+	}
+	var conv string
+	if m.convCacheBox != nil && m.convCacheBox.key == key {
+		conv = m.convCacheBox.rendered
 	} else {
-		convContent = bottomAlignViewport(m.vp.View(), vpH)
-		// Show the wakīl splash when the conversation pane is truly
-		// empty (no items, no active turn, idle state). The splash
-		// persists while the user types — it only disappears when Enter
-		// is pressed (state transitions from idle to streaming).
-		if m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
-			m.state == stateIdle &&
-			(m.reasoning == nil || m.reasoning.Len() == 0) &&
-			(m.streaming == nil || m.streaming.Len() == 0) {
+		var convContent string
+		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
+			convContent = m.renderSubTabContent(m.subTabs[m.subCur], vpW, vpH)
+		} else if splash {
 			convContent = renderSplash(vpW, vpH)
+		} else {
+			convContent = bottomAlignViewport(m.vp.View(), vpH)
+		}
+		conv = styleConvBorder.
+			Width(vpW).
+			Height(vpH).
+			Render(convContent)
+		if m.convCacheBox != nil { // created in Update; nil only for direct View calls
+			m.convCacheBox.key = key
+			m.convCacheBox.rendered = conv
 		}
 	}
-	conv := styleConvBorder.
-		Width(vpW).
-		Height(vpH).
-		Render(convContent)
 
 	// The right sidebar was removed (WP-9.1): the conversation pane is the full
 	// top row. Its former content now lives in the on-demand info panel below.

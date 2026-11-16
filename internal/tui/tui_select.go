@@ -433,6 +433,7 @@ func (m *tuiModel) renderSelection() {
 	// restores the full content at the plainLines-space offset
 	// (see the release handler).
 	m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
+	m.vpContentVer++
 	m.vp.SetYOffset(0)
 }
 
