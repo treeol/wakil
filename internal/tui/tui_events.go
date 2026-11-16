@@ -90,6 +90,18 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 			m.dotArmed = false
 		}
 		return m, cmds, true
+	case resizeReflowMsg:
+		// Deferred width-change re-wrap (Part B1): performs the
+		// full prefix re-render once, 50 ms after the last resize
+		// in a burst. Stale ticks (flag already cleared by an
+		// intervening full rebuild) are no-ops.
+		if !m.resizePending {
+			return m, cmds, true
+		}
+		m.resizePending = false
+		m.prefixDirty = true
+		m.refreshViewport()
+		return m, cmds, true
 	case refreshTickMsg:
 		// Deferred viewport refresh (throttled streaming deltas). Reject
 		// stale ticks from a prior turn (seq mismatch). If dirty, render

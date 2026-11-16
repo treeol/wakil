@@ -264,6 +264,11 @@ func TestFrameCostRegression(t *testing.T) {
 		{"stream", evt(event.KindMessageDelta, event.MessageDelta{Text: " streamed chunk"}, benchPrincipalSID), 1_581_144},
 		{"wheel", tea.MouseMsg{X: 10, Y: 10, Action: tea.MouseActionPress, Button: tea.MouseButtonWheelDown}, 1_557_169},
 		{"drag", tea.MouseMsg{X: 20, Y: 5, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft}, 53_589_096},
+		// Resize: baseline is the Part B1 target (50 ms), not a
+		// measurement — pre-fix it measured 473,636,520 ns. The
+		// deferred re-wrap makes the resize FRAME cheap; the tick
+		// performs the re-wrap once (TestResizeDeferredRewrap).
+		{"resize", tea.WindowSizeMsg{Width: 121, Height: 41}, 50_000_000},
 	}
 	for _, tc := range cases {
 		m := newBenchModel(benchCorpus(2000), 120, 40)
@@ -290,6 +295,36 @@ func TestFrameCostRegression(t *testing.T) {
 		} else {
 			t.Logf("%s: frame %d ns/op (limit %d)", tc.name, got, tc.base*maxFactor)
 		}
+	}
+}
+
+// TestResizeDeferredRewrap: a width change defers the prefix
+// re-wrap; the resizeReflowMsg tick performs it at the new width.
+func TestResizeDeferredRewrap(t *testing.T) {
+	m := newBenchModel(benchCorpus(60), 120, 40)
+	oldW := m.prefixW
+	u, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = u.(tuiModel)
+	if !m.resizePending {
+		t.Fatal("width change did not defer the re-wrap")
+	}
+	if m.prefixW != oldW {
+		t.Fatalf("prefix rebuilt synchronously on resize (prefixW %d -> %d)", oldW, m.prefixW)
+	}
+	// The frame still renders at the new size.
+	if v := m.View(); len(v) == 0 {
+		t.Fatal("resize frame empty")
+	}
+	u, _ = m.Update(resizeReflowMsg{})
+	m = u.(tuiModel)
+	if m.resizePending {
+		t.Fatal("tick did not clear resizePending")
+	}
+	if m.prefixW == oldW {
+		t.Fatal("tick did not re-wrap the prefix at the new width")
+	}
+	if v := m.View(); !strings.Contains(plain(v), "content") && !strings.Contains(plain(v), "tool result") && !strings.Contains(plain(v), "question") {
+		t.Fatalf("re-wrapped frame lost content:\n%s", plain(v))
 	}
 }
 
