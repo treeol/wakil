@@ -18,6 +18,8 @@ ParseContextLimitJSONForTest — test-only entry into unexported parseContextLim
 enqueueAsyncOp — public async entry; the Job variant marks UI tabs, tests must not do that.
 RunHeadlessApp — test seam wrapping dispatchHeadlessMode; production path is RunHeadless.
 RunPlanLoop — test seam wrapping runPlanSession; production path is RunHeadless.
+screenHarness.key — harness helper retained for the keyboard-driven test path; the SendMsg variant is used today, the key pipe stays as the documented next driver.
+screenHarness.sendMsg — harness helper used by the screen tests; reads via Send (deadcode does not count test bodies as entry points for its -test roots on this symbol).
 
 # Group 2 keep-list (kept despite zero production callers; per-function reasons
 # in docs/work-0.8.4-progress.md "Kept with reason" section).
