@@ -39,13 +39,6 @@ func newLockedBuffer() *lockedBuffer {
 	return &lockedBuffer{data: make(chan struct{}, 1)}
 }
 
-// peek returns true if the buffer is non-empty (renderer-output side).
-func (b *lockedBuffer) peek() bool {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.buf.Len() > 0
-}
-
 func (b *lockedBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	n, err := b.buf.Write(p)

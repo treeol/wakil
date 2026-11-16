@@ -648,12 +648,6 @@ func TestSelectionReleaseFreesFollow(t *testing.T) {
 	}
 }
 
-// rowsSince returns the settled frame rows since the harness's
-// last mark (the screen the user sees now): it is the correct
-// "current screen" probe for the FACT-1 assertion.
-func rowsSince(h *rawHarness) []string {
-	return h.screenLines()
-}
 
 func trunc(s string, n int) string {
 	if len(s) > n {
