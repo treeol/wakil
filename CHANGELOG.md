@@ -7,9 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.4] - 2026-11-16
+
 ### Fixed
 
-- **Per-server HTTP headers for MCP servers.** `mcp_servers[].headers` (optional map of header → value) is now set on every request by the HTTP transport — e.g. `"Authorization": "Bearer <token>"` for a protected MCP endpoint. The headers are host-gated (redirects to another host get none), validated at config load (invalid names, CR/LF values, and case-insensitive duplicates rejected), and user config wins over any header the SDK sets. Untouched: the go-sdk API, stdio transport, and any CLI surface.
+- **Release notes fall back correctly when there is no CHANGELOG section.** The release workflow now passes the notes path as a step output instead of an inline expression. `scripts/release_notes.sh` is unchanged.
+
+- **Per-server HTTP headers for MCP servers.** Add a `headers` map (`header → value`) to an HTTP MCP server to send credentials like `"Authorization": "Bearer …"` with every request. The headers go only to the configured endpoint and scheme — a redirect to another host or a downgraded scheme (https→http) gets none. See the `mcp_servers` entry in `docs/configuration.md`.
 - **`--help` shows only built-in defaults.** The help output no longer shows your config-file or environment values as "(default …)" for endpoint host, port and model; the defaults shown are now always the built-in ones. The endpoint flags are also worded neutrally ("endpoint host", "endpoint port (used with --host, default 11400)", "endpoint base URL (overrides host and port)").
 - **TUI drag no longer re-renders all of history per mouse step.** `highlightedContent` now re-styles only the visible region; frame cost at 2000 messages went from 53.6 ms to 1.3 ms (Part 2 of the 0.8.4 pass).
 - **Dragging to select no longer jumps while dragging, and the view is free after release.** The highlighted page window is anchored at the press position (previously the second mouse-motion rebuilt it as the first page of the transcript — the view jumped to the top mid-drag); the mouse wheel no longer scrolls during a drag; after release the view is immediately free (wheel scrolls, streaming follow resumes). Fixed in the 0.8.4 follow-up.
