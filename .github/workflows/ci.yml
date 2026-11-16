@@ -174,17 +174,20 @@ jobs:
           echo "notes_arg=--release-notes $RUNNER_TEMP/release-notes.md" >> "$GITHUB_OUTPUT"
 
       # Same command as release.yml, in snapshot mode: `release --snapshot
-      # --clean --skip=publish --release-notes <file>` never publishes,
-      # never signs a real release, and never uploads — it exercises the
-      # exact code path the tag workflow uses, so a broken --release-notes
-      # invocation fails here on every push instead of on the tag push.
+      # --clean --skip=publish,sign --release-notes <file>` never publishes,
+      # never signs, and never uploads — it exercises the exact code path the
+      # tag workflow uses, so a broken --release-notes invocation fails here
+      # on every push instead of on the tag push. Signing is skipped: this job
+      # installs no cosign (the release job installs it), and goreleaser runs
+      # the cosign sign step even in snapshot mode, so without --skip=sign it
+      # fails after the build with "cosign: executable file not found".
       # `build --snapshot` cannot take --release-notes (goreleaser rejects
       # unknown flag), so the CI job must use the release subcommand.
       - uses: goreleaser/goreleaser-action@a4f02ab5355a589de60d917a659ce617ed19b3de # v7.3.0
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --snapshot --clean --skip=publish ${{ steps.notes.outputs.notes_arg }}
+          args: release --snapshot --clean --skip=publish,sign ${{ steps.notes.outputs.notes_arg }}
 
   # Docker image build gate — catches bit-rot in the Dockerfiles (e.g. the
   # kvr-server git-clone step, base-image digest drift, apt repo changes)
