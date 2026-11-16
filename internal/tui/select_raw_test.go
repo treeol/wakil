@@ -361,6 +361,9 @@ func TestSelectionRawEscCancels(t *testing.T) {
 // sgrWheelUp sends a wheel-up event at x,y (b=64).
 func sgrWheelUp(x, y int) string { return fmt.Sprintf("\x1b[<%d;%d;%dM", 64, x, y) }
 
+// sgrWheelDown sends a wheel-down event at x,y (b=65).
+func sgrWheelDown(x, y int) string { return fmt.Sprintf("\x1b[<%d;%d;%dM", 65, x, y) }
+
 // --- Every-frame drag assertions (regression: user FACT 62c5edc) ---
 //
 // The release-only assertions above passed while the real program
@@ -441,6 +444,10 @@ func assertHighlightUnderPointer(t *testing.T, h *rawHarness, step string, wantF
 }
 
 func dragEveryFrame(t *testing.T, h *rawHarness, state string) {
+	dragEveryFrameFollow(t, h, state, false)
+}
+
+func dragEveryFrameFollow(t *testing.T, h *rawHarness, state string, following bool) {
 	t.Helper()
 	base := firstContentLine(h.screenGridNow().gridLines())
 	if base < 0 {
@@ -453,6 +460,18 @@ func dragEveryFrame(t *testing.T, h *rawHarness, state string) {
 	assertHighlightUnderPointer(t, h, state+" motion2", base)
 	dragFrame(t, h, state+" motion3", sgrLeftMotion(25, 6), base)
 	assertHighlightUnderPointer(t, h, state+" motion3", base)
+	if following {
+		// Release clears the selection; a view that was
+		// following legitimately moves to the (grown) tail on the
+		// settled frame — assert only that it never goes ABOVE
+		// the press page (no snap-back, no top jump).
+		h.in.WriteString(sgrLeftRelease(25, 6))
+		h.settle()
+		if got := firstContentLine(h.screenGridNow().gridLines()); got < base {
+			t.Fatalf("%s release: first visible = %d, want >= %d (press page)", state, got, base)
+		}
+		return
+	}
 	dragFrame(t, h, state+" release", sgrLeftRelease(25, 6), base)
 }
 
@@ -496,7 +515,7 @@ func TestSelectionDragEveryFrameOneScreenAboveBottom(t *testing.T) {
 
 func TestSelectionDragEveryFrameBottomFollow(t *testing.T) {
 	h := newRawHarness(t, 200)
-	dragEveryFrame(t, h, "bottom-follow")
+	dragEveryFrameFollow(t, h, "bottom-follow", true)
 }
 
 func TestSelectionDragEveryFrameStreaming(t *testing.T) {
@@ -521,7 +540,14 @@ func TestSelectionDragEveryFrameStreaming(t *testing.T) {
 	}
 	dragFrame(t, h, "streaming motion2", sgrLeftMotion(20, 4), base)
 	assertHighlightUnderPointer(t, h, "streaming motion2", base)
-	dragFrame(t, h, "streaming release", sgrLeftRelease(20, 4), base)
+	// Release frees the view; the (following) view may settle on
+	// the grown tail — assert only that it never goes above the
+	// press page.
+	h.in.WriteString(sgrLeftRelease(20, 4))
+	h.settle()
+	if got := firstContentLine(h.screenGridNow().gridLines()); got < base {
+		t.Fatalf("streaming release: first visible = %d, want >= %d (press page)", got, base)
+	}
 }
 
 // TestOSC52EscapeCoalesce demonstrates Part B5 in the screen
@@ -559,6 +585,67 @@ func TestOSC52EscapeCanBeCoalescedAway(t *testing.T) {
 		t.Skip("the flush won the race this run; the drop was not demonstrated (retry on a quieter host)")
 	}
 	// Drop demonstrated: the escape never reached the wire.
+}
+
+// TestSelectionWheelMidDrag: a wheel step between press and
+// release must not scroll the drag window (the window is one page
+// and always AtBottom, so wheel fall-through used to corrupt
+// followBottom and the offset). Raw SGR bytes, every frame checked.
+func TestSelectionWheelMidDrag(t *testing.T) {
+	h := newRawHarness(t, 200)
+	for i := 0; i < 6; i++ {
+		h.in.WriteString(sgrWheelUp(5, 20))
+		h.settle()
+	}
+	// One screen above the bottom (a fixed number of wheel-ups;
+	// extra wheel-ups clamp at the top, where the drag is tested
+	// separately). Base must be off the first page.
+	base := firstContentLine(h.screenGridNow().gridLines())
+	if base <= 0 {
+		t.Fatalf("did not scroll to the middle (first visible = %d)", base)
+	}
+	dragFrame(t, h, "wheel press", sgrLeftPress(3, 2), base)
+	dragFrame(t, h, "wheel mid-drag", sgrWheelUp(5, 20), base)
+	dragFrame(t, h, "wheel motion1", sgrLeftMotion(10, 2), base)
+	dragFrame(t, h, "wheel motion2", sgrWheelDown(5, 20), base)
+	dragFrame(t, h, "wheel release", sgrLeftRelease(10, 2), base)
+	// View free again: wheel scrolls (no snap-back to the release
+	// page is possible — the selection cleared at release).
+	mark := h.markOut()
+	h.in.WriteString(sgrWheelUp(5, 20))
+	h.settle()
+	if frame := h.rawBytesSettledSince(mark); strings.Contains(frame, "content line 0000") {
+		t.Fatal("post-release wheel jumped to the first lines")
+	}
+}
+
+// TestSelectionReleaseFreesFollow: after release, streaming follow
+// resumes when the view was following (Part A §3): the settled
+// screen gains the new tail text instead of staying pinned at the
+// release page.
+func TestSelectionReleaseFreesFollow(t *testing.T) {
+	h := newRawHarness(t, 200)
+	h.p.Send(evt(event.KindTurnStarted, event.TurnStarted{TurnID: "trnF"}, h.m.sessionID))
+	h.settle()
+	h.in.WriteString(sgrLeftPress(3, 2))
+	h.settle()
+	h.in.WriteString(sgrLeftMotion(20, 4))
+	h.settle()
+	h.in.WriteString(sgrLeftRelease(20, 4))
+	h.settle()
+	want := "tail-follows-now"
+	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: want}, h.m.sessionID))
+	h.settle()
+	var grown bool
+	for i := 0; i < 5 && !grown; i++ {
+		h.settle()
+		if screenContainsLine(h.screenGridNow().gridLines(), want) {
+			grown = true
+		}
+	}
+	if !grown {
+		t.Fatal("streaming follow did not resume after release (tail text not visible)")
+	}
 }
 
 // rowsSince returns the settled frame rows since the harness's

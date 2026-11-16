@@ -228,10 +228,11 @@ func (m tuiModel) view() string {
 	// A keypress changes none of those, so reuse the last border
 	// render instead of paying vp.View + border (~0.7 MB of
 	// allocations per frame at 2000 messages).
-	tabBuf, nItems := 0, -1
+	var tabBuf *strings.Builder
 	if m.subCur >= 0 && m.subCur < len(m.subTabs) {
-		tabBuf = m.subTabs[m.subCur].buf.Len()
+		tabBuf = m.subTabs[m.subCur].buf
 	}
+	nItems := -1
 	if m.items != nil {
 		nItems = len(*m.items)
 	}
@@ -241,7 +242,7 @@ func (m tuiModel) view() string {
 		(m.streaming == nil || m.streaming.Len() == 0)
 	key := convPaneKey{
 		ver: m.vpContentVer, yOff: m.vp.YOffset, w: vpW, h: vpH,
-		subCur: m.subCur, tabBuf: tabBuf, nItems: nItems, splash: splash,
+		tabBuf: tabBuf, nItems: nItems, splash: splash,
 	}
 	var conv string
 	if m.convCacheBox != nil && m.convCacheBox.key == key {

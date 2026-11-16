@@ -381,7 +381,7 @@ func TestResizeDeferredRewrap(t *testing.T) {
 	if v := m.View(); len(v) == 0 {
 		t.Fatal("resize frame empty")
 	}
-	u, _ = m.Update(resizeReflowMsg{})
+	u, _ = m.Update(resizeReflowMsg{seq: m.resizeSeq})
 	m = u.(tuiModel)
 	if m.resizePending {
 		t.Fatal("tick did not clear resizePending")

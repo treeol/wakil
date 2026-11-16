@@ -556,13 +556,14 @@ type tuiModel struct {
 	refreshSeq int
 
 	// resizePending: a width change arrived and the committed-prefix
-	// re-wrap was deferred (resizeReflowMsg armed). The resize frame
-	// itself keeps the old-width rendering so it costs ~0; the tick
-	// performs the full re-wrap once, coalescing a resize burst.
-	// Any refreshViewport while pending skips the prefix rebuild so
-	// the expensive re-render cannot slip back into the resize frame
-	// via a streaming/key path.
+	// re-wrap was deferred (resizeReflowMsg armed, seq-guarded).
+	// The resize frame itself keeps the old-width rendering so it
+	// costs ~0; the tick performs the full re-wrap once, coalescing
+	// a resize burst. A refresh arriving while pending rebuilds
+	// the prefix early (correct, just not deferred) — the pending
+	// re-wrap is only an optimisation for resize bursts.
 	resizePending bool
+	resizeSeq     int // generation guard for resizeReflowMsg ticks
 
 	// vpContentVer bumps at every vp.SetContent call site in this
 	// package. Together with the viewport offset/size it keys the
@@ -2262,7 +2263,7 @@ func (m *tuiModel) refreshViewport() {
 	// the selection: sel.active goes false on KeyMsg/WindowSizeMsg
 	// and the final refresh rebuilds plainLines from scratch
 	// then.)
-	deferRebuild := m.prefixDirty && m.sel.active
+	deferRebuild := m.sel.active && (m.prefixDirty || m.prefixW != w)
 	// While sel.active, plainLines MUST NOT be rebuilt: the
 	// selection's row numbers are plainLines-relative, so a
 	// rebuild shifts them and the settle restore pins a stale
@@ -2557,7 +2558,7 @@ func (m *tuiModel) refreshViewport() {
 	// preserve → the press page is preserved. Decided: the
 	// remaining FACT-1 cause is NOT the press reflow's GotoBottom
 	// (followBottom cleared by the wheel).
-	if m.followBottom && !m.sel.active {
+	if m.followBottom && !m.sel.active && !m.sel.pressed {
 		m.vp.GotoBottom()
 	} else {
 		// While sel.active, YOffset is page-space (set to 0 by
@@ -2713,11 +2714,16 @@ func (m tuiModel) reflow() tuiModel {
 }
 
 // convPaneKey identifies a conversation-pane render: installed
-// content version, scroll offset, pane geometry, active tab (and
-// its buffer length), item count and the splash flag.
+// content version, scroll offset, pane geometry, item count and
+// the splash flag. The active sub-tab is identified by its
+// buffer POINTER (tabBuf), not its index: closing the focused
+// tab can put a different tab at the same index with an equal
+// buffer length, and index+length would serve its output from
+// the cache under the new tab (a stale pane aliasing).
 type convPaneKey struct {
-	ver, yOff, w, h, subCur, tabBuf, nItems int
-	splash                                  bool
+	ver, yOff, w, h, nItems int
+	tabBuf                  *strings.Builder
+	splash                  bool
 }
 
 // convPaneCache is the heap-shared pane render cache (see view()).
@@ -2729,11 +2735,12 @@ type convPaneCache struct {
 // resizeTickInterval is how long a width change waits before the
 // deferred prefix re-wrap runs. Long enough to coalesce the burst
 // of WindowSizeMsgs a drag-resize sends, short enough that the
-// re-wrapped frame follows promptly.
+// re-wrapped frame follows promptly. Each width change bumps
+// resizeSeq and re-arms; only the newest tick rebuilds.
 const resizeTickInterval = 50 * time.Millisecond
 
 // resizeReflowMsg performs the deferred width-change re-wrap.
-type resizeReflowMsg struct{}
+type resizeReflowMsg struct{ seq int }
 
 // reflowResize handles a WindowSizeMsg. A height-only change
 // reflows immediately (no re-wrap needed: the prefix caches are
@@ -2750,7 +2757,10 @@ type resizeReflowMsg struct{}
 func (m tuiModel) reflowResize() (tuiModel, tea.Cmd) {
 	vpW, vpH, _ := m.sizes()
 	widthChanged := m.prefixW != vpW
-	if !widthChanged {
+	// prefixW == 0 means the prefix was never built (first size on
+	// a resumed session): nothing to defer — reflow immediately so
+	// the first frame has content instead of waiting for a tick.
+	if !widthChanged || m.prefixW == 0 {
 		return m.reflow(), nil
 	}
 	// Geometry only: vp dims + textarea. No refreshViewport here —
@@ -2759,13 +2769,11 @@ func (m tuiModel) reflowResize() (tuiModel, tea.Cmd) {
 	m.vp.Height = vpH
 	m.ta.SetHeight(m.inputRows())
 	m.ta.SetWidth(m.width - textareaChromeW - promptBarW)
-	wasPending := m.resizePending
 	m.resizePending = true
 	m.prefixDirty = true // the tick rebuilds; early refreshes rebuild too
-	if wasPending {
-		return m, nil // tick already armed
-	}
-	return m, tea.Tick(resizeTickInterval, func(time.Time) tea.Msg { return resizeReflowMsg{} })
+	m.resizeSeq++
+	seq := m.resizeSeq
+	return m, tea.Tick(resizeTickInterval, func(time.Time) tea.Msg { return resizeReflowMsg{seq: seq} })
 }
 
 // reflowIfStatusHeightChanged reflows only when the status zone's row count

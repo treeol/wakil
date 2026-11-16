@@ -93,10 +93,10 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case resizeReflowMsg:
 		// Deferred width-change re-wrap (Part B1): performs the
 		// full prefix re-render once, 50 ms after the last resize
-		// in a burst. Stale ticks (flag already cleared) are no-ops,
-		// as is a tick whose prefix an early refresh already
-		// rebuilt at the current width (prefixW == vp.Width).
-		if !m.resizePending {
+		// in a burst. Stale ticks (superseded seq, or flag already
+		// cleared) are no-ops, as is a tick whose prefix an early
+		// refresh already rebuilt at the current width.
+		if !m.resizePending || lm.seq != m.resizeSeq {
 			return m, cmds, true
 		}
 		m.resizePending = false

@@ -76,10 +76,22 @@ func (s selection) ordered() (sr, sc, er, ec int) {
 // event was consumed (and so must not be forwarded to the viewport/textarea),
 // and an optional command (the clipboard copy on drag-release).
 //
-// Only the left button drives selection; wheel events fall through so the
-// viewport keeps scrolling.
+// Only the left button drives selection. Wheel events fall through
+// so the viewport keeps scrolling — EXCEPT around a selection:
+// mid-drag (sel.pressed) the wheel would scroll a 1-page window
+// (always AtBottom) and corrupt followBottom/offset; post-release
+// (sel.active) a wheel scroll must clear the selection, or the
+// next refresh's settle-restore snaps the view back to the
+// release page. Both are pinned by raw-input tests.
 func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 	if tea.MouseEvent(msg).IsWheel() {
+		if m.sel.pressed {
+			return m, true, nil // swallow: the drag owns the view until release
+		}
+		if m.sel.active {
+			m.sel = selection{}
+			m.settleOffsetOK = false
+		}
 		return m, false, nil
 	}
 
@@ -216,8 +228,11 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// Record the anchor but do NOT render a highlight yet. This prevents
 		// a plain click from replacing styled content with the ANSI-stripped
 		// plainLines. The highlight activates only on the first real drag
-		// (motion to a different cell).
-		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col, pressYOffset: m.vp.YOffset, windowLo: -1}
+		// (motion to a different cell). windowLo is pinned AT PRESS (not
+		// the first motion): a stream tick between press and motion can
+		// move YOffset (GotoBottom while merely pressed), and the anchor
+		// must stay where the user pressed.
+		m.sel = selection{pressed: true, anchorRow: row, anchorCol: col, headRow: row, headCol: col, pressYOffset: m.vp.YOffset, windowLo: m.vp.YOffset}
 		m.settleOffsetOK = false // a fresh drag re-pins the settle offset at its release
 		return m, true, nil
 
@@ -234,12 +249,11 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 			return m, true, nil
 		}
 		if !m.sel.active {
-			// FIRST motion: the viewport offset is still the
-			// plainLines-space offset from the press. Capture it
-			// as the permanent window anchor before renderSelection
-			// switches the viewport to page space. Later motions
-			// must not re-derive it (they would read 0).
-			m.sel.windowLo = m.vp.YOffset
+			// First motion: windowLo was pinned at press; keep it
+			// (re-deriving it here would read the page-space
+			// offset left by an earlier renderSelection, or a
+			// stream-moved offset, and the window would anchor
+			// somewhere the user is not looking).
 			if m.sel.windowLo < 0 {
 				m.sel.windowLo = 0
 			}
@@ -350,62 +364,25 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 		// flip reflow is suppressed while active in refreshViewport
 		// so the rows the selection was computed against stay
 		// fixed through the copy notice frame.
-		m.sel.pressed = false
-		m.sel.dragging = false
-		// Pin the settle offset: the press page's offset in
-		// plainLines space (pressYOffset, recorded at press).
-		// refreshViewport's active-but-not-dragging seam restores
-		// THIS on the release frame and the copy frame alike,
-		// instead of the window's page-space 0.
+		// The copy text is computed above; the drag is over. Clear
+		// the selection NOW so the view is free immediately:
+		// keeping sel.active (the old behaviour) also pinned
+		// settleOffset — the next refresh restored the release
+		// page even after the user scrolled away, and follow
+		// stayed suppressed ("view stuck" from the Mashūra
+		// review). The release frame still restores the press page
+		// via the settle seam before the clear.
 		m.settleOffset = m.sel.pressYOffset
 		m.settleOffsetOK = true
-		m.refreshViewport()
+		m.sel.pressed = false
+		m.sel.dragging = false
+		m.refreshViewport() // restores the press page (settle seam)
+		m.sel = selection{}
+		m.settleOffsetOK = false
 		return m, true, m.copyToClipboard(text)
 	}
 	return m, false, nil
 }
-
-// renderSelectionOnRelease re-renders the highlight page for the
-// just-copied selection WITHOUT touching the viewport offset: the
-// copy is the last act of the drag, and the next refreshViewport
-// restores the full-content offset. This keeps the just-copied
-// highlight visible for one frame and then yields control; the
-// offset on release is the plainLines-space offset the user was
-// looking at when they released.
-//
-// (Dead code — the release handler no longer calls renderSelection()
-// or this function; see the release handler's comment for why the
-// window is not swapped at release time. Kept because the shadowing
-// of the window at release is a different mechanism from the
-// per-motion-step window, and the next change will make the
-// invariant explicit. If renderSelectionOnRelease is wired back in,
-// its window anchor must match the viewport's CURRENT YOffset, and
-// the offset left by the release path must stay plainLines-space.)
-func (m *tuiModel) renderSelectionOnRelease() {
-	sr, sc, er, ec := m.sel.ordered()
-	m.vp.SetContent(m.highlightedWindow(sr, sc, er, ec))
-	// Do NOT call SetYOffset here: the highlight page is rendered
-	// at window position 0 by construction (see the window
-	// anchoring in highlightedWindow — its `lo` is the viewport's
-	// YOffset at window time, so the returned content's first line
-	// is the plainLines row the user was on). Setting the offset
-	// here (in either space) is what put the "top jump" on the
-	// post-release frame.
-}
-
-// plainLinesOffsetNow derives the model's plainLines-space offset
-// from the viewport's current content. While sel.active the
-// viewport shows the highlightedWindow built from the window
-// anchor (lo = the viewport's YOffset at window time, in
-// plainLines space); the window's first line IS that plainLines
-// row. The release handler pins m.settleOffset to lo BEFORE the
-// window restore so the post-release full-content restore
-// (refreshViewport's active-but-not-dragging seam) anchors the
-// same page the user released on.
-//
-// This helper is not used; the release handler saves lo directly
-// (see the release handler).
-func (m tuiModel) plainLinesOffsetNow() int { return 0 }
 
 // renderSelection re-overlays the highlight on the existing plainLines without
 // rebuilding the styled transcript, and pins the scroll offset so a drag never
