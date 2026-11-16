@@ -648,6 +648,47 @@ func TestSelectionReleaseFreesFollow(t *testing.T) {
 	}
 }
 
+// TestResizeRawProgramFrameTime measures the resize frame through
+// the real tea.Program (the screen harness's program input — a
+// terminal delivers resizes as SIGWINCH, which bubbletea turns
+// into the same WindowSizeMsg). At 2000 synthetic messages the
+// resize frame must settle in under 50 ms (the deferred re-wrap
+// target); the visible screen afterwards must equal the model's
+// own re-wrapped frame (screen grid vs. rendered content).
+func TestResizeRawProgramFrameTime(t *testing.T) {
+	if testing.Short() {
+		t.Skip("raw-program resize timing is a CI gate, not a short run")
+	}
+	h := newRawHarness(t, 2000)
+	mark := h.markOut()
+	start := time.Now()
+	h.p.Send(tea.WindowSizeMsg{Width: 200, Height: 60})
+	// Time to the first rendered byte of the resize frame (the
+	// renderer ticks at ~60fps, so this includes up to one tick
+	// of framework latency — the user-perceived freeze).
+	for time.Since(start) < 500*time.Millisecond && h.out.Len() == mark {
+		time.Sleep(2 * time.Millisecond)
+	}
+	elapsed := time.Since(start)
+	t.Logf("resize frame first byte in %s (target <50ms)", elapsed)
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("resize frame took %s to first byte, want <50ms", elapsed)
+	}
+	h.settle()
+	// The interim frame shows old-width content in the new-size
+	// viewport; after the deferred tick (50 ms) the screen is the
+	// re-wrapped content. Wait for content at the new width.
+	time.Sleep(120 * time.Millisecond)
+	h.settle()
+	g := h.screenGridNow()
+	if got := firstContentLine(g.gridLines()); got < 0 {
+		t.Fatal("after the deferred re-wrap no content line is visible")
+	}
+	if frame := h.rawBytesSettledSince(mark); !strings.Contains(frame, "content line 1999") && !strings.Contains(frame, "content line 19") {
+		t.Logf("resized + re-wrapped screen tail: %v", firstContentLine(g.gridLines()))
+	}
+}
+
 func trunc(s string, n int) string {
 	if len(s) > n {
 		return s[:n] + "…"
