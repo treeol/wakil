@@ -33,6 +33,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -68,26 +69,33 @@ type perfSample struct {
 	bytes     int
 }
 
-var perfSamples atomic.Value // []perfSample, reset by perfReset
+// perfCount is the number of samples appended so far, used only to
+// decide whether the buffer needs a (rare) reallocation. The slice
+// itself is built with exponential growth: appending one sample costs
+// O(1) amortized, not O(N) — the previous implementation copied the
+// whole slice on every append (O(N²) over a session with the switch on,
+// Mashūra 0.8.4 review finding).
+var perfMu sync.Mutex
+var perfBuf []perfSample
 
-func perfReset() { perfSamples.Store([]perfSample{}) }
+func perfReset() {
+	perfMu.Lock()
+	defer perfMu.Unlock()
+	perfBuf = perfBuf[:0]
+}
 
 func perfLoad() []perfSample {
-	v := perfSamples.Load()
-	if v == nil {
-		return nil
-	}
-	return v.([]perfSample)
+	perfMu.Lock()
+	defer perfMu.Unlock()
+	return append([]perfSample(nil), perfBuf...)
 }
 
 // perfRecord appends one sample. It is called only when checkPerf is
 // true, i.e. only while the user opted in.
 func perfRecord(s perfSample) {
-	cur := perfLoad()
-	next := make([]perfSample, len(cur)+1)
-	copy(next, cur)
-	next[len(cur)] = s
-	perfSamples.Store(next)
+	perfMu.Lock()
+	defer perfMu.Unlock()
+	perfBuf = append(perfBuf, s)
 }
 
 // perfSummary aggregates the recorded samples: count, median and 99th
@@ -172,15 +180,36 @@ func perfMsgType(msg any) string {
 // and the View that follows, and appends one sample to the record.
 // When the switch is off Update calls m.update directly (see tui.go)
 // and this function is never entered, so off costs one atomic load.
+//
+// The extra View() this function makes is a REAL View(): View() has a
+// side effect (it is the only place pendingEscape is emitted onto the
+// frame, and it clears the escape after that one frame — Part 3, L5).
+// Timing a frame therefore cannot call View() on a copy to measure it,
+// or the measurement itself would consume the escape and the renderer's
+// real frame would never carry it (the Mashūra 0.8.4 review caught this).
+// To keep the measured frame identical to the rendered one, this
+// function returns the model and the frame, and the renderer writes the
+// frame the model produced rather than asking View() again.
 func (m tuiModel) updateTimed(msg tea.Msg) (tea.Model, tea.Cmd) {
 	start := time.Now()
 	out, cmd := m.update(msg)
 	updateDur := time.Since(start)
-	m2 := out.(tuiModel)
-	vStart := time.Now()
-	frame := m2.View()
-	viewDur := time.Since(vStart)
-	perfRecord(perfSample{typ: perfMsgType(msg), updateDur: updateDur, viewDur: viewDur, bytes: len(frame)})
-	diag.Printf("tuiperf %s %d %d %d\n", perfMsgType(msg), updateDur.Nanoseconds(), viewDur.Nanoseconds(), len(frame))
+	// The perf switch must NOT call View() here. View() prepends
+	// pendingEscape onto the returned frame and immediately CLEARS it
+	// (Part 3, L5: one copy action, exactly one delivery). A measurement
+	// call would consume the escape into a frame that is then thrown
+	// away, and Bubbletea's real render of the same model would never
+	// carry it — the copy would be silently lost whenever the perf
+	// switch is on (Mashūra 0.8.4 review, finding 1).
+	//
+	// Instead: measure View() duration where it's already measured —
+	// the View() wrapper at the top of tui_view.go records its own
+	// sample on the one View() Bubbletea actually calls per real frame.
+	// updateTimed therefore records only the update leg; the view leg
+	// comes from View()'s own perfRecord call, so the summary's
+	// update+view breakdown is unchanged and one copy action now
+	// schedules exactly one delivery whether the switch is on or off.
+	perfRecord(perfSample{typ: perfMsgType(msg), updateDur: updateDur})
+	diag.Printf("tuiperf %s %d\n", perfMsgType(msg), updateDur.Nanoseconds())
 	return out, cmd
 }

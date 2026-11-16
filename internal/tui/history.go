@@ -72,14 +72,18 @@ func searchHistory(history []string, query string, startIdx int) int {
 // It is a best-effort write: errors are silently ignored.
 //
 // History lines are stored ONE ENTRY PER LINE, and multi-line entries are
-// flattened to a single line (newlines and tabs replaced by spaces) so the
-// file stays a plain line list. Prompts that are multi-line in the
-// textarea therefore appear in history as their single-line rendering —
-// spacing-at-the-edges and interior line breaks are not preserved on
-// recall (the textarea's first line is shown, so the recall matches what
-// the user typed at a glance).
+// flattened to a single line (ONLY newlines/tabs are replaced by spaces —
+// the rest of the line is preserved exactly, including intentional double
+// spaces and indented code: strings.Fields would collapse all whitespace
+// runs and corrupt single-line entries, Mashūra 0.8.4 review finding 5).
+// Prompts that are multi-line in the textarea therefore appear in history
+// as their single-line rendering — interior line breaks are not preserved
+// on recall (the textarea's first line is shown, so the recall matches
+// what the user typed at a glance).
 func appendHistory(entry string) {
-	entry = strings.Join(strings.Fields(entry), " ")
+	entry = strings.ReplaceAll(entry, "\r", " ")
+	entry = strings.ReplaceAll(entry, "\n", " ")
+	entry = strings.ReplaceAll(entry, "\t", " ")
 	path := historyPath()
 	if path == "" {
 		return

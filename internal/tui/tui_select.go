@@ -220,6 +220,22 @@ func (m tuiModel) handleMouse(msg tea.MouseMsg) (tuiModel, bool, tea.Cmd) {
 // rebuilding the styled transcript, and pins the scroll offset so a drag never
 // jumps the view. Used for the fast press/motion/release path; refreshViewport
 // handles the cases where the underlying content actually changed.
+//
+// Structure note (Part 3 / Mashūra 0.8.4 review): `highlightedWindow` returns
+// the visible page only (lo..hi, ≤ vpH lines). `SetContent(that page)`
+// replaces the viewport's line slice with that one page, and the Viewport's
+// SetYOffset clamps the restored offset to `maxYOffset() = len(lines)-
+// Height+frame` — which for a one-page content is 0. While the drag is in
+// flight, the viewport's TotalLineCount is therefore one page, not the full
+// transcript: the visible page is correctly highlighted (that is what the
+// user sees), but the selection's row numbers are in plainLines space while
+// the viewport's YOffset is in page space. On release, `refreshViewport`
+// rebuilds the full content and the coordinates are re-derived from
+// `mouseToContent` against the restored offset. That is why the copy is
+// correct even though the mid-drag viewport's TotalLineCount is not the
+// transcript's: coordinates are never read from the page's YOffset during
+// the drag (mouseToContent clamps against YOffset+Height, and the stored
+// sel coordinates are fixed by the caller at press/motion time).
 func (m *tuiModel) renderSelection() {
 	off := m.vp.YOffset
 	sr, sc, er, ec := m.sel.ordered()
@@ -389,10 +405,24 @@ func (m tuiModel) rowToNoBox(row int) int {
 // already hold that content — since both mirrors are the same wrapped
 // content, a no-box line at the same index that carries visible text
 // proves the plainLines row is content (a soft-wrapped interior row),
-// not a border. The walk below uses that test to bound the mapping and
-// corrects the classic failure: a wrapped interior row that happens to
-// start and end with │ being counted as a border is impossible once the
-// no-box mirror is consulted.
+// not a border.
+//
+// Registering the fix honestly (Mashūra 0.8.4 review, finding 2): the
+// pair walk dead-codes to the plain old walk whenever a real turn-box
+// border exists anywhere in the mirrors, because `hasTrueBorder`
+// short-circuits in that case. So `rowToNoBoxPair` only ever diverges
+// from `rowToNoBox` in a no-box-at-all session — where the old walk was
+// already correct. The pair walk is therefore a guard for the
+// mirrors-drifted case, not a fix for interior false-border rows in a
+// session that has real boxes. The interior false-border class was the
+// original L6 candidate; no failing reproduction of it exists on a
+// running program (the walkthrough confirmed the class by reasoning,
+// and the narrowing of `isBoxBorderLine` in a prior change already
+// excludes the blank and separator shapes that were the historical
+// offenders). If a future repro shows an interior row that starts/ends
+// with │ being skipped, the fix belongs in `isBoxBorderLine`'s shape
+// test or in comparing `plainLines[i]` against `plainLinesNoBox[i]`
+// for content rows.
 //
 // In practice a real border row in plainLines is paired with an EMPTY or
 // border row in plainLinesNoBox (the no-box mirror strips boxes); a
@@ -405,8 +435,7 @@ func (m tuiModel) rowToNoBoxPair(row int) int {
 	}
 	// Evidence guard: if every paired border candidate is paired with a
 	// content row, the "borders" are in fact content and the mapping must
-	// NOT skip them. Count them; if there is at least one border row
-	// whose no-box partner is empty/border-type, the walk stands.
+	// NOT skip them.
 	hasTrueBorder := false
 	for i := range m.plainLines {
 		if !isBoxBorderLine(strings.TrimSpace(m.plainLines[i])) {
@@ -420,12 +449,7 @@ func (m tuiModel) rowToNoBoxPair(row int) int {
 	}
 	if !hasTrueBorder {
 		// No true border anywhere: the walk must not have skipped.
-		for i := 0; i < row && i < len(m.plainLines); i++ {
-			// no skip
-			_ = i
-		}
-		// Fall through to the corrected walk below, which counts a row
-		// as border only when its no-box partner cannot be that content.
+		// (This branch is the corrected walk; see the doc comment.)
 		noBoxIdx := 0
 		for i := 0; i < row && i < len(m.plainLines); i++ {
 			if !m.isTrueBorderPair(i) {

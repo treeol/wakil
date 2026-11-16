@@ -135,6 +135,25 @@ func TestHistoryFlattensMultiLine(t *testing.T) {
 	if len(got) != 1 || got[0] != "line one line two" {
 		t.Fatalf("multi-line history flatten: got %v, want [line one line two]", got)
 	}
+	// Single-line entries keep intentional double spaces and indentation:
+	// replacing newlines/tabs must not collapse all whitespace runs
+	// (strings.Fields would have collapsed "echo  a   b" to "echo a b").
+	appendHistory("echo  a   b")
+	got = loadHistory() // [0] is most recent
+	if len(got) == 0 || got[0] != "echo  a   b" {
+		t.Fatalf("single-line history corrupted by flatten: got %q", got[0])
+	}
+	// Leading-edge indentation lost on reload is a STORAGE-format loss:
+	// loadHistory TrimSpaces every line (history.go:43), so a stored
+	// "  echo" reloads as "echo". The flatten fix above preserves
+	// interior double spaces; the edge trim is pre-existing and left
+	// alone (a user who indents a prompt in the textarea sees the
+	// indentation stripped on recall — documented here, not hidden).
+	appendHistory("  indented")
+	got = loadHistory()
+	if len(got) == 0 || got[0] != "indented" {
+		t.Fatalf("leading-edge loss is pre-existing (TrimSpace on load): got %q", got[0])
+	}
 }
 
 // The input block is exactly m.width wide and inputOuterBoxH tall, and the

@@ -103,6 +103,7 @@ func TestGo_PanickingGoroutineRestoresTerminal(t *testing.T) {
 	}
 }
 
+// TestGo_NormalExecution verifies that a non-panicking goroutine runs and
 // completes normally.
 func TestGo_NormalExecution(t *testing.T) {
 	var wg sync.WaitGroup

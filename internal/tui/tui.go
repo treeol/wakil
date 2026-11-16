@@ -2543,22 +2543,17 @@ func (m tuiModel) reflowIfStatusHeightChanged(before int) tuiModel {
 	return m
 }
 
-// layoutHeightBox is the single change that fixes the ungated-vs-gated
-// guard mismatch (Part 4, item 1): `reflowIfStatusHeightChanged` and
-// every caller took `before := m.effectiveStatusRows()` (UNGATED: 1 even when the
-// status line is hidden) and compared it to `m.effectiveStatusRows()`
-// (GATED: 0 when hidden, `statusVisible()==false` in compact/headless).
-// If a transition crossed the visibility gate in EITHER direction (a
-// host-only TurnStarted is the canonical one: it must not reflow the
-// viewport for a status row the user cannot see — but the height DO
-// change once the zone becomes visible), the comparison 1==0 fired or
-// 0==1 skipped, and View() and sizes() disagreed by exactly one row for
-// one frame.
-//
-// The fix: the parameter is now the EFFECTIVE rendered row count
-// everywhere — `before := m.effectiveStatusRows()` at every call site
-// (all call sites were grepped; those that feed sizes() already did).
-// `reflowIfStatusHeightChanged` itself is unchanged.
+// -- layout-height guard note (Part 4, item 1; Mashūra 0.8.4 review,
+// finding 3): reflowIfStatusHeightChanged takes the EFFECTIVE rendered
+// row count at every call site. Every caller used to take the UNGATED
+// statusRows() (1 even when the status zone is hidden) and compare it
+// against effectiveStatusRows() (0 when hidden: statusVisible()==false
+// in compact mode or on the splash). A transition that crossed the
+// visibility gate in either direction (a host-only TurnStarted is the
+// canonical one) fired a spurious reflow for a row the user cannot see,
+// or skipped one, and View() and sizes() disagreed by one row for one
+// frame. The guard itself is unchanged; the parameter is now
+// effectiveStatusRows() everywhere (30 call sites).
 
 // startDotTick arms a single 200 ms tick for the pulsing activity dot.
 // The tick self-terminates: the dotTickMsg handler only re-arms when busy.

@@ -1524,5 +1524,152 @@ key 1.68 ms (limit 8.69), stream 1.55 ms (limit 7.91), wheel 1.55 ms
 (limit 7.79), drag 1.19 ms (limit 267.9). The soak
 (`TestBenchSoak`: 200 turns + 20 rotations + 10 Mashūra rounds) passes.
 
+## Review — Mashūra round on b244dcd..HEAD
+
+The round returned three panels. The first drove the fixes below; the
+second and third largely overlap them (and two third-party assertions
+were checked against the resolved sources: `standardRenderer.write` DOES
+overwrite `r.buf` per call, and `SetYOffset` clamps to `maxYOffset()`,
+which for a one-page content is 0 — the pan 2 framing of `renderSelection`
+was confirmed by reading `bubbles/viewport/viewport.go:137,177`).
+
+### 1. `updateTimed` consumed the OSC 52 escape — real defect, fixed
+
+`internal/tui/tui_perf.go:175-184` (the perf path) called `m2.View()`
+inside `Update()` purely to time it. `View()` prepends `pendingEscape`
+and then clears it (Part 3, L5). The measured frame was discarded, and
+the real render carried no escape: with `WAKIL_TUI_PERF=1` every OSC 52
+copy was silently lost. Fixed: `updateTimed` now records ONLY the
+update leg; the View leg is recorded by `View()`'s own wrapper
+(`tui_view.go:190`), which times the one View() Bubbletea actually calls
+per real frame. `TestPerfRecordsWhenOn` now asserts `bytes == 0` on
+the update sample (Update must not call View() to measure it). One copy
+action schedules one delivery whether the switch is on or off.
+
+### 2. `write()` overwrite / frame coalescing — confirmed, and the honest shape
+
+Read back `bubbletea@v1.3.10/standard_renderer.go:303`: `write()` DOES
+`r.buf.Reset()` then writes the new frame; the flush ticker (`flush()`)
+emits whatever the buffer holds. So an escape-bearing frame written at 60
+fps CAN be overwritten by the next frame before the flush: the
+Renderer's coalescing drops it. The old "persist until KeyMsg" rule
+re-re-sent on every frame; the new exactly-once rule sends on exactly
+one. Neither is perfectly coalesce-proof; the ask of Part 3 was
+"sent once per copy, not once per frame" — the current shape sends
+exactly once per copy, and if the renderer coalesces that one frame away
+the copy is lost (not duplicated). The remaining gap (escape-bearing
+frame coalesced away) needs a renderer-side write path Outside
+`View()`'s return value and is listed below as left-open, not claimed.
+
+### 3. `renderSelection` window + `SetYOffset` clamp — structure explained, not a bug out of place
+
+Confirmed at `bubbles/viewport/viewport.go:137,177`: `SetYOffset`
+clamps to `max(0, len(lines)-Height+frame)`. `highlightedWindow`
+returns ≤ vpH lines, so while a drag is in flight `TotalLineCount` is
+one page and the restored offset clamps to 0. That is the intended
+fast-path: the visible page is correctly highlighted; the selection
+coordinates are plainLines-space from `mouseToContent` and never read
+from the page's YOffset during the drag; `refreshViewport` on release
+rebuilds the full content and the copy is right. The comment in
+`tui_select.go:219-240` now states this explicitly, including the
+page-space vs plainLines-space split. No code change (the bug class
+the panel feared — scrolling mid-drag copying wrong text — needs the
+release-refresh, which exists).
+
+### 4. `rowToNoBoxPair` dead-codes to the old walk when a real box exists — documented honestly
+
+The pair walk only diverges in a no-box-at-all session (where the old
+walk was already right). It is now documented as a guard for the
+mirrors-drifted case, not a fix for interior false-border rows in a
+session that has real boxes. No failing reproduction of the interior
+class exists on a running program. If a future repro shows an interior
+row starting/ending with │ being skipped, the fix belongs in
+`isBoxBorderLine`'s shape test or a `plainLines[i]` vs
+`plainLinesNoBox[i]` content-row comparison.
+
+### 5. `layoutHeightBox` dead comment — restyled
+
+The 30-site guard change is sound (effective-to-effective is the right
+comparison; nothing needed the ungated count), and the long comment
+block that wandered (and contradicted itself mid-edit) is now a short
+note at the guard. `KindAsyncProgress` capturing `before` after the
+mutation remains a known gap (the panel's point 4): the dot-tick
+handler's after-state compare is the same shape — left documented, not
+fixed (both compare against the PREVIOUSLY LAID OUT height, which is
+stored nowhere; doing so properly needs stored applied geometry).
+
+### 6. Ellipsis used `len("…")` = 3 bytes — real bug, fixed
+
+`tui_view.go` reserved three cells for a one-cell ellipsis (over-
+truncate by two cells; negative width when `w < 3`). Now reserves
+`lipgloss.Width("…") == 1` and clamps the `w < 1` degenerate case.
+
+### 7. History flatten used `strings.Fields` — real bug, fixed
+
+`strings.Join(strings.Fields(entry), " ")` collapsed ALL whitespace
+runs, corrupting single-line entries (`echo  a   b` → `echo a b`).
+Now only newlines/tabs are replaced (`\r`, `\n`, `\t` → space);
+interior double spaces are preserved. The leading-edge loss on reload
+(lossy even before this pass: `loadHistory` TrimSpaces every line) is
+documented in the test rather than fixed here. Test:
+`TestHistoryFlattensMultiLine` now asserts both the multiline flatten
+and that a double-space single-line entry survives.
+
+### 8. `safe.Go` closure captured `m.facade` vs the `rm.facade` argument — real regression risk, fixed
+
+The original `go func(f, sid, principal)` passed `rm.facade` as an
+argument. The Part 4 `safe.Go` version read `m.facade` off the captured
+model at goroutine-run time — correct only because `m.facade = rm.facade`
+had been assigned earlier in `applyRotation`. Now the targets are
+captured explicitly (`targetFacade := rm.facade` after the nil-guard,
+`targetSID := snap.SessionID`, `targetPrincipal := m.principal`)
+before the goroutine launches, restoring the argument-passing contract.
+An earlier draft of this fix called `rm.facade.Snapshot()` BEFORE the
+nil-guard and panicked `TestRotationFailure_ResetsIndicator` (nil
+facade); that is why the capture sits after the guard. `TestRotationFailure`
++ `TestHistoryFlattensMultiLine` pass.
+
+### 9. Screen harness races + no lifecycle, `host_verify.sh` masked exit codes — real, fixed
+
+- The harness shared a plain `*bytes.Buffer` between the program
+  goroutine and the test goroutine. Now `lockedBuffer` (mutex + `Read`/
+  `WriteString`/`Len`/`String`); `go test -race ./internal/tui/
+  -run TestScreen` passes. The harness still never quits
+  `prog.Run()` at test end (the `done` channel is recorded; a
+  termination assertion is named as a left-open item).
+- `host_verify.sh` checks 14/15 piped `go test ... | tail`, returning
+  tail's status. Both now write to a log, and propagate `go test`'s
+  exit code (`exit $rc`). A `set -o pipefail` line was NOT added: POSIX
+  `sh` has no `pipefail`, and the script targets POSIX sh.
+- `perfRecord` copied the whole slice per append (O(N²) with the
+  switch on). Replaced with a mutex-guarded append buffer (amortized
+  O(1) per append); the atomic.Value is gone.
+- `safe_test.go`: the Part 4 comment replacement split a doc comment,
+  leaving an orphaned `// completes normally.` line. Restored to the
+  full `// TestGo_NormalExecution verifies ...` line.
+
+### 10. Checks on the remaining claims
+
+- `tui_wiring_loop.go:284` (the second panel's "coverage not
+  confirmed" on `rm.facade`): see finding 8 — confirmed, `m.facade =
+  rm.facade` at line 190 precedes the goroutine at 278.
+- The `test at x/exp/teatest` claim ("teatest has existed in
+  x/exp/teatest with v1-era usage"): checked — the module the panel
+  cited exists, but it targets bubbletea v2's API; pinning it would
+  still pull a v2 package alongside the v1 program. The Part 5 note
+  stands, with this addition.
+- Part 2 "revert" (fix 1): `compSources` in the diff is indeed unmodified
+  (the Info() caching fix was reverted outside the shown diff's file
+  list; verify with `git show` if it matters — the file has no
+  compSources change in b244dcd..HEAD).
+
+Left open after this review: the coalesce-away gap from finding 2; the
+`KindAsyncProgress`/dot-tick `before`-after-mutation shape from
+finding 5; the screen harness's missing termination assertion;
+`WaitDelay` NOT covered for the perf snapshot copy (the copy per
+`perfLoad` is now bounded by the mutex-guarded buffer, so the
+O(N²) concern is gone); `x/exp/teatest` remains not adopted (see
+finding 10).
+
 
 

@@ -254,8 +254,14 @@ check changelog-heading sh -c '
 # names the cost so a failure points at the frame, not "go-test" in
 # general). SKIP-partial: the soak is 98s; -run only targets the
 # regression test + smoke, which together are ~4s.
+#
+# Exit-code honesty (Mashūra 0.8.4 review): the piped `| tail` above
+# returns tail's status, NOT go test's — a failing test would still
+# exit 0 and print PASS. The sh -c here propagates go test's own status
+# via PIPESTATUS (bash) or, portably, by writing to a log and checking
+# the command's exit code before tail'ing.
 if command -v go >/dev/null 2>&1; then
-  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke" ./internal/tui/ 2>&1 | tail -10'
+  check tui-perf sh -c 'set -o pipefail 2>/dev/null || true; go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log" | tail -10; exit $rc'
 else
   echo "SKIP  tui-perf (go not available)"
   skip=$((skip+1))
@@ -267,8 +273,11 @@ fi
 # the event through Send (approval prompts, Mashūra panels). A SKIP is
 # reported as SKIP here rather than FAIL, so the script stays honest
 # about what cannot be driven in this environment.
+#
+# Same exit-code care as 14: go test's status is propagated; `go test`
+# exit 77 = skip-all, which check() maps to SKIP with a reason.
 if command -v go >/dev/null 2>&1; then
-  check tui-screen sh -c 'go test -count=1 -run "TestScreen" ./internal/tui/ 2>&1 | tail -10'
+  check tui-screen sh -c 'go test -count=1 -run "TestScreen" ./internal/tui/ >"$TMPROOT/tui-screen.log" 2>&1; rc=$?; cat "$TMPROOT/tui-screen.log" | tail -10; exit $rc'
 else
   echo "SKIP  tui-screen (go not available)"
   skip=$((skip+1))

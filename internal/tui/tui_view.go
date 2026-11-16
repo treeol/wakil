@@ -843,8 +843,20 @@ func flowSegmentsN(segs []string, w, maxRows int) []string {
 	flush()
 	if dropped {
 		last := rows[len(rows)-1]
-		if lipgloss.Width(last)+len("…") > w {
-			last = ansi.Truncate(last, w-len("…"), "")
+		// The ellipsis's display width is 1 cell; len("…") would be 3
+		// BYTES, which would over-truncate by two cells (Mashūra 0.8.4
+		// review, finding 4). Reserve the display-width 1.
+		ellipsisW := lipgloss.Width("…")
+		if lipgloss.Width(last)+ellipsisW > w {
+			if w-ellipsisW < 0 {
+				// Degenerate narrow row: cannot fit even the ellipsis.
+				// Truncate to the row width and keep the original
+				// marker (nothing fits after it).
+				last = ansi.Truncate(last, w, "")
+				rows[len(rows)-1] = last
+				return rows
+			}
+			last = ansi.Truncate(last, w-ellipsisW, "")
 		}
 		rows[len(rows)-1] = last + dim2("…")
 	}

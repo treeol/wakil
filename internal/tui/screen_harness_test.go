@@ -3,6 +3,7 @@ package tui
 import (
 	"bytes"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -10,6 +11,50 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/treeol/wakil/internal/core/event"
 )
+
+// lockedBuffer is a bytes.Buffer safe for concurrent access: the
+// program goroutine writes it while the test goroutine reads it
+// (Mashūra 0.8.4 review: the harness previously shared a plain
+// *bytes.Buffer across goroutines, which go test -race flags).
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// WriteString is the input-buffer write path (keys injected by the
+// test). It is the only Write the test goroutine performs.
+func (b *lockedBuffer) WriteString(s string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.buf.WriteString(s)
+}
+
+// Read makes the buffer usable as tea.WithInput's io.Reader. The
+// program's input reader may block for more bytes; the test's settle()
+// poll supplies them by WriteString-ing more keys.
+func (b *lockedBuffer) Read(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Read(p)
+}
+
+func (b *lockedBuffer) Len() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Len()
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
 
 // screenHarness drives the model through a real tea.Program with
 // in-memory I/O (WithInput + WithOutput): the same code path the
@@ -46,8 +91,8 @@ import (
 type screenHarness struct {
 	t    *testing.T
 	m    tuiModel
-	in   *bytes.Buffer // test → program (keys)
-	out  *bytes.Buffer // program → test (rendered frames)
+	in   *lockedBuffer // test → program (keys)
+	out  *lockedBuffer // program → test (rendered frames)
 	p    *tea.Program
 	done chan struct{}
 }
@@ -61,7 +106,7 @@ func newScreenHarness(t *testing.T) *screenHarness {
 	// Size the real model: WindowSizeMsg goes through Update, so the
 	// viewport/textarea widths are the ones a real terminal passes.
 	m = step(m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	h := &screenHarness{t: t, m: m, in: &bytes.Buffer{}, out: &bytes.Buffer{}}
+	h := &screenHarness{t: t, m: m, in: &lockedBuffer{}, out: &lockedBuffer{}}
 	// The program owns m's Update/View loop; the harness drives it over
 	// pipes. tea.WithInput/WithOutput are the v1 pipe seam — same shape
 	// teatest uses, without the v2 dependency.

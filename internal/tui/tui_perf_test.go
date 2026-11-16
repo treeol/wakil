@@ -44,9 +44,14 @@ func TestPerfRecordsWhenOn(t *testing.T) {
 	if len(samples) == 0 {
 		t.Fatal("on: no samples recorded")
 	}
-	// First sample is the Update+View pair from updateTimed.
-	if samples[0].typ == "" || samples[0].bytes <= 0 {
-		t.Fatalf("on: bad first sample: %+v", samples[0])
+	// The first sample is the Update leg from updateTimed (typ and
+	// updateDur set), and the View leg is recorded by View()'s own
+	// wrapper on the type "View". The bytes of the update sample are
+	// always 0 (Part 3/L5: Update must not call View() to measure it —
+	// a measurement View() consumes the OSC 52 escape, so the copy
+	// would be lost whenever the switch was on).
+	if samples[0].typ == "" || samples[0].bytes != 0 {
+		t.Fatalf("on: unexpected first sample: %+v", samples[0])
 	}
 	count, upMed, upP99, viewMed, viewP99, slowest, ok := perfSummary()
 	if !ok || count != len(samples) {

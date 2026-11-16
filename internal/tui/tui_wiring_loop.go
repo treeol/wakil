@@ -156,6 +156,12 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea.Cmd, bool) {
 	timeline.Event("tui received the rotation message")
 	defer timeline.Event("rotation applied in tui (view rebuilt, ready for input)")
+	// The target facade/principal for the subscription goroutine is
+	// captured explicitly below (targetFacade etc.) — it must be
+	// captured AFTER the rm.failed / rm.facade == nil guards, which
+	// return early without launching any goroutine (and must not call
+	// Snapshot() on a nil facade — see below).
+	//
 	// Snapshot BEFORE clearing rotating: the rotation label may currently
 	// force the status zone visible; the snapshot must reflect the
 	// pre-apply (rotating) effective height or the shrink to a hidden zone
@@ -275,16 +281,25 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	// SetProgramSend (the TUI package's replacement for main.go's globalProg).
 	if programSend != nil {
 		ctx := context.Background()
+		// Capture the target facade/session/principal explicitly: the
+		// original `go func(f, sid, principal)` passed rm.facade as an
+		// argument. Reading m.facade off the captured model risks
+		// attaching to the wrong (pre-swap) facade if m.facade is
+		// reassigned before this goroutine runs (Mashūra 0.8.4 review).
+		// Snapshot() is called here, after the rm.facade==nil guard
+		// above, so rm.facade is non-nil.
+		targetFacade := rm.facade
+		targetSID := snap.SessionID
+		targetPrincipal := m.principal
 		// A panic in this goroutine must be recovered: it is NOT the main
 		// loop, so Bubbletea's deferred recover does not cover it — an
 		// unrecovered panic here crashes the process with the terminal left
 		// raw (Part 4, item 6). safe.Go funnels the panic to diag and the
-		// process continues with the terminal usable. The function body is
-		// unchanged; only the launch changes.
+		// process continues with the terminal usable.
 		safe.Go("tui-subscribe", func() {
-			f := m.facade
-			sid := m.sessionID
-			principal := m.principal
+			f := targetFacade
+			sid := targetSID
+			principal := targetPrincipal
 			head := event.Seq(0)
 			if ss, err := f.SessionSnapshot(ctx, principal, sid); err == nil {
 				head = ss.LastSeq
