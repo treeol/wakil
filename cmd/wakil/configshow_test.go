@@ -112,12 +112,17 @@ func TestRedactSecretShowsOnlyPresenceAndLength(t *testing.T) {
 func TestConfigShowNeverPrintsAnySecretCharacter(t *testing.T) {
 	const apiKey = "sk-Zq7Xvb-QRSTUVWX1234"
 	const header = "Bearer sk-Mw3Kd8-JKLMNOPQ9999"
-	check := func(t *testing.T, name, out string, secrets ...string) {
+	// check filters the config file's random temp-dir path: its
+	// digits can coincide with a 4-char secret fragment (e.g.
+	// "1234"), which flaked this test once. The path is the only
+	// non-deterministic input; drop every line that contains it.
+	check := func(t *testing.T, name, out, cfgPath string, secrets ...string) {
 		t.Helper()
-		// The config_path row holds the random temp-dir name, whose digits can
-		// coincide with a fragment; it is not a secret-bearing row.
 		var kept []string
 		for _, l := range strings.Split(out, "\n") {
+			if cfgPath != "" && strings.Contains(l, cfgPath) {
+				continue
+			}
 			if strings.Contains(l, "config_path") || strings.Contains(l, `"config_path"`) {
 				continue
 			}
@@ -165,7 +170,7 @@ func TestConfigShowNeverPrintsAnySecretCharacter(t *testing.T) {
 				if code := runConfigShow(&out, &errb, args, os.Getenv); code != 0 {
 					t.Fatalf("exit %d: %s", code, errb.String())
 				}
-				check(t, c.name, out.String()+errb.String(), apiKey, header)
+				check(t, c.name, out.String()+errb.String(), p, apiKey, header)
 				if !strings.Contains(out.String(), "set (22 chars)") {
 					t.Errorf("%s: api_key row should read set (22 chars):\n%s", c.name, out.String())
 				}
