@@ -648,7 +648,6 @@ func TestSelectionReleaseFreesFollow(t *testing.T) {
 	}
 }
 
-
 func trunc(s string, n int) string {
 	if len(s) > n {
 		return s[:n] + "…"
