@@ -28,6 +28,8 @@ func TestEmbeddedAgentPrompt(t *testing.T) {
 		"/handoff",
 		"What survives in active context",
 		"When a task gives numbered steps, start with step 1",
+		"Blanket session approval",
+		"Never assume an\n  unfamiliar tool is safe because its name sounds safe.",
 	}
 	for _, m := range wantMarkers {
 		if !strings.Contains(EmbeddedAgentPrompt, m) {
@@ -41,6 +43,84 @@ func TestEmbeddedAgentPrompt(t *testing.T) {
 	} {
 		if strings.Contains(EmbeddedAgentPrompt, stale) {
 			t.Errorf("EmbeddedAgentPrompt still contains stale phrase %q", stale)
+		}
+	}
+}
+
+// extractMarkdownSection returns the verbatim text of a level-2 markdown
+// section (from `## <heading>` up to the next `\n## ` or EOF).
+func extractMarkdownSection(doc, heading string) (string, bool) {
+	marker := "## " + heading + "\n"
+	idx := strings.Index(doc, marker)
+	if idx < 0 {
+		return "", false
+	}
+	rest := doc[idx:]
+	if next := strings.Index(rest[len(marker):], "\n## "); next >= 0 {
+		return strings.TrimRight(rest[:len(marker)+next], "\n"), true
+	}
+	return strings.TrimRight(rest, "\n"), true
+}
+
+func TestEmbeddedSplitPromptsParity(t *testing.T) {
+	// Sections that live verbatim in core.txt or extension.txt must match
+	// agent.txt so updates never drift between full and /prompt core.
+	// Three sections are intentionally trimmed/rearranged for the split
+	// ("Core loop" carries an inline TTL-renewal line in core.txt because
+	// "## Durable Memory" lives in extension.txt; "## Files" moves AGENTS.md
+	// verification into "## What \"verified\" means" in extension.txt).
+	coreShared := []string{
+		"Global precedence ladder",
+		"Role",
+		"Secrets (precedence tier 1 — overrides everything)",
+		"Shell (run_shell, run_background)",
+		"External side-effect gating, grants & session policy",
+		"Honesty Invariants (precedence tier 4)",
+		"Recovery",
+	}
+	for _, h := range coreShared {
+		fullSec, okFull := extractMarkdownSection(EmbeddedAgentPrompt, h)
+		coreSec, okCore := extractMarkdownSection(EmbeddedCorePrompt, h)
+		if !okFull || !okCore {
+			t.Fatalf("section %q presence: full=%v core=%v", h, okFull, okCore)
+		}
+		if fullSec != coreSec {
+			t.Errorf("section %q differs between agent.txt and core.txt", h)
+		}
+	}
+	// Core loop: step 0 (numbered-task scoping) must match verbatim.
+	fullCL, okFull := extractMarkdownSection(EmbeddedAgentPrompt, "Core loop")
+	coreCL, okCore := extractMarkdownSection(EmbeddedCorePrompt, "Core loop")
+	if !okFull || !okCore {
+		t.Fatalf("Core loop presence: full=%v core=%v", okFull, okCore)
+	}
+	wantStep0 := "0. When a task gives numbered steps, start with step 1; read only what the\n" +
+		"   current step needs; treat facts stated in the task as given unless a\n" +
+		"   command result contradicts them; do not ask for permission the task already\n" +
+		"   gives (tool approval gates still run normally)."
+	if !strings.Contains(fullCL, wantStep0) || !strings.Contains(coreCL, wantStep0) {
+		t.Errorf("Core loop step 0 must match verbatim in agent.txt and core.txt")
+	}
+	extShared := []string{
+		"Documentation upkeep",
+		"Search & Research",
+		"File vs. Inline Decision",
+		"Skills (global reference docs)",
+		"Tool / Cost Discipline",
+		"Durable Memory",
+		"Truncated tool results (spill files) & Context Collapse (`collapse_context`)",
+		"Async execution (check_pending / wait_for_completion / read_process_log)",
+		"Subagents",
+		"Interaction & Output",
+	}
+	for _, h := range extShared {
+		fullSec, okFull := extractMarkdownSection(EmbeddedAgentPrompt, h)
+		extSec, okExt := extractMarkdownSection(EmbeddedExtensionPrompt, h)
+		if !okFull || !okExt {
+			t.Fatalf("section %q presence: full=%v extension=%v", h, okFull, okExt)
+		}
+		if fullSec != extSec {
+			t.Errorf("section %q differs between agent.txt and extension.txt", h)
 		}
 	}
 }
