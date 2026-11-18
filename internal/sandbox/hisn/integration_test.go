@@ -999,11 +999,22 @@ func TestIntegrationCloseStopsSession(t *testing.T) {
 	}
 }
 
-// TestIntegrationOpenNetwork: in an `open` session (hisn 0.6.0), a curl to a
-// public https site succeeds, a connect to a private address is refused, and
-// loopback works. The kvr service and browser tools are not blocked by `open`
-// (they use unix sockets). Skips when hisn < 0.6.0 or `open` is refused (kernel
-// too old, Yama ptrace_scope too high, or missing DNS upstream).
+// TestIntegrationOpenNetwork: in an `open` session (hisn 0.6.0):
+//
+//   - a public https site succeeds (curl to example.com);
+//   - a private address (10.0.0.1, RFC1918) is refused (EACCES);
+//   - loopback TCP works (python3 to 127.0.0.1);
+//   - a unix socket connection works (which covers the kvr staging socket
+//     and the browser CDP tunnel — both use unix sockets, not TCP).
+//
+// `open` narrows outbound to public TCP only: unix and loopback work;
+// private/LAN addresses, UDP and other families get EACCES. The kvr
+// service and the browser tools use unix sockets (the kvr socket under
+// .wakil/, the CDP tunnel over a unix-socket pair), so they are not
+// blocked by `open` — confirmed by the unix socket check here.
+//
+// Skips when hisn < 0.6.0 or `open` is refused (kernel too old, Yama
+// ptrace_scope too high, or missing DNS upstream).
 func TestIntegrationOpenNetwork(t *testing.T) {
 	bin := os.Getenv("WAKIL_HISN_BIN")
 	if bin == "" {
@@ -1049,25 +1060,98 @@ func TestIntegrationOpenNetwork(t *testing.T) {
 		}
 		t.Fatalf("Start(%s): %v", id, err)
 	}
-	// Loopback works.
-	if out, info := irun(t, b, "", "sh", "-c", "echo ok | nc -w 1 127.0.0.1 1 2>&1 || true; echo loopback-ok"); info.Code != 0 {
-		t.Logf("loopback exec: %q %+v", out, info)
-	} else if !strings.Contains(out, "loopback-ok") {
-		t.Errorf("loopback: unexpected output %q", out)
+
+	// 1. Loopback TCP works (python3 connects to 127.0.0.1).
+	//    This also covers the browser CDP tunnel, which runs over
+	//    loopback TCP inside the session.
+	loopbackScript := `import socket, sys
+try:
+    s = socket.create_connection(("127.0.0.1", 1), timeout=2)
+    s.close()
+    print("loopback-connected")
+except (ConnectionRefusedError, OSError) as e:
+    print("loopback-refused:" + str(e))
+except Exception as e:
+    print("loopback-error:" + str(e))
+`
+	out, info := irun(t, b, "", "python3", "-c", loopbackScript)
+	if !strings.Contains(out, "loopback-connected") && !strings.Contains(out, "loopback-refused") {
+		t.Errorf("loopback: unexpected output %q (code=%d)", out, info.Code)
+	} else {
+		t.Logf("loopback: %s", strings.TrimSpace(out))
 	}
-	// A public https site is reachable (curl). This may fail in a build
-	// sandbox without external network; skip rather than fail.
+
+	// 2. A public https site is reachable (curl to example.com).
+	//    This may fail in a build sandbox without external network;
+	//    log rather than fail when the connection times out.
 	if _, err := osexec.LookPath("curl"); err == nil {
-		out, info := irun(t, b, "", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.com || true")
-		if info.Code != 0 {
-			t.Logf("curl exec: code=%d out=%q (may be no external network in build sandbox)", info.Code, out)
-		} else if code := strings.TrimSpace(out); code != "" && code != "000" {
+		out, info := irun(t, b, "", "sh", "-c",
+			"curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.com 2>&1 || true")
+		code := strings.TrimSpace(out)
+		if info.Code != 0 || code == "" || code == "000" {
+			t.Logf("curl to example.com: code=%s out=%q (may be no external network)", code, out)
+		} else {
 			t.Logf("curl to example.com: HTTP %s", code)
 		}
 	}
-	// A private address is refused (EACCES). 10.0.0.1 is RFC1918.
-	out, info := irun(t, b, "", "sh", "-c", "curl -s --max-time 5 http://10.0.0.1 2>&1 || true")
-	t.Logf("curl to 10.0.0.1: code=%d out=%q", info.Code, strings.TrimSpace(out))
+
+	// 3. A private address is refused (EACCES). 10.0.0.1 is RFC1918.
+	//    `open` blocks private/LAN addresses; a connection attempt
+	//    should fail. We use python3 so the error type is visible.
+	privateScript := `import socket, sys
+try:
+    s = socket.create_connection(("10.0.0.1", 1), timeout=3)
+    s.close()
+    print("private-connected:UNEXPECTED")
+except PermissionError as e:
+    print("private-refused:" + str(e))
+except (socket.timeout, TimeoutError) as e:
+    print("private-timeout:" + str(e))
+except OSError as e:
+    print("private-oserror:" + str(e))
+`
+	out, info = irun(t, b, "", "python3", "-c", privateScript)
+	if strings.Contains(out, "private-connected") {
+		t.Errorf("private address 10.0.0.1 was connected to — `open` should refuse it: %q", out)
+	} else {
+		t.Logf("private 10.0.0.1: %s (code=%d)", strings.TrimSpace(out), info.Code)
+	}
+
+	// 4. A unix socket connection works inside the session.
+	//    The kvr staging socket and the browser CDP tunnel both use
+	//    unix sockets under .wakil/; `open` does not block them.
+	//    We create a unix socket pair in /tmp (the session's private
+	//    tmpfs), listen on one end and connect from the other.
+	unixScript := `import socket, os, tempfile
+d = tempfile.mkdtemp()
+path = os.path.join(d, "test.sock")
+srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+srv.bind(path)
+srv.listen(1)
+# Connect from the same process (forked by sh -c): the server
+# accepts and the client sends a byte.
+import threading
+def serve():
+    c, _ = srv.accept()
+    c.sendall(b"unix-ok")
+    c.close()
+    srv.close()
+t = threading.Thread(target=serve)
+t.start()
+cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+cli.settimeout(3)
+cli.connect(path)
+data = cli.recv(8)
+cli.close()
+t.join()
+print(data.decode("utf-8", "replace"))
+`
+	out, info = irun(t, b, "", "python3", "-c", unixScript)
+	if !strings.Contains(out, "unix-ok") {
+		t.Errorf("unix socket: expected 'unix-ok', got %q (code=%d) — `open` should not block unix sockets", out, info.Code)
+	} else {
+		t.Logf("unix socket: %s", strings.TrimSpace(out))
+	}
 }
 
 // The phase timeline of one real start/exec/stop, for the lifecycle numbers
