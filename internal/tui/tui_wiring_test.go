@@ -84,6 +84,16 @@ func (f *fakeFacade) StartSideQuestion(ctx context.Context, question string) (se
 }
 func (f *fakeFacade) ConsumePendingContinuation() string { return "" }
 
+// DispatchCommand returns a safe empty CommandResult. The fake does not
+// route slash commands (the wiring facade does); without this method the
+// embedded nil interface panics inside a tea.Cmd goroutine when a slash
+// command reaches the real program through the screen harness, racing the
+// test's skip check (the flaky TestPerfWritesToDiag / TestScreenNewAndResume
+// nil-pointer panic).
+func (f *fakeFacade) DispatchCommand(line string) sessionclient.CommandResult {
+	return sessionclient.CommandResult{Handled: true, Notice: "(test fake: " + line + ")"}
+}
+
 // newWiringModel builds a facade-backed model for event-switch tests.
 func newWiringModel(f *fakeFacade) tuiModel {
 	f.snap.SessionID = f.sid

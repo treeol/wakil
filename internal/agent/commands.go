@@ -1714,6 +1714,7 @@ const helpTextTUI = `/new, /reset         fresh conversation (new chat_id, clear
 /counsel                   show current counsel mode and per-turn cap
 /zdr [on|off|auto|reset]   show/set the per-repo zero-data-retention switch (enforced on OpenRouter)
 /region [eu|us|off|reset]  show/set the per-repo OpenRouter region pin (eu.openrouter.ai / us.openrouter.ai)
+/network [host|open|reset] show/set the hisn session network mode (host = default; open = public TCP only; next session start)
 /mashura                   show mashura panel/model/limit status
 /mashura panel add <name> <models> [--mode panel|fallback|debate]  create a panel
 /mashura panel rm <name>   remove a panel
