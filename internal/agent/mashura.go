@@ -1435,6 +1435,29 @@ func struggleKey(rule string, last ToolTraceEntry, path string) string {
 // hide a different rule that also fires — the first NOT-yet-shown rule wins.
 // alreadyShown is a predicate on the symptom and its identity key; nil
 // means nothing was shown, so the first matching rule wins as before.
+// isReadOnlyExplorationTrace reports whether a trace entry represents a
+// built-in read-only exploration call. Checks both the ReadOnly tag populated
+// by MakeTraceEntry and known read-only abbreviations (for hand-built test
+// traces).
+func isReadOnlyExplorationTrace(e ToolTraceEntry) bool {
+	if e.ReadOnly {
+		return true
+	}
+	switch e.Abbrev {
+	case "read", "rfull", "search", "find", "list",
+		"git_stat", "git_diff", "git_log", "git_show", "git_blam",
+		"lsp_defi", "lsp_refe", "lsp_hove", "lsp_symb", "tcheck":
+		return true
+	}
+	return false
+}
+
+// isDedupRefusal reports whether a trace entry was produced by a ToolCache
+// repeat-read refusal ("[already called ...]").
+func isDedupRefusal(e ToolTraceEntry) bool {
+	return e.ExitErr && strings.HasPrefix(e.FirstLine, "[already called ")
+}
+
 func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, key string) bool) (symptom string, detected bool, rule string, key string) {
 	if len(traces) < 2 {
 		return "", false, "none", ""
@@ -1448,8 +1471,10 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, k
 		rule    string
 		key     string
 	}
-	// EXIT≠0 streak: the two most recent calls both failed.
-	if last.ExitErr && prev.ExitErr {
+	// EXIT≠0 streak: the two most recent calls both failed. Pure read-only
+	// exploration misses (e.g. probing two nonexistent file paths) are not
+	// a build/edit struggle and must not start an automatic Mashūra round.
+	if last.ExitErr && prev.ExitErr && !(isReadOnlyExplorationTrace(last) && isReadOnlyExplorationTrace(prev)) {
 		s := fmt.Sprintf("repeated failures: %s %q keeps exiting non-zero", displayAbbrev(last.Abbrev), last.Command)
 		if last.FirstLine != "" {
 			s += " — " + last.FirstLine
@@ -1460,8 +1485,12 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, k
 			key     string
 		}{s, "repeated failures", struggleKey("repeated failures", last, "")})
 	}
-	// Same command twice in a row with no intervening progress.
-	if last.Command != "" && last.Command == prev.Command && last.Abbrev == prev.Abbrev {
+	// Same command twice in a row with no intervening progress. Plain read-only
+	// exploration calls (reading files, paginated reads, searches, listings,
+	// git/LSP inspection) do not indicate a struggle; only non-read-only calls
+	// (or an explicit ToolCache dedup refusal) trigger the repeat rule.
+	if last.Command != "" && last.Command == prev.Command && last.Abbrev == prev.Abbrev &&
+		(!isReadOnlyExplorationTrace(last) || isDedupRefusal(last)) {
 		results = append(results, struct {
 			symptom string
 			rule    string

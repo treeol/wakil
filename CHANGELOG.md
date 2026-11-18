@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Plain file reading no longer starts automatic Mashūra rounds.** `MakeTraceEntry` previously dropped `offset`/`limit` on `read_file` (so paginated reads of two slices of the same file collided as identical traces) and `detectStruggleScan` fired the `"repeat"` and `"repeated failures"` rules on read-only exploration tools. Paginated reads, LSP lookups, and git reads now keep distinct trace identities, and read-only exploration calls alone no longer trigger struggle detection or start automatic Mashūra debug rounds.
 - **Mashūra uses the configured OpenRouter backend's credentials.** Mashūra panel calls, availability checks, and `/mashura` status now resolve their OpenRouter credential from the active OpenRouter endpoint (or, when the active endpoint is local, the first configured OpenRouter endpoint sorted by name) instead of reading `OPENROUTER_API_KEY` from the shell environment. The environment variable is used only when no OpenRouter endpoint is configured; an OpenRouter endpoint with no credential fails closed instead of falling back to the environment. `/mashura` reports the credential source by name (`backend config (<name>)` or `environment (<var>)`, with a proxy note when the main route uses an `ilm-proxy` `openrouter` backend) and never prints a key value.
 
 ## [0.8.5] - 2026-11-18

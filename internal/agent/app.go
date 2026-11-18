@@ -616,6 +616,7 @@ type ToolTraceEntry struct {
 	Abbrev    string // short name: "shell", "read", "write", "edit", etc.
 	Command   string // run_shell command or key arg (path, pattern)
 	ExitErr   bool   // true when the tool returned an error
+	ReadOnly  bool   // true for built-in read-only exploration tools (read_file, search_files, list_dir, git_*, lsp_*, ...)
 	OutputLen int    // raw output length in bytes
 	FirstLine string // first non-empty output line, truncated to 80 chars
 	LastLine  string // last non-empty output line if different, truncated
@@ -2784,11 +2785,30 @@ func (a *App) captureToolTrace(tc proxy.ToolCall, result toolResult) {
 // truncation).
 var traceScrubber = scrub.New(scrub.LevelStandard)
 
+// isReadOnlyExplorationTool reports whether a built-in tool name is a pure
+// read-only exploration/inspection tool. Used to tag ToolTraceEntry.ReadOnly
+// so read-only exploration alone never trips the struggle detector or starts
+// an automatic Mashūra round.
+func isReadOnlyExplorationTool(name string) bool {
+	switch name {
+	case "read_file", "read_file_full", "list_dir", "search_files", "find_files",
+		"git_status", "git_diff", "git_log", "git_show", "git_blame",
+		"lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols",
+		"list_skills", "load_skill", "skill_search", "skill_history", "check_skill_template",
+		"memory_get", "memory_search", "memory_list",
+		"staging_get", "staging_list", "staging_get_many",
+		"check_pending", "read_process_log", "math_eval":
+		return true
+	}
+	return false
+}
+
 func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 	e := ToolTraceEntry{
 		Abbrev:    toolAbbrev(tc.Function.Name),
 		OutputLen: len(result.text),
 		ExitErr:   !result.ok,
+		ReadOnly:  isReadOnlyExplorationTool(tc.Function.Name),
 	}
 	// Extract the primary identifier (command or path).
 	switch tc.Function.Name {
@@ -2798,6 +2818,60 @@ func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 		}
 		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
 			e.Command = a.Command
+		}
+	case "read_file":
+		// Include offset/limit when present so paginated reads of two
+		// different slices of the same file do not collapse to identical
+		// trace identities.
+		var a struct {
+			Path   string `json:"path"`
+			Offset int    `json:"offset"`
+			Limit  int    `json:"limit"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
+			e.Command = a.Path
+			switch {
+			case a.Path != "" && a.Offset > 0 && a.Limit > 0:
+				e.Command = fmt.Sprintf("%s:%d+%d", a.Path, a.Offset, a.Limit)
+			case a.Path != "" && a.Offset > 0:
+				e.Command = fmt.Sprintf("%s:%d", a.Path, a.Offset)
+			case a.Path != "" && a.Limit > 0:
+				e.Command = fmt.Sprintf("%s+%d", a.Path, a.Limit)
+			}
+		}
+	case "lsp_definition", "lsp_references", "lsp_hover":
+		var a struct {
+			Path   string `json:"path"`
+			Line   int    `json:"line"`
+			Symbol string `json:"symbol"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
+			e.Command = a.Path
+			if a.Path != "" && a.Line > 0 {
+				e.Command = fmt.Sprintf("%s:%d", a.Path, a.Line)
+			}
+			if a.Symbol != "" {
+				if e.Command != "" {
+					e.Command += " " + a.Symbol
+				} else {
+					e.Command = a.Symbol
+				}
+			}
+		}
+	case "git_diff", "git_log", "git_show", "git_blame":
+		var a struct {
+			Path string `json:"path"`
+			Rev  string `json:"rev"`
+		}
+		if json.Unmarshal([]byte(tc.Function.Arguments), &a) == nil {
+			switch {
+			case a.Rev != "" && a.Path != "":
+				e.Command = a.Rev + " " + a.Path
+			case a.Rev != "":
+				e.Command = a.Rev
+			default:
+				e.Command = a.Path
+			}
 		}
 	case "move_file":
 		var a struct {

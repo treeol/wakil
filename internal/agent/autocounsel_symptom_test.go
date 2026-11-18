@@ -180,3 +180,68 @@ func TestStruggleKeyIdentity(t *testing.T) {
 		t.Fatalf("withheld rewrite: got detected=%v key=%q, want command:shell:./check.sh", d, k)
 	}
 }
+
+// TestAutoCounsel_ReadOnlyExplorationNeverFires reproduces the release-session
+// regression where plain file reading fired two automatic Mashūra rounds at
+// level high: paginated read_file calls on two files, identical re-reads,
+// repeated list_dir/search_files, and two missing-file read_file probes must
+// all complete with zero automatic Mashūra rounds.
+func TestAutoCounsel_ReadOnlyExplorationNeverFires(t *testing.T) {
+	t.Setenv("MASHURA_TEST_OR_KEY", "x")
+	t.Setenv("MASHURA_TEST_KEY", "x")
+
+	_, count := counselServer(t)
+	frames := [][]string{
+		// Paginated reads of file a.go (previously collapsed to identical Command "a.go" → round 1).
+		toolCallFrames("r1", "read_file", `{"path":"a.go","offset":1,"limit":2}`),
+		toolCallFrames("r2", "read_file", `{"path":"a.go","offset":3,"limit":2}`),
+		// Paginated reads of file b.go (previously collapsed to identical Command "b.go" → round 2).
+		toolCallFrames("r3", "read_file", `{"path":"b.go","offset":1,"limit":2}`),
+		toolCallFrames("r4", "read_file", `{"path":"b.go","offset":3,"limit":2}`),
+		// Plain identical re-read of a.go on the parent agent (no ToolCache).
+		toolCallFrames("r5", "read_file", `{"path":"a.go"}`),
+		toolCallFrames("r6", "read_file", `{"path":"a.go"}`),
+		// Repeated list_dir and search_files calls.
+		toolCallFrames("l1", "list_dir", `{"path":"."}`),
+		toolCallFrames("l2", "list_dir", `{"path":"."}`),
+		toolCallFrames("s1", "search_files", `{"pattern":"package","path":"."}`),
+		toolCallFrames("s2", "search_files", `{"pattern":"package","path":"."}`),
+		// Two missing-file probes during exploration (ExitErr on read_file).
+		toolCallFrames("m1", "read_file", `{"path":"does-not-exist-1.go"}`),
+		toolCallFrames("m2", "read_file", `{"path":"does-not-exist-2.go"}`),
+		[]string{contentChunk("done reading")},
+	}
+	srv := sseServer(t, frames...)
+	t.Cleanup(srv.Close)
+
+	exe := newFakeExecutor()
+	exe.files["a.go"] = "package a\n// line 2\n// line 3\n// line 4\n"
+	exe.files["b.go"] = "package b\n// line 2\n// line 3\n// line 4\n"
+
+	app := newTestApp(srv.URL, exe, func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.Mashura = &config.MashuraConfig{
+		Level:   "high",
+		Members: []string{"openrouter:test-model-a", "openrouter:test-model-b"},
+	}
+	app.Cfg.OpenRouterAPIKeyEnv = "MASHURA_TEST_OR_KEY"
+	app.Cfg.OracleAPIKeyEnv = "MASHURA_TEST_KEY"
+	app.Cfg.OracleModel = "test-model"
+	app.IsSubagent = false
+	app.SetAutoApprove(true)
+	app.CounselMaxSet = true
+	app.MaxCounsel = 5
+	out := new(strings.Builder)
+	app.Out = out
+	app.prepareTurn()
+
+	var traceToolCalls []trace.ToolTrace
+	if _, _, err := app.streamTurn(context.Background(), "read a.go and b.go", nil, &traceToolCalls); err != nil {
+		t.Fatalf("streamTurn: %v", err)
+	}
+	if *count != 0 {
+		t.Fatalf("read-only exploration fired %d Mashūra HTTP calls, want 0; out=%q", *count, out.String())
+	}
+	if strings.Contains(out.String(), "starting mashura debug") || strings.Contains(out.String(), "struggle detected") {
+		t.Errorf("read-only exploration should not emit struggle/auto-counsel lines, got:\n%s", out.String())
+	}
+}

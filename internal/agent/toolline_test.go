@@ -157,3 +157,29 @@ func TestMakeTraceEntrySearchIdentityIncludesPattern(t *testing.T) {
 		t.Errorf("find_files Command = %q, want \"*.go @ internal\"", f.Command)
 	}
 }
+
+func TestMakeTraceEntryReadFileSliceAndReadOnlyFlag(t *testing.T) {
+	r1 := MakeTraceEntry(tcall("read_file", `{"path":"a.go","offset":1,"limit":100}`), okResult("x"))
+	r2 := MakeTraceEntry(tcall("read_file", `{"path":"a.go","offset":101,"limit":100}`), okResult("y"))
+	if r1.Command == r2.Command {
+		t.Errorf("paginated read_file slices must have distinct Command; both = %q", r1.Command)
+	}
+	if r1.Command != "a.go:1+100" || r2.Command != "a.go:101+100" {
+		t.Errorf("unexpected Commands: %q, %q", r1.Command, r2.Command)
+	}
+	if !r1.ReadOnly || !r2.ReadOnly {
+		t.Errorf("read_file trace entries must be tagged ReadOnly=true")
+	}
+	plain := MakeTraceEntry(tcall("read_file", `{"path":"a.go"}`), okResult("x"))
+	if plain.Command != "a.go" || !plain.ReadOnly {
+		t.Errorf("plain read_file: Command=%q ReadOnly=%v", plain.Command, plain.ReadOnly)
+	}
+	sh := MakeTraceEntry(tcall("run_shell", `{"command":"go test ./..."}`), errResult("FAIL"))
+	if sh.ReadOnly {
+		t.Errorf("run_shell must not be tagged ReadOnly")
+	}
+	ed := MakeTraceEntry(tcall("edit_file", `{"path":"a.go"}`), okResult("ok"))
+	if ed.ReadOnly {
+		t.Errorf("edit_file must not be tagged ReadOnly")
+	}
+}
