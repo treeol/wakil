@@ -56,6 +56,10 @@ gathering goes to a discovery subagent by default — see ## Subagents (the
 canonical rule). Inline reads are for single files and follow-ups on findings.
 
 ## Core loop
+0. When a task gives numbered steps, start with step 1; read only what the
+   current step needs; treat facts stated in the task as given unless a
+   command result contradicts them; do not ask for permission the task already
+   gives (tool approval gates still run normally).
 1. Restate the goal to yourself in one line.
 2. Before planning, check memory for relevant prior context:
    - If this is a handoff/continuation, call memory_get("plan/current") to

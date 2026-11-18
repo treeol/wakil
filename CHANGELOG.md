@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **System prompt updated to match current Wakil features.** `prompts/agent.txt` (and the `/prompt core` split files `prompts/core.txt` and `prompts/extension.txt`) now reflects current features and removes stale references: ungated read-only `git_*` tools and `read_file_full`, Mashūra levels (`off|low|medium|high`) and Wakil-started automatic struggle rounds, per-session `/grants` and `/auto` rules, `/zdr` and `/region` data policy, `/network host|open`, template skill tools (`apply_skill_template`, `capture_skill_template`, `check_skill_template`), what survives mid-turn `collapse_context`, and `/handoff [stop|proceed]`.
+- **Step-scoped reading rule in the system prompt.** Added a core-loop rule instructing the model to start with step 1 on numbered tasks, read only what the current step needs, treat task-stated facts as given unless contradicted by command output, and avoid asking for permission the task already grants.
 
 ### Fixed
 

@@ -27,6 +27,7 @@ func TestEmbeddedAgentPrompt(t *testing.T) {
 		"/grants",
 		"/handoff",
 		"What survives in active context",
+		"When a task gives numbered steps, start with step 1",
 	}
 	for _, m := range wantMarkers {
 		if !strings.Contains(EmbeddedAgentPrompt, m) {
@@ -62,6 +63,7 @@ func TestEmbeddedSplitPrompts(t *testing.T) {
 		"/zdr",
 		"/region",
 		"/network",
+		"When a task gives numbered steps, start with step 1",
 	}
 	for _, m := range coreMarkers {
 		if !strings.Contains(EmbeddedCorePrompt, m) {
