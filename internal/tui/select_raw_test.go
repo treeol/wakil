@@ -317,7 +317,13 @@ func TestSelectionRawStreaming(t *testing.T) {
 	h.settle()
 	markRel := h.markOut()
 	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: "driver "}, h.m.sessionID))
-	h.settle()
+	// settle only sees that the output went quiet; while the program
+	// has not yet processed the delta the output is quiet too. Wait
+	// for the content itself so the test never races the program's
+	// event pump under -race.
+	h.waitFor("streaming follow to resume after release", func() bool {
+		return strings.Contains(h.rawBytesSettledSince(markRel), "driver")
+	})
 	if !strings.Contains(h.rawBytesSettledSince(markRel), "driver") {
 		t.Fatal("streaming follow did not resume after the release")
 	}
