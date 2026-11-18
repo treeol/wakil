@@ -120,6 +120,7 @@ fi
 GOMODCACHE_REAL=$(go env GOMODCACHE 2>/dev/null || true)
 GOCACHE_REAL=$(go env GOCACHE 2>/dev/null || true)
 GOPATH_REAL=$(go env GOPATH 2>/dev/null || true)
+HOME_REAL="${HOME:-}"
 
 tmproot="$(mktemp -d)"
 cleanup() {
@@ -304,6 +305,71 @@ if command -v go >/dev/null 2>&1; then
   check tui-screen sh -c 'go test -count=1 -run "TestScreen|TestSelection|TestOSC52Escape" ./internal/tui/ >"$TMPROOT/tui-screen.log" 2>&1; rc=$?; cat "$TMPROOT/tui-screen.log" | tail -10; exit $rc'
 else
   echo "SKIP  tui-screen (go not available)"
+  skip=$((skip+1))
+fi
+
+# --- 16. Real-hisn integration tests (hisn 0.6.0) ---
+# Runs the TestIntegration* suite against the real hisn on PATH, with
+# the user's REAL HOME restored for that command (the tests read
+# ~/.ssh/known_hosts, the host ssh agent, etc.). The check is:
+#   SKIP  — hisn is missing or older than the minimum (MinHisnVersion);
+#   FAIL  — any integration test fails;
+#   FAIL  — every test skipped while hisn is new enough (a skip when
+#           the host cannot run sessions is fine; a skip when the host
+#           CAN but the test did not exercise it is a coverage gap).
+# `go test` exit 77 (skip-all) is mapped to SKIP by check(). A real
+# failure exits non-77, so it is FAIL. The "all skipped, hisn new
+# enough" case is detected by grepping the log: if hisn >= MinHisnVersion
+# but no test ran (only SKIP lines), that is a FAIL.
+if command -v go >/dev/null 2>&1 && command -v hisn >/dev/null 2>&1; then
+  hisn_ver=$(hisn --version 2>&1 | head -1 || echo "unknown")
+  # Read the minimum from the source (internal/sandbox.MinHisnVersion).
+  min_ver=$(grep -o 'MinHisnVersion = "[^"]*"' internal/sandbox/backend.go 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+  hisn_ok=0
+  if [ -n "$min_ver" ]; then
+    # Numeric comparison of dot-separated parts: 0.6.0 > 0.4.2.
+    h1=$(echo "$hisn_ver" | sed 's/^hisn //;s/[^0-9].*$//' | cut -d. -f1)
+    h2=$(echo "$hisn_ver" | sed 's/^hisn //;s/[^0-9].*$//' | cut -d. -f2)
+    h3=$(echo "$hisn_ver" | sed 's/^hisn //;s/[^0-9].*$//' | cut -d. -f3)
+    m1=$(echo "$min_ver" | cut -d. -f1)
+    m2=$(echo "$min_ver" | cut -d. -f2)
+    m3=$(echo "$min_ver" | cut -d. -f3)
+    h1=${h1:-0}; h2=${h2:-0}; h3=${h3:-0}
+    m1=${m1:-0}; m2=${m2:-0}; m3=${m3:-0}
+    if [ "$h1" -gt "$m1" ] 2>/dev/null || \
+       { [ "$h1" -eq "$m1" ] 2>/dev/null && [ "$h2" -gt "$m2" ] 2>/dev/null; } || \
+       { [ "$h1" -eq "$m1" ] 2>/dev/null && [ "$h2" -eq "$m2" ] 2>/dev/null && [ "$h3" -ge "$m3" ] 2>/dev/null; }; then
+      hisn_ok=1
+    fi
+  fi
+  if [ "$hisn_ok" -eq 1 ]; then
+    # Run with the REAL HOME restored (the temp HOME has no ssh agent,
+    # no known_hosts). WAKIL_HISN_BIN points at the real binary so the
+    # test does not LookPath from the temp HOME.
+    export WAKIL_HISN_BIN_BAK="${WAKIL_HISN_BIN:-}"
+    export WAKIL_HISN_BIN="$(command -v hisn)"
+    HOME_SAVE="$HOME"
+    export HOME="$HOME_REAL"
+    check real-hisn sh -c '
+      go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/ \
+        >"$TMPROOT/real-hisn.log" 2>&1
+      rc=$?
+      tail -20 "$TMPROOT/real-hisn.log"
+      if ! grep -q "^--- PASS\|^--- FAIL" "$TMPROOT/real-hisn.log"; then
+        echo "FAIL: all integration tests skipped with hisn '"$hisn_ver"' (>= '"$min_ver"')"
+        exit 1
+      fi
+      exit $rc
+    '
+    export HOME="$HOME_SAVE"
+    export WAKIL_HISN_BIN="$WAKIL_HISN_BIN_BAK"
+    unset WAKIL_HISN_BIN_BAK
+  else
+    echo "SKIP  real-hisn ($hisn_ver < ${min_ver:-unknown})"
+    skip=$((skip+1))
+  fi
+else
+  echo "SKIP  real-hisn (go or hisn not available)"
   skip=$((skip+1))
 fi
 
