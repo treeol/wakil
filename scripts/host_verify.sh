@@ -321,28 +321,62 @@ fi
 # failure exits non-77, so it is FAIL. The "all skipped, hisn new
 # enough" case is detected by grepping the log: if hisn >= MinHisnVersion
 # but no test ran (only SKIP lines), that is a FAIL.
+
+# version_ge: return 0 (true) if version $1 >= $2, comparing numerically
+# per component (major, minor, patch). Ignores any suffix after the patch
+# number. No string comparison — only integer -lt/-gt/-eq. The sed keeps
+# only [0-9.] characters after stripping an optional "hisn " prefix, so
+# "0.6.0-dev1" → "0.6.0" and "0.10.0" → "0.10.0".
+version_ge() {
+  a=$(printf '%s' "$1" | sed 's/^hisn //; s/[^0-9.].*$//')
+  b=$(printf '%s' "$2" | sed 's/^hisn //; s/[^0-9.].*$//')
+  a1=$(printf '%s' "$a" | cut -d. -f1); a2=$(printf '%s' "$a" | cut -d. -f2); a3=$(printf '%s' "$a" | cut -d. -f3)
+  b1=$(printf '%s' "$b" | cut -d. -f1); b2=$(printf '%s' "$b" | cut -d. -f2); b3=$(printf '%s' "$b" | cut -d. -f3)
+  a1=${a1:-0}; a2=${a2:-0}; a3=${a3:-0}
+  b1=${b1:-0}; b2=${b2:-0}; b3=${b3:-0}
+  if [ "$a1" -gt "$b1" ]; then return 0; fi
+  if [ "$a1" -lt "$b1" ]; then return 1; fi
+  if [ "$a2" -gt "$b2" ]; then return 0; fi
+  if [ "$a2" -lt "$b2" ]; then return 1; fi
+  if [ "$a3" -ge "$b3" ]; then return 0; fi
+  return 1
+}
+
+# Self-test for version_ge — runs before the real-hisn check so a broken
+# comparison is caught before it hides a real hisn. Prints each case.
+echo "=== version_ge self-test ==="
+vt_pass=0; vt_fail=0
+version_ge_test() {
+  desc="$1"; a="$2"; b="$3"; expect="$4"
+  if version_ge "$a" "$b"; then got=0; else got=1; fi
+  if [ "$got" -eq "$expect" ]; then
+    echo "  OK   $desc: version_ge $a $b → true"
+    vt_pass=$((vt_pass+1))
+  else
+    echo "  FAIL $desc: version_ge $a $b → $([ $got -eq 0 ] && echo true || echo false) (expected $([ $expect -eq 0 ] && echo true || echo false))"
+    vt_fail=$((vt_fail+1))
+  fi
+}
+version_ge_test "equal"           "0.6.0"  "0.6.0" 0
+version_ge_test "lower patch"     "0.6.0"  "0.6.1" 1
+version_ge_test "higher patch"    "0.6.1"  "0.6.0" 0
+version_ge_test "lower minor"     "0.5.9"  "0.6.0" 1
+version_ge_test "higher minor"    "0.7.0"  "0.6.0" 0
+version_ge_test "0.10.0 vs 0.9.0" "0.10.0" "0.9.0" 0
+version_ge_test "with suffix"     "0.6.0-dev1" "0.6.0" 0
+version_ge_test "hisn prefix"     "hisn 0.6.0" "0.6.0" 0
+version_ge_test "lower major"     "0.9.0"  "1.0.0" 1
+echo "=== version_ge self-test: $vt_pass pass, $vt_fail fail ==="
+if [ "$vt_fail" -gt 0 ]; then
+  echo "FAIL  version-ge-self-test ($vt_fail cases failed)"
+  fail=$((fail+1))
+fi
+
 if command -v go >/dev/null 2>&1 && command -v hisn >/dev/null 2>&1; then
   hisn_ver=$(hisn --version 2>&1 | head -1 || echo "unknown")
   # Read the minimum from the source (internal/sandbox.MinHisnVersion).
   min_ver=$(grep -o 'MinHisnVersion = "[^"]*"' internal/sandbox/backend.go 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
-  hisn_ok=0
-  if [ -n "$min_ver" ]; then
-    # Numeric comparison of dot-separated parts: 0.6.0 > 0.4.2.
-    h1=$(echo "$hisn_ver" | sed 's/^hisn //;s/[^0-9].*$//' | cut -d. -f1)
-    h2=$(echo "$hisn_ver" | sed 's/^hisn //;s/[^0-9].*$//' | cut -d. -f2)
-    h3=$(echo "$hisn_ver" | sed 's/^hisn //;s/[^0-9].*$//' | cut -d. -f3)
-    m1=$(echo "$min_ver" | cut -d. -f1)
-    m2=$(echo "$min_ver" | cut -d. -f2)
-    m3=$(echo "$min_ver" | cut -d. -f3)
-    h1=${h1:-0}; h2=${h2:-0}; h3=${h3:-0}
-    m1=${m1:-0}; m2=${m2:-0}; m3=${m3:-0}
-    if [ "$h1" -gt "$m1" ] 2>/dev/null || \
-       { [ "$h1" -eq "$m1" ] 2>/dev/null && [ "$h2" -gt "$m2" ] 2>/dev/null; } || \
-       { [ "$h1" -eq "$m1" ] 2>/dev/null && [ "$h2" -eq "$m2" ] 2>/dev/null && [ "$h3" -ge "$m3" ] 2>/dev/null; }; then
-      hisn_ok=1
-    fi
-  fi
-  if [ "$hisn_ok" -eq 1 ]; then
+  if [ -n "$min_ver" ] && version_ge "$hisn_ver" "$min_ver"; then
     # Run with the REAL HOME restored (the temp HOME has no ssh agent,
     # no known_hosts). WAKIL_HISN_BIN points at the real binary so the
     # test does not LookPath from the temp HOME.
