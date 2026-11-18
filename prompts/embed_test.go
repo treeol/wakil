@@ -16,11 +16,30 @@ func TestEmbeddedAgentPrompt(t *testing.T) {
 		"## Core loop",
 		"## Secrets",
 		"## Shell",
+		"## External side-effect gating, grants & session policy",
 		"## Subagents",
+		"Automatic Mashūra rounds",
+		"apply_skill_template",
+		"git_status",
+		"/zdr",
+		"/region",
+		"/network",
+		"/grants",
+		"/handoff",
+		"What survives in active context",
 	}
 	for _, m := range wantMarkers {
 		if !strings.Contains(EmbeddedAgentPrompt, m) {
 			t.Errorf("EmbeddedAgentPrompt missing marker %q", m)
+		}
+	}
+	for _, stale := range []string{
+		"personality.txt (proxy)",
+		"verification.txt (proxy)",
+		"DockerExecutor",
+	} {
+		if strings.Contains(EmbeddedAgentPrompt, stale) {
+			t.Errorf("EmbeddedAgentPrompt still contains stale phrase %q", stale)
 		}
 	}
 }
@@ -36,7 +55,13 @@ func TestEmbeddedSplitPrompts(t *testing.T) {
 		"## Secrets",
 		"## Shell",
 		"## Files",
+		"## External side-effect gating, grants & session policy",
 		"## Honesty Invariants",
+		"Signing is enforced",
+		"/grants",
+		"/zdr",
+		"/region",
+		"/network",
 	}
 	for _, m := range coreMarkers {
 		if !strings.Contains(EmbeddedCorePrompt, m) {

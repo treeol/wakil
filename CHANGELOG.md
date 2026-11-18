@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **System prompt updated to match current Wakil features.** `prompts/agent.txt` (and the `/prompt core` split files `prompts/core.txt` and `prompts/extension.txt`) now reflects current features and removes stale references: ungated read-only `git_*` tools and `read_file_full`, Mashūra levels (`off|low|medium|high`) and Wakil-started automatic struggle rounds, per-session `/grants` and `/auto` rules, `/zdr` and `/region` data policy, `/network host|open`, template skill tools (`apply_skill_template`, `capture_skill_template`, `check_skill_template`), what survives mid-turn `collapse_context`, and `/handoff [stop|proceed]`.
+
 ### Fixed
 
 - **Mashūra uses the configured OpenRouter backend's credentials.** Mashūra panel calls, availability checks, and `/mashura` status now resolve their OpenRouter credential from the active OpenRouter endpoint (or, when the active endpoint is local, the first configured OpenRouter endpoint sorted by name) instead of reading `OPENROUTER_API_KEY` from the shell environment. The environment variable is used only when no OpenRouter endpoint is configured; an OpenRouter endpoint with no credential fails closed instead of falling back to the environment. `/mashura` reports the credential source by name (`backend config (<name>)` or `environment (<var>)`, with a proxy note when the main route uses an `ilm-proxy` `openrouter` backend) and never prints a key value.
