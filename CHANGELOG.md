@@ -7,17 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] - 2026-11-18
+
 ### Added
 
-- **`network = "open"` for hisn sessions (hisn 0.6.0).** `sandbox.hisn.network_mode = "open"` (config) or `/network open` (slash command) narrows outbound network to public TCP only: unix sockets and loopback work; private and LAN addresses, UDP and other families get EACCES; DNS is served inside the session. It needs kernel 5.9+ and Yama ptrace_scope 0 or 1; hisn refuses to start otherwise and Wakil reports the reason — it never falls back to a wider mode. The project file (`.wakil/sandbox.json` `hisn.network`) may narrow to `"open"` but never widen; the per-repo override (`/network`) may set either. A change applies from the next session start. The startup banner and `/sandbox` show the network mode in use.
+- **`network = "open"` for hisn sessions (hisn 0.6.0).** Set `sandbox.hisn.network_mode = "open"` in your config, or switch with `/network open`. Sessions then reach the public internet over TCP only; anything on your own network (a NAS, a local git server, private LAN addresses) is blocked, as are UDP and other network families — unix sockets and loopback keep working and name resolution runs inside the session. It needs a kernel 5.9+ and a Yama `ptrace_scope` of 0 or 1; hisn refuses to start otherwise and Wakil reports the reason — it never falls back to a wider mode. A project file (`.wakil/sandbox.json` `hisn.network`) may narrow to `"open"` but never widen out of it; the per-repo override (`/network`) may set either. A change applies from the next session start. The startup banner and `/sandbox` show the network mode in use.
 
 ### Changed
 
-- **Minimum hisn raised to 0.6.0.** Older hisn is refused at startup; there is no fallback.
+- **hisn 0.6.0 is now required.** Older hisn is refused at startup; with no explicit `sandbox.backend` the default backend falls back to Docker (with a banner note) when hisn is missing or too old, and fails when neither is available. Upgrade hisn (`install.sh` downloads the 0.6.0 release) or set `sandbox.backend` to `docker`.
 
 ### Fixed
 
-- **Flaky TUI test nil pointer.** `fakeFacade.DispatchCommand` panicked through its embedded nil interface when a slash command reached the real program through the screen harness, racing the test's skip check (`TestPerfWritesToDiag`, `TestScreenNewAndResume`). The fake now returns a safe empty `CommandResult`.
+- **A flaky TUI test no longer panics.** When a slash command reached the real program through the screen harness, the fake facade could panic through its embedded nil interface and abort the test run; the fake now returns a safe empty result.
+
+### Fixed (review)
+
+- **`/network reset` reaches the sandbox backend.** Clearing the override with `/network reset` now applies the effective mode (config/default) to the backend for the next session start instead of silently leaving the previous override in place for one more run; the status line also names the source that actually decided the effective mode when a `host` override wins over an `open` config.
 
 ## [0.8.4] - 2026-11-16
 
