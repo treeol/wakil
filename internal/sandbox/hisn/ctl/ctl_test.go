@@ -127,20 +127,21 @@ func (f *fakeServer) serveConn(t *testing.T, conn net.Conn) {
 	f.fdsPer = append(f.fdsPer, fds)
 	f.mu.Unlock()
 	id := "e-" + itoa(n)
+	// Per-exec control: a signal on a FRESH connection lands in sigc. argv
+	// ["trapterm"] ignores TERM (like `trap '' TERM`); KILL always ends it.
+	// The channel is registered together with the exec id and BEFORE the
+	// response is written: the client may signal the moment it reads the
+	// response, and a signal that finds no channel would be dropped.
+	sigc := make(chan string, 8)
 	f.mu.Lock()
 	f.exitIDs = append(f.exitIDs, id)
+	f.sigcs[id] = sigc
 	f.mu.Unlock()
 	writeJSON(uc, map[string]any{"ok": true, "pid": 4200 + n, "exec_id": id})
 
 	stdin := os.NewFile(uintptr(fds[0]), "stdin")
 	stdout := os.NewFile(uintptr(fds[1]), "stdout")
 	stderr := os.NewFile(uintptr(fds[2]), "stderr")
-	// Per-exec control: a signal on a FRESH connection lands in sigc. argv
-	// ["trapterm"] ignores TERM (like `trap '' TERM`); KILL always ends it.
-	sigc := make(chan string, 8)
-	f.mu.Lock()
-	f.sigcs[id] = sigc
-	f.mu.Unlock()
 	trapTERM := len(req.Argv) > 0 && req.Argv[0] == "trapterm"
 	// Relay stdin → stdout verbatim, a note to stderr, exit 7 on stdin EOF —
 	// or end with {"exit":{"signal":"KILL"}} on a KILL (and "TERM" on TERM
