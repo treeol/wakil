@@ -25,9 +25,14 @@ type Status struct {
 	Mode        string `json:"mode,omitempty"`
 	Profile     string `json:"profile,omitempty"`      // named profile, if any
 	ProfilePath string `json:"profile_path,omitempty"` // generated profile of the running session
-	// Network is the session network mode: "host" (default) or "open"
-	// (opt-in, hisn 0.6.0).
+	// Network is the live session's network mode: "host" (default) or "open"
+	// (opt-in, hisn 0.6.0). When a session is running, this is the mode that
+	// session actually started with; before a session starts, it is the mode
+	// the next session will start with.
 	Network string `json:"network,omitempty"`
+	// NextNetwork is the queued network mode for the next session start when it
+	// differs from the running session's live Network (e.g. after /network).
+	NextNetwork string `json:"next_network,omitempty"`
 	// Risk is the highest label ("none" when nothing widens the sandbox).
 	Risk         string         `json:"risk"`
 	Capabilities []Capability   `json:"capabilities,omitempty"`

@@ -42,7 +42,13 @@ func FormatSandboxStatus(st sandbox.Status) string {
 	if st.Mode != "" {
 		fmt.Fprintf(&b, "\n  mode: %s", st.Mode)
 	}
-	if st.Network != "" && st.Network != "host" {
+	if st.NextNetwork != "" && st.NextNetwork != st.Network {
+		cur := st.Network
+		if cur == "" {
+			cur = "host"
+		}
+		fmt.Fprintf(&b, "\n  network: %s (next session: %s)", cur, st.NextNetwork)
+	} else if st.Network != "" && st.Network != "host" {
 		fmt.Fprintf(&b, "\n  network: %s", st.Network)
 	}
 	if st.Profile != "" {

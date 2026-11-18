@@ -608,6 +608,50 @@ func TestNetworkModeGetterAndSetter(t *testing.T) {
 	}
 }
 
+// TestNetworkMode_LiveVsQueuedWhileSessionRunning verifies that a running
+// session keeps its original live NetworkMode() across SetNetworkMode until
+// the session is replaced, and SandboxStatus reports both Network (live) and
+// NextNetwork (queued) when they differ.
+func TestNetworkMode_LiveVsQueuedWhileSessionRunning(t *testing.T) {
+	_, fe := openFake(t)
+	opts := fe.options()
+	b, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Start(context.Background(), sandbox.Session{ID: "chat-live-net"}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+
+	if got := b.NetworkMode(); got != "host" {
+		t.Fatalf("running host session: NetworkMode = %q, want host", got)
+	}
+
+	// Queue "open" for the next session while the host session is still live.
+	b.SetNetworkMode("open")
+	if got := b.NetworkMode(); got != "host" {
+		t.Fatalf("after SetNetworkMode(open) on running host session: NetworkMode = %q, want host", got)
+	}
+	st := b.SandboxStatus(context.Background())
+	if st.Network != "host" || st.NextNetwork != "open" {
+		t.Fatalf("SandboxStatus while queued = (Network:%q, NextNetwork:%q), want (host, open)", st.Network, st.NextNetwork)
+	}
+
+	// Replace the session (new chat id): the new session starts with "open"
+	// and NextNetwork clears because live and queued now match.
+	if err := b.Start(context.Background(), sandbox.Session{ID: "chat-live-net-2"}); err != nil {
+		t.Fatalf("Start replacement: %v", err)
+	}
+	if got := b.NetworkMode(); got != "open" {
+		t.Fatalf("after session replacement: NetworkMode = %q, want open", got)
+	}
+	st2 := b.SandboxStatus(context.Background())
+	if st2.Network != "open" || st2.NextNetwork != "" {
+		t.Fatalf("SandboxStatus after replacement = (Network:%q, NextNetwork:%q), want (open, empty)", st2.Network, st2.NextNetwork)
+	}
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {

@@ -34,6 +34,10 @@ type record struct {
 	// adopted (0.4.1: the run process exited, the supervisor lives on); a
 	// foreign Inst stays refused.
 	Inst string `json:"inst,omitempty"`
+	// Network is the network mode ("open" or "host") this session was started
+	// with, persisted so an adopted live session reports its actual mode even
+	// if SetNetworkMode changed the next-session mode before adoption.
+	Network string `json:"network,omitempty"`
 }
 
 func (b *Backend) sessionsDir() string         { return filepath.Join(b.opts.StateDir, "sessions") }

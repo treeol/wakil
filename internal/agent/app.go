@@ -413,6 +413,7 @@ type App struct {
 	// Stream: this is messages[0], the earliest possible byte position).
 	preambleDay string
 	preambleGen uint64 // incremented on explicit preamble invalidation; guarded by stateMu
+	preambleNet string // live network mode baked into Conv[0]; guarded by stateMu
 
 	// Session is the on-disk record persisted after each turn. nil disables
 	// persistence (e.g. in tests).
@@ -1087,6 +1088,7 @@ func (a *App) InstallSession(s *Session) {
 	a.resetStyleGuides()
 	a.resetBackendConsent()
 	a.preambleDay = ""
+	a.preambleNet = ""
 }
 
 // SetChatID changes the main conversation's chat ID. It is the ONE place the
@@ -1145,6 +1147,7 @@ func (a *App) NewConversationTransition(chatID string) {
 	a.resetStyleGuides()
 
 	a.preambleDay = ""
+	a.preambleNet = ""
 	// Reset session-started flag so session_start hooks fire for the new session.
 	a.sessionStarted = false
 	a.setChatID(chatID)
@@ -1899,6 +1902,10 @@ func (a *App) costStatusLine() string {
 // zero. Time-of-day is not worth paying that cost on every request; a
 // same-day timestamp accuracy is enough for the "treat this as now" framing.
 func (a *App) buildPreamble(today string) string {
+	return a.buildPreambleForNetwork(today, a.sessionNetworkMode())
+}
+
+func (a *App) buildPreambleForNetwork(today, netMode string) string {
 	date := "Current date: " + today +
 		". Treat this as the present moment for any reasoning about dates, recency, or current events."
 
@@ -2068,9 +2075,9 @@ func (a *App) buildPreamble(today string) string {
 			parts = append(parts, memLine)
 		}
 	}
-	// Network mode: last line of the per-session suffix so any /network change
-	// only invalidates the tail of the system prompt.
-	parts = append(parts, networkModeLine(a.sessionNetworkMode()))
+	// Network mode: last line of the per-session suffix so a change in the live
+	// sandbox network mode only alters the tail of the system prompt.
+	parts = append(parts, networkModeLine(netMode))
 	return strings.Join(parts, "\n")
 }
 
@@ -2128,11 +2135,13 @@ func (a *App) ensurePreamble() {
 		return
 	}
 	today := time.Now().Format("Monday, 2 January 2006")
+	liveNet := a.sessionNetworkMode()
 	a.stateMu.RLock()
 	prevDay := a.preambleDay
+	prevNet := a.preambleNet
 	startGen := a.preambleGen
 	a.stateMu.RUnlock()
-	if prevDay == today {
+	if prevDay == today && prevNet == liveNet {
 		return
 	}
 
@@ -2153,7 +2162,7 @@ func (a *App) ensurePreamble() {
 		pruneCancel()
 	}
 
-	text := a.buildPreamble(today)
+	text := a.buildPreambleForNetwork(today, liveNet)
 	a.convMu.Lock()
 	// A pinned first system message that this process has not yet adopted as
 	// its preamble (preambleDay == "") is a foreign seed — the stop-mode
@@ -2197,6 +2206,7 @@ func (a *App) ensurePreamble() {
 	a.stateMu.Lock()
 	if a.preambleGen == startGen {
 		a.preambleDay = today
+		a.preambleNet = liveNet
 	}
 	a.stateMu.Unlock()
 }

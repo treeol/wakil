@@ -382,7 +382,11 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		b.prune(ctx)
 	}
 
-	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Name: name, Cwd: s.HostCwd, Inst: b.inst}
+	startNet := "host"
+	if b.opts.Surface.Network == "open" {
+		startNet = "open"
+	}
+	rec := record{ID: s.ID, Pid: os.Getpid(), PidStart: procStart(os.Getpid()), Token: newToken(), Name: name, Cwd: s.HostCwd, Inst: b.inst, Network: startNet}
 	if err := b.createRecord(rec); err != nil {
 		if errors.Is(err, errSessionInUse) {
 			return nil, fmt.Errorf("%w: %w", sandbox.ErrSessionInUse, err)
@@ -452,8 +456,16 @@ func (b *Backend) adoptLocked(ctx context.Context, r record) (*live, error) {
 
 func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	lctx, cancel := context.WithCancel(context.Background())
+	netMode := rec.Network
+	if netMode == "" {
+		if b.opts.Surface.Network == "open" {
+			netMode = "open"
+		} else {
+			netMode = "host"
+		}
+	}
 	l := &live{id: rec.ID, token: rec.Token, runtimeRoot: b.primaryRuntimeRoot(), ctx: lctx, cancel: cancel, sup: sup,
-		name: rec.Name, label: b.clientLabel(), inst: b.inst + "." + rec.Token[:6]}
+		name: rec.Name, label: b.clientLabel(), inst: b.inst + "." + rec.Token[:6], network: netMode}
 	// When the supervisor dies the session is over: end every in-flight hisn
 	// client bound to it (they would otherwise be talking to a dead socket).
 	go func() {

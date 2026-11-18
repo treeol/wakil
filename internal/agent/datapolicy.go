@@ -191,7 +191,7 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 			ns.SetNetworkMode(app.EffectiveNetwork())
 		}
 		msg := app.networkStatus()
-		msg += "\nApplies from the next session start (the running session keeps its network mode)."
+		msg += "\n" + app.networkApplyLine()
 		return true, false, note(msg)
 	case "host", "open":
 		app.stateMu.Lock()
@@ -205,11 +205,17 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 			ns.SetNetworkMode(arg)
 		}
 		msg := app.networkStatus()
-		msg += "\nApplies from the next session start (the running session keeps its network mode)."
+		msg += "\n" + app.networkApplyLine()
 		return true, false, note(msg)
 	default:
 		return true, false, note("usage: /network [host|open|reset]")
 	}
+}
+
+// networkApplyLine describes when a /network change takes effect, naming the
+// live session's current mode.
+func (a *App) networkApplyLine() string {
+	return fmt.Sprintf("applies at the next session; current session is still %s", a.sessionNetworkMode())
 }
 
 // networkStatus renders the /network status: the effective value and where it

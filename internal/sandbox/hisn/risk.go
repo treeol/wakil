@@ -206,16 +206,30 @@ func (b *Backend) plan(ctx context.Context) error {
 
 // SandboxStatus implements sandbox.StatusReporter.
 func (b *Backend) SandboxStatus(ctx context.Context) sandbox.Status {
+	b.mu.RLock()
 	s := b.opts.Surface
+	cur := b.cur
+	queuedNet := s.Network
+	if queuedNet == "" {
+		queuedNet = "host"
+	}
+	liveNet := queuedNet
+	if cur != nil && !cur.dead() {
+		if cur.network == "open" {
+			liveNet = "open"
+		} else {
+			liveNet = "host"
+		}
+	}
+	b.mu.RUnlock()
 	st := sandbox.Status{Backend: "hisn", Risk: b.planned.Risk, Capabilities: b.planned.Capabilities, Notes: b.planned.Notes}
 	if st.Risk == "" {
 		st.Risk = "none"
 	}
-	net := b.opts.Surface.Network
-	if net == "" {
-		net = "host"
+	st.Network = liveNet
+	if liveNet != queuedNet {
+		st.NextNetwork = queuedNet
 	}
-	st.Network = net
 	switch {
 	case s.Profile != "":
 		st.Mode, st.Profile = "named profile", s.Profile
@@ -244,9 +258,6 @@ func (b *Backend) SandboxStatus(ctx context.Context) sandbox.Status {
 	st.Grants = b.pm.Grants()
 	st.KVR = b.kvrNote
 	live := map[string]sandbox.ServiceState{}
-	b.mu.RLock()
-	cur := b.cur
-	b.mu.RUnlock()
 	if cur != nil {
 		if s.Profile == "" {
 			st.ProfilePath = b.profilePath(cur.id)

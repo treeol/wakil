@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Active network mode in the system prompt.** Wakil now appends one line at the end of the per-session system prompt stating the active network mode — `host` (LAN and internet reachable) or `open` (public internet over TCP only; LAN and private addresses are refused with a permission error). The line reflects the real session mode (user config, project `.wakil/sandbox.json` narrowing, and per-repo `/network` overrides) and updates in place for the next request when `/network` changes.
+- **Active network mode in the system prompt.** Wakil now appends one line at the end of the per-session system prompt stating the running sandbox's live network mode — `host` (LAN and internet reachable) or `open` (public internet over TCP only; LAN and private addresses are refused with a permission error). When `/network` queues a different mode for the next session, the prompt line stays on the live session's mode until the session is replaced, `/network` notes `applies at the next session; current session is still <mode>`, and `/sandbox` shows both (`network: <live> (next session: <queued>)`).
 
 ### Changed
 

@@ -121,6 +121,10 @@ type live struct {
 	name  string
 	label string
 	inst  string
+	// network is the network mode ("open" or "host") this live session was
+	// actually started with. SetNetworkMode changes only future starts; a
+	// running session keeps its original network mode until replaced.
+	network string
 }
 
 // dead reports whether the session's supervisor has exited. A dead session
@@ -679,12 +683,19 @@ func (b *Backend) SetNetworkMode(mode string) {
 	b.opts.Surface.Network = mode
 }
 
-// NetworkMode implements sandbox.NetworkGetter, returning the effective
-// session network mode ("open" or "host") including any project-file narrowing
-// or SetNetworkMode override.
+// NetworkMode implements sandbox.NetworkGetter, returning the live session's
+// network mode ("open" or "host") when a session is running, or the configured
+// next-session mode (including project-file narrowing and SetNetworkMode) when
+// no session is running yet.
 func (b *Backend) NetworkMode() string {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
+	if b.cur != nil && !b.cur.dead() {
+		if b.cur.network == "open" {
+			return "open"
+		}
+		return "host"
+	}
 	if b.opts.Surface.Network == "open" {
 		return "open"
 	}

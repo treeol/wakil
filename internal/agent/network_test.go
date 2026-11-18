@@ -1,10 +1,12 @@
 package agent
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/sandbox"
 )
 
 // TestNetworkCommand: /network shows the current value with no argument,
@@ -320,5 +322,105 @@ func TestSystemPromptNetworkMode(t *testing.T) {
 	appGen.stateMu.RUnlock()
 	if dayAfterRebuild == "" || dayAfterRebuild == preambleRefreshSentinel {
 		t.Errorf("preambleDay after uncontested rebuild = %q, want today", dayAfterRebuild)
+	}
+}
+
+// runningSessionNetworkExec models a sandbox backend (such as hisn) whose
+// running session keeps its original network mode until replaced.
+type runningSessionNetworkExec struct {
+	*fakeExecutor
+	live   string
+	queued string
+}
+
+func (e *runningSessionNetworkExec) SetNetworkMode(mode string) {
+	if mode != "open" {
+		mode = "host"
+	}
+	e.queued = mode
+}
+
+func (e *runningSessionNetworkExec) NetworkMode() string {
+	return e.live
+}
+
+func (e *runningSessionNetworkExec) replaceSession() {
+	e.live = e.queued
+}
+
+func (e *runningSessionNetworkExec) SandboxStatus(_ context.Context) sandbox.Status {
+	st := sandbox.Status{Backend: "hisn", Risk: "none", Network: e.live}
+	if e.queued != "" && e.queued != e.live {
+		st.NextNetwork = e.queued
+	}
+	return st
+}
+
+// TestSystemPromptNetworkMode_StaysLiveUntilSessionReplaced verifies that
+// running /network open on a live host session keeps the system prompt's
+// "Network mode:" line at "host", tells the user in /network output that the
+// current session is still host, shows both in /sandbox, and updates the
+// prompt line to "open" once the sandbox session is replaced.
+func TestSystemPromptNetworkMode_StaysLiveUntilSessionReplaced(t *testing.T) {
+	wantHost := "Network mode: host (LAN and internet reachable)."
+	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them)."
+
+	lastLine := func(s string) string {
+		lines := strings.Split(s, "\n")
+		return lines[len(lines)-1]
+	}
+
+	ex := &runningSessionNetworkExec{
+		fakeExecutor: newFakeExecutor(),
+		live:         "host",
+		queued:       "host",
+	}
+	app := &App{
+		Cfg:         config.Config{WorkDir: t.TempDir()},
+		Exec:        ex,
+		AgentPrompt: "STATIC PROMPT",
+		InjectDate:  true,
+	}
+
+	// Initial prompt reports the running session's live mode ("host").
+	app.ensurePreamble()
+	if ll := lastLine(DerefStr(app.Conv[0].Content)); ll != wantHost {
+		t.Fatalf("initial prompt last line = %q, want %q", ll, wantHost)
+	}
+
+	// /network open queues "open" for the next session; the running session is still "host".
+	handled, _, cmd := handleNetworkCommand([]string{"/network", "open"}, app)
+	if !handled || cmd == nil {
+		t.Fatal("/network open must be handled")
+	}
+	msg := cmd().(SysNoteMsg).Text
+	if !strings.Contains(msg, "applies at the next session; current session is still host") {
+		t.Errorf("/network output = %q, want live-session notice", msg)
+	}
+
+	// Next request before session replacement must STILL say "host".
+	app.ensurePreamble()
+	if ll := lastLine(DerefStr(app.Conv[0].Content)); ll != wantHost {
+		t.Errorf("prompt before session replace = %q, want %q", ll, wantHost)
+	}
+
+	// /sandbox shows both live and queued next-session modes when they differ.
+	sbOut := app.renderSandboxState()
+	if !strings.Contains(sbOut, "network: host (next session: open)") {
+		t.Errorf("/sandbox output missing live+next network:\n%s", sbOut)
+	}
+
+	// Once the session is replaced (picking up the queued "open" mode),
+	// ensurePreamble updates the prompt line to "open" automatically.
+	ex.replaceSession()
+	app.ensurePreamble()
+	if ll := lastLine(DerefStr(app.Conv[0].Content)); ll != wantOpen {
+		t.Errorf("prompt after session replace = %q, want %q", ll, wantOpen)
+	}
+
+	// /sandbox now shows only the active "open" mode (no next-session mismatch).
+	sbOut2 := app.renderSandboxState()
+	if strings.Contains(sbOut2, "next session:") || !strings.Contains(sbOut2, "network: open") {
+		t.Errorf("/sandbox output after replace = \n%s", sbOut2)
 	}
 }
