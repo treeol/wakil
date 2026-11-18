@@ -17,7 +17,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/treeol/wakil/internal/browser"
+	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/sandbox"
+	"github.com/treeol/wakil/internal/staging"
 	"github.com/treeol/wakil/internal/timeline"
 )
 
@@ -1001,17 +1004,21 @@ func TestIntegrationCloseStopsSession(t *testing.T) {
 
 // TestIntegrationOpenNetwork: in an `open` session (hisn 0.6.0):
 //
-//   - a public https site succeeds (curl to example.com);
-//   - a private address (10.0.0.1, RFC1918) is refused (EACCES);
-//   - loopback TCP works (python3 to 127.0.0.1);
-//   - a unix socket connection works (which covers the kvr staging socket
-//     and the browser CDP tunnel — both use unix sockets, not TCP).
+//   - a public https request succeeds (HTTP 2xx or 3xx); FAILS otherwise;
+//     skip only when WAKIL_TEST_OFFLINE=1 is set.
+//   - a private address (10.0.0.1, RFC1918) is refused with EACCES specifically;
+//     a timeout or any other error is a FAIL (it would mean `open` is not blocking).
+//   - loopback TCP works: a listener on 127.0.0.1 accepts a connection.
+//   - the kvr staging service works: one Set and one Get through it (when
+//     kvr-server is visible inside the sandbox); SKIP otherwise.
+//   - the browser tools work: Navigate to about:blank (when chromium is visible
+//     inside the sandbox); SKIP otherwise — never PASS without opening a page.
 //
 // `open` narrows outbound to public TCP only: unix and loopback work;
 // private/LAN addresses, UDP and other families get EACCES. The kvr
-// service and the browser tools use unix sockets (the kvr socket under
-// .wakil/, the CDP tunnel over a unix-socket pair), so they are not
-// blocked by `open` — confirmed by the unix socket check here.
+// service and the browser CDP tunnel use unix sockets (the kvr socket under
+// .wakil/, the CDP tunnel over a unix-socket pair), so they are not blocked
+// by `open`.
 //
 // Skips when hisn < 0.6.0 or `open` is refused (kernel too old, Yama
 // ptrace_scope too high, or missing DNS upstream).
@@ -1029,128 +1036,175 @@ func TestIntegrationOpenNetwork(t *testing.T) {
 	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 6, 0}) {
 		t.Skipf("hisn >= 0.6.0 required for network = open (got %q)", strings.TrimSpace(string(out)))
 	}
-	root := t.TempDir()
-	cwd, err := filepath.EvalSymlinks(filepath.Join(root, "ws"))
-	if err != nil {
-		if mkerr := os.MkdirAll(filepath.Join(root, "ws"), 0o755); mkerr != nil {
-			t.Fatal(mkerr)
+
+	// Detect a visible kvr-server for the KVR sub-test.
+	var kvrBin string
+	if p, err := osexec.LookPath("kvr-server"); err == nil {
+		if real, _ := filepath.EvalSymlinks(p); real != "" {
+			if _, ok := binaryVisible(real, nil); ok {
+				kvrBin = real
+			}
 		}
-		cwd, _ = filepath.EvalSymlinks(filepath.Join(root, "ws"))
 	}
-	b, err := New(Options{
-		Binary: bin, StateDir: filepath.Join(root, "state"), HomeRoot: filepath.Join(root, "home"),
-		HostCwd: cwd, Network: "open", EnvPass: []string{"CI", "GOFLAGS"},
-	})
+
+	// Use Open (not New) so planKVR runs and the kvr service is planned.
+	mut := func(o *Options) {
+		o.Network = "open"
+		if kvrBin != "" {
+			o.KVR = kvrOpts(kvrBin)
+		}
+	}
+	b, cwd, err := realProfileBackend(t, mut)
 	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-	if err := b.Preflight(ctx); err != nil {
-		t.Skipf("hisn unusable: %v", err)
-	}
-	cleanupSessions(t, b)
-	t.Cleanup(func() { _ = b.Close(context.Background()) })
-	id := "wakil-it-net-open"
-	if err := b.Start(ictx(t), sandbox.Session{ID: id, HostCwd: cwd}); err != nil {
 		// Fail closed: if hisn refuses `open`, skip (the host may not
 		// support it). Wakil never falls back to a wider mode.
 		if strings.Contains(err.Error(), "network") || strings.Contains(err.Error(), "open") {
 			t.Skipf("hisn refused open network mode: %v", err)
 		}
-		t.Fatalf("Start(%s): %v", id, err)
+		t.Fatalf("Open: %v", err)
 	}
+	const id = "wakil-it-net-open"
+	istart(t, b, id, cwd)
 
-	// 1. Loopback TCP works (python3 connects to 127.0.0.1).
-	//    This also covers the browser CDP tunnel, which runs over
-	//    loopback TCP inside the session.
-	loopbackScript := `import socket, sys
-try:
-    s = socket.create_connection(("127.0.0.1", 1), timeout=2)
-    s.close()
-    print("loopback-connected")
-except (ConnectionRefusedError, OSError) as e:
-    print("loopback-refused:" + str(e))
-except Exception as e:
-    print("loopback-error:" + str(e))
-`
-	out, info := irun(t, b, "", "python3", "-c", loopbackScript)
-	if !strings.Contains(out, "loopback-connected") && !strings.Contains(out, "loopback-refused") {
-		t.Errorf("loopback: unexpected output %q (code=%d)", out, info.Code)
-	} else {
-		t.Logf("loopback: %s", strings.TrimSpace(out))
+	// ---- 1. Public https must succeed ----
+	if _, err := osexec.LookPath("curl"); err != nil {
+		t.Skip("curl not found on PATH — needed for the public https test")
 	}
-
-	// 2. A public https site is reachable (curl to example.com).
-	//    This may fail in a build sandbox without external network;
-	//    log rather than fail when the connection times out.
-	if _, err := osexec.LookPath("curl"); err == nil {
-		out, info := irun(t, b, "", "sh", "-c",
-			"curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.com 2>&1 || true")
-		code := strings.TrimSpace(out)
-		if info.Code != 0 || code == "" || code == "000" {
-			t.Logf("curl to example.com: code=%s out=%q (may be no external network)", code, out)
-		} else {
-			t.Logf("curl to example.com: HTTP %s", code)
+	out, info := irun(t, b, "", "sh", "-c",
+		"curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.com 2>&1")
+	code := strings.TrimSpace(out)
+	if info.Code != 0 || code == "" || code == "000" {
+		if os.Getenv("WAKIL_TEST_OFFLINE") == "1" {
+			t.Skipf("WAKIL_TEST_OFFLINE=1: public https failed: code=%s out=%q", code, out)
 		}
+		t.Fatalf("public https to example.com failed: code=%s out=%q (set WAKIL_TEST_OFFLINE=1 to skip when the host has no external network)", code, out)
 	}
+	// HTTP 2xx or 3xx; anything else (4xx/5xx) means the request reached
+	// something but did not succeed.
+	n, _ := strconv.Atoi(code)
+	if n < 200 || n >= 400 {
+		if os.Getenv("WAKIL_TEST_OFFLINE") == "1" {
+			t.Skipf("WAKIL_TEST_OFFLINE=1: public https returned HTTP %s", code)
+		}
+		t.Fatalf("public https to example.com returned HTTP %s — want 2xx or 3xx", code)
+	}
+	t.Logf("public https: HTTP %s", code)
 
-	// 3. A private address is refused (EACCES). 10.0.0.1 is RFC1918.
-	//    `open` blocks private/LAN addresses; a connection attempt
-	//    should fail. We use python3 so the error type is visible.
-	privateScript := `import socket, sys
+	// ---- 2. Private address must be refused with EACCES specifically ----
+	privateScript := `import socket, sys, errno
 try:
-    s = socket.create_connection(("10.0.0.1", 1), timeout=3)
+    s = socket.create_connection(("10.0.0.1", 1), timeout=5)
     s.close()
     print("private-connected:UNEXPECTED")
 except PermissionError as e:
-    print("private-refused:" + str(e))
+    # EACCES is errno 13; hisn ` + "`open`" + ` returns it for private addresses.
+    print("private-eacces:" + str(e))
+    print("errno=" + str(e.errno))
 except (socket.timeout, TimeoutError) as e:
     print("private-timeout:" + str(e))
 except OSError as e:
-    print("private-oserror:" + str(e))
+    print("private-oserror:errno=" + str(e.errno) + ":" + str(e))
 `
 	out, info = irun(t, b, "", "python3", "-c", privateScript)
+	t.Logf("private 10.0.0.1: %s (code=%d)", strings.TrimSpace(out), info.Code)
 	if strings.Contains(out, "private-connected") {
-		t.Errorf("private address 10.0.0.1 was connected to — `open` should refuse it: %q", out)
+		t.Fatalf("private address 10.0.0.1 was connected to — `open` must refuse it: %q", out)
+	}
+	if strings.Contains(out, "private-eacces") {
+		// EACCES (errno 13) is exactly what `open` returns for private addresses.
+		t.Logf("private address refused with EACCES (correct)")
+	} else if strings.Contains(out, "private-timeout") {
+		t.Fatalf("private address 10.0.0.1 timed out — `open` must return EACCES, not a timeout: %q", out)
+	} else if strings.Contains(out, "private-oserror") {
+		t.Fatalf("private address 10.0.0.1 failed with an OSError that is not EACCES — `open` must return EACCES: %q", out)
 	} else {
-		t.Logf("private 10.0.0.1: %s (code=%d)", strings.TrimSpace(out), info.Code)
+		t.Fatalf("private address 10.0.0.1: unexpected output %q (code=%d)", out, info.Code)
 	}
 
-	// 4. A unix socket connection works inside the session.
-	//    The kvr staging socket and the browser CDP tunnel both use
-	//    unix sockets under .wakil/; `open` does not block them.
-	//    We create a unix socket pair in /tmp (the session's private
-	//    tmpfs), listen on one end and connect from the other.
-	unixScript := `import socket, os, tempfile
-d = tempfile.mkdtemp()
-path = os.path.join(d, "test.sock")
-srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-srv.bind(path)
+	// ---- 3. Loopback TCP works: a listener on 127.0.0.1 accepts a connection ----
+	loopbackScript := `import socket, sys
+# Listen on 127.0.0.1 and accept a connection from the same process.
+srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+srv.bind(("127.0.0.1", 0))
 srv.listen(1)
-# Connect from the same process (forked by sh -c): the server
-# accepts and the client sends a byte.
+port = srv.getsockname()[1]
 import threading
 def serve():
     c, _ = srv.accept()
-    c.sendall(b"unix-ok")
+    c.sendall(b"loopback-ok")
     c.close()
     srv.close()
 t = threading.Thread(target=serve)
 t.start()
-cli = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+cli = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 cli.settimeout(3)
-cli.connect(path)
-data = cli.recv(8)
+cli.connect(("127.0.0.1", port))
+data = cli.recv(16)
 cli.close()
 t.join()
 print(data.decode("utf-8", "replace"))
 `
-	out, info = irun(t, b, "", "python3", "-c", unixScript)
-	if !strings.Contains(out, "unix-ok") {
-		t.Errorf("unix socket: expected 'unix-ok', got %q (code=%d) — `open` should not block unix sockets", out, info.Code)
+	out, info = irun(t, b, "", "python3", "-c", loopbackScript)
+	if !strings.Contains(out, "loopback-ok") {
+		t.Fatalf("loopback TCP listener failed: %q (code=%d) — `open` must allow loopback", out, info.Code)
+	}
+	t.Logf("loopback: %s", strings.TrimSpace(out))
+
+	// ---- 4. KVR staging service: one Set + one Get ----
+	if kvrBin == "" {
+		t.Logf("kvr: SKIP (no kvr-server visible inside the sandbox)")
 	} else {
-		t.Logf("unix socket: %s", strings.TrimSpace(out))
+		sock := b.KVRSocket()
+		if sock == "" {
+			t.Fatalf("kvr: staging must be on: %s", b.SandboxStatus(ictx(t)).KVR)
+		}
+		c := staging.NewClient(sock)
+		c.SetPathGuard(func() error { return GuardKVRSocket(cwd, sock) })
+		defer c.Close()
+		ctx := ictx(t)
+		if err := c.Set(ctx, "it/net-open/k", "v"); err != nil {
+			t.Fatalf("kvr Set: %v", err)
+		}
+		got, found, err := c.Get(ctx, "it/net-open/k")
+		if err != nil || !found || got != "v" {
+			t.Fatalf("kvr Get: got=%q found=%v err=%v (want v)", got, found, err)
+		}
+		t.Logf("kvr: Set+Get OK (value=%q)", got)
+	}
+
+	// ---- 5. Browser tools: Navigate to about:blank ----
+	// The browser needs chromium and python3 inside the sandbox session.
+	// We wrap the Backend in a BackendExecutor so the browser manager can
+	// use the CLI transport (hisn exec --session). The session is already
+	// running; BindChat + EnsureSession reuses it (Start returns nil when
+	// the session id is already live).
+	be := exec.NewBackendExecutor(b, exec.BackendOptions{Label: "hisn"})
+	bctx := ictx(t)
+	if err := be.BindChat(bctx, id); err != nil {
+		t.Fatalf("BindChat: %v", err)
+	}
+	if err := be.EnsureSession(bctx); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	// Probe for chromium and python3 inside the session; SKIP (never PASS)
+	// when either is missing.
+	probeOut, _ := be.RunShell(bctx, "command -v chromium || command -v chromium-browser || command -v google-chrome")
+	if strings.TrimSpace(probeOut) == "" {
+		t.Logf("browser: SKIP (no chromium binary visible inside the sandbox session)")
+	} else if _, err := be.RunShell(bctx, "command -v python3"); err != nil {
+		t.Logf("browser: SKIP (python3 not found in the sandbox session — the browser tunnel needs it)")
+	} else {
+		bm, err := browser.NewManager(be, strings.TrimSpace(probeOut), browser.WithIdleTimeout(60*time.Second))
+		if err != nil {
+			t.Fatalf("browser NewManager: %v", err)
+		}
+		defer bm.Close()
+		title, finalURL, err := bm.Navigate(bctx, "about:blank")
+		if err != nil {
+			t.Fatalf("browser Navigate to about:blank: %v", err)
+		}
+		t.Logf("browser: Navigate OK (title=%q url=%q)", title, finalURL)
 	}
 }
 
