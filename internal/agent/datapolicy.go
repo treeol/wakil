@@ -183,7 +183,15 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 		app.NetworkOverride = ""
 		app.stateMu.Unlock()
 		app.saveRepoState(func(s *RepoState) { s.Network = "" })
-		return true, false, note(app.networkStatus())
+		// Resetting must reach the backend too: without it the backend keeps
+		// the previous override for the next session start while the status
+		// line reports the config/default (same push as "host"|"open").
+		if ns, ok := app.Exec.(exec.NetworkSetter); ok {
+			ns.SetNetworkMode(app.EffectiveNetwork())
+		}
+		msg := app.networkStatus()
+		msg += "\nApplies from the next session start (the running session keeps its network mode)."
+		return true, false, note(msg)
 	case "host", "open":
 		app.stateMu.Lock()
 		app.NetworkOverride = arg
@@ -203,16 +211,18 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 }
 
 // networkStatus renders the /network status: the effective value and where it
-// comes from.
+// comes from. The source names the value that actually decided the effective
+// mode: a set override always wins (even "host" over an "open" config), else
+// the config, else the built-in default.
 func (a *App) networkStatus() string {
 	eff := a.EffectiveNetwork()
 	src := "config default"
-	if a.NetworkOverride == "open" {
+	if a.NetworkOverride != "" {
 		src = "repo override"
 	} else if a.Cfg.Sandbox.Hisn.NetworkMode == "open" {
 		src = "config"
 	}
-	if eff == "host" && a.NetworkOverride == "" && a.Cfg.Sandbox.Hisn.NetworkMode == "" {
+	if a.NetworkOverride == "" && a.Cfg.Sandbox.Hisn.NetworkMode == "" {
 		src = "default"
 	}
 	return fmt.Sprintf("network: %s (%s)", eff, src)

@@ -68,6 +68,85 @@ func TestNetworkCommand(t *testing.T) {
 	}
 }
 
+// networkSetter is a fake NetworkSetter for tests: it records the last mode.
+type networkSetter struct {
+	*fakeExecutor
+	last string
+}
+
+func newNetworkSetter() *networkSetter { return &networkSetter{fakeExecutor: newFakeExecutor()} }
+
+func (n *networkSetter) SetNetworkMode(mode string) { n.last = mode }
+
+// TestNetworkResetReachesBackend: /network reset must push the effective mode
+// (override cleared → config/default) to the backend, so the next session
+// start uses the reset value instead of the previous override.
+func TestNetworkResetReachesBackend(t *testing.T) {
+	app := &App{Cfg: config.Config{}}
+	app.Exec = newNetworkSetter()
+	// Simulate a previous /network open, then reset.
+	handled, _, cmd := handleNetworkCommand([]string{"/network", "open"}, app)
+	if !handled || cmd == nil {
+		t.Fatal("/network open must be handled")
+	}
+	cmd()
+	if got := app.Exec.(*networkSetter).last; got != "open" {
+		t.Fatalf("/network open: backend mode: want %q, got %q", "open", got)
+	}
+	handled, _, cmd = handleNetworkCommand([]string{"/network", "reset"}, app)
+	if !handled || cmd == nil {
+		t.Fatal("/network reset must be handled")
+	}
+	cmd()
+	if got := app.Exec.(*networkSetter).last; got != "host" {
+		t.Errorf("/network reset: backend mode: want %q (effective after reset), got %q", "host", got)
+	}
+	// With config "open", reset must push "open" (not the stale "host").
+	app2 := &App{Cfg: config.Config{Sandbox: config.SandboxConfig{Hisn: config.HisnConfig{NetworkMode: "open"}}}}
+	app2.Exec = newNetworkSetter()
+	handled, _, cmd = handleNetworkCommand([]string{"/network", "host"}, app2)
+	if !handled || cmd == nil {
+		t.Fatal("/network host must be handled")
+	}
+	cmd()
+	if got := app2.Exec.(*networkSetter).last; got != "host" {
+		t.Fatalf("/network host: backend mode: want %q, got %q", "host", got)
+	}
+	handled, _, cmd = handleNetworkCommand([]string{"/network", "reset"}, app2)
+	if !handled || cmd == nil {
+		t.Fatal("/network reset must be handled")
+	}
+	cmd()
+	if got := app2.Exec.(*networkSetter).last; got != "open" {
+		t.Errorf("/network reset (config open): backend mode: want %q, got %q", "open", got)
+	}
+}
+
+// TestNetworkStatusSource: the status line names the source that decided the
+// effective mode: a set override (host or open) is "repo override", else an
+// "open" config, else the built-in default.
+func TestNetworkStatusSource(t *testing.T) {
+	cases := []struct {
+		name     string
+		override string
+		config   string
+		want     string
+	}{
+		{"override host over config open", "host", "open", "network: host (repo override)"},
+		{"override open over config host", "open", "host", "network: open (repo override)"},
+		{"config open, no override", "", "open", "network: open (config)"},
+		{"nothing set", "", "", "network: host (default)"},
+		{"config host, no override", "", "host", "network: host (config default)"},
+	}
+	for _, c := range cases {
+		app := &App{Cfg: config.Config{Sandbox: config.SandboxConfig{Hisn: config.HisnConfig{NetworkMode: c.config}}}}
+		app.NetworkOverride = c.override
+		if got := app.networkStatus(); got != c.want {
+			t.Errorf("%s: networkStatus: want %q, got %q", c.name, c.want, got)
+		}
+	}
+}
+
 // TestEffectiveNetwork: the effective network resolves from the per-repo
 // override, then the config, then the default "host".
 func TestEffectiveNetwork(t *testing.T) {
