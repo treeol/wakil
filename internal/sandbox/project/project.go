@@ -53,6 +53,10 @@ type HisnSection struct {
 	// Profile names a hisn profile (built-in or $HISN_PROFILES) used instead
 	// of generation; Wakil then only adds grants.
 	Profile string `json:"profile,omitempty"`
+	// Network narrows the session network to "open" (public TCP only, hisn
+	// 0.6.0). A project may narrow to "open"; "host" is rejected (it would
+	// widen a user setting that is narrower). "" = use the global default.
+	Network string `json:"network,omitempty"`
 }
 
 // Loaded is a parsed project file.
@@ -99,6 +103,7 @@ func Load(cwd string) (Loaded, error) {
 		Services: h.Services, Forward: h.Forward, HostServices: h.HostServices,
 		EnvSet: h.EnvSet, MountsRO: h.MountsRO, MountsRW: h.MountsRW,
 		RiskAck: h.RiskAck, Profile: h.Profile, Home: h.Home, Rootfs: h.Rootfs,
+		Network: h.Network,
 	}
 	return l, nil
 }
@@ -117,6 +122,9 @@ func Parse(raw []byte) (File, error) {
 	}
 	if f.Hisn.Home != "" && f.Hisn.Home != "persist" && f.Hisn.Home != "tmpfs" {
 		return f, fmt.Errorf("hisn.home %q: want \"persist\" or \"tmpfs\"", f.Hisn.Home)
+	}
+	if f.Hisn.Network != "" && f.Hisn.Network != "open" {
+		return f, fmt.Errorf("hisn.network %q: want \"open\" (a project may narrow to \"open\"; \"host\" is not allowed)", f.Hisn.Network)
 	}
 	if err := hisn.ValidateRootfs(f.Hisn.Rootfs, false); err != nil {
 		return f, fmt.Errorf("hisn.rootfs: %w", err)
@@ -176,6 +184,9 @@ func Summary(l Loaded) []string {
 	}
 	if s.Home != "" {
 		out = append(out, fmt.Sprintf("sets the session $HOME mode to %q for this project (overrides sandbox.hisn.home)", s.Home))
+	}
+	if s.Network != "" {
+		out = append(out, fmt.Sprintf("narrows the session network to %q (outbound TCP to public addresses only)", s.Network))
 	}
 	for _, v := range s.Services {
 		out = append(out, fmt.Sprintf("service %q runs INSIDE the sandbox: %s", v.Name, strings.Join(v.Exec, " ")))

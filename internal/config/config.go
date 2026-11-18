@@ -1436,6 +1436,12 @@ type HisnConfig struct {
 	// control-socket client. Default false. The browser always uses the CLI
 	// transport for its ownership marker, whatever this is set to (0.5.0 P4).
 	ExecViaCLI bool `json:"exec_via_cli,omitempty"`
+	// NetworkMode is the default session network mode: "host" (default, the
+	// historical behaviour) or "open" (opt-in, hisn 0.6.0: outbound TCP to
+	// public addresses only). A per-repo override (/network) and the project
+	// file (.wakil/sandbox.json hisn.network) may narrow to "open"; neither
+	// may widen. A change applies from the next session start.
+	NetworkMode string `json:"network_mode,omitempty"`
 }
 
 // MCPServerConfig declares one MCP server. Transport is "stdio" or "http".

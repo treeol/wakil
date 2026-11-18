@@ -89,6 +89,7 @@ func hisnOptionsWith(cfg config.Config, surface hisn.Surface) (hisn.Options, err
 		ExecViaCLI:  h.ExecViaCLI,
 		Surface:     surface,
 		KVR:         kvrOptions(cfg, h),
+		Network:     h.NetworkMode,
 	}, nil
 }
 

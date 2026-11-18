@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
 )
 
 // handleDataSwitchCommand is the shared implementation for /zdr and /region.
@@ -162,4 +163,57 @@ func (a *App) dataPolicyStatusLines() string {
 		zdr += " (last: " + zdrDec + ")"
 	}
 	return fmt.Sprintf("zdr: %s · region: %s (host: %s)", zdr, a.EffectiveRegion(), host)
+}
+
+// handleNetworkCommand implements /network [host|open|reset]. With no argument
+// it shows the current effective value and where it comes from. A change
+// applies from the NEXT session start (not the current one): the hisn profile
+// is written at session start, so a running session keeps its network mode.
+func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd func() Msg) {
+	note := func(text string) func() Msg { return NoteCmd(text) }
+
+	if len(fields) < 2 {
+		return true, false, note(app.networkStatus())
+	}
+	arg := fields[1]
+
+	switch arg {
+	case "reset":
+		app.stateMu.Lock()
+		app.NetworkOverride = ""
+		app.stateMu.Unlock()
+		app.saveRepoState(func(s *RepoState) { s.Network = "" })
+		return true, false, note(app.networkStatus())
+	case "host", "open":
+		app.stateMu.Lock()
+		app.NetworkOverride = arg
+		app.stateMu.Unlock()
+		app.saveRepoState(func(s *RepoState) { s.Network = arg })
+		// Push to the backend so the NEXT session start uses it. A running
+		// session keeps its mode; the value applies when a new session starts.
+		if ns, ok := app.Exec.(exec.NetworkSetter); ok {
+			ns.SetNetworkMode(arg)
+		}
+		msg := app.networkStatus()
+		msg += "\nApplies from the next session start (the running session keeps its network mode)."
+		return true, false, note(msg)
+	default:
+		return true, false, note("usage: /network [host|open|reset]")
+	}
+}
+
+// networkStatus renders the /network status: the effective value and where it
+// comes from.
+func (a *App) networkStatus() string {
+	eff := a.EffectiveNetwork()
+	src := "config default"
+	if a.NetworkOverride == "open" {
+		src = "repo override"
+	} else if a.Cfg.Sandbox.Hisn.NetworkMode == "open" {
+		src = "config"
+	}
+	if eff == "host" && a.NetworkOverride == "" && a.Cfg.Sandbox.Hisn.NetworkMode == "" {
+		src = "default"
+	}
+	return fmt.Sprintf("network: %s (%s)", eff, src)
 }

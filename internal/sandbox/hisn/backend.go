@@ -84,6 +84,11 @@ type Options struct {
 	Surface Surface
 	// KVR configures the in-sandbox staging store service (zero = off).
 	KVR KVROptions
+	// Network is the session network mode: "host" (default) or "open" (opt-in,
+	// hisn 0.6.0). "open" narrows outbound to public TCP only. The project
+	// file may narrow to "open" but never widen; the effective value is
+	// resolved before any session starts.
+	Network string
 	// SkipReconcile defers Open's orphan reconcile to a later caller-invoked
 	// b.Reconcile (off the start path). The caller is responsible for running
 	// it. Preflight, plan and the risk check still run at Open.
@@ -288,6 +293,25 @@ func New(opts Options) (*Backend, error) {
 			return nil, fmt.Errorf("hisn backend: sandbox.hisn.home = \"tmpfs\" cannot apply to hisn.profile %q (a named profile is used as is and cannot carry the [home] fragment): set sandbox.hisn.home to \"persist\" or drop hisn.profile", surf.Profile)
 		}
 	}
+	// Resolve the effective network mode. The project file may narrow to
+	// "open" but never widen: a project setting "host" is rejected (it would
+	// override a user's narrower "open"). The global default "host" applies
+	// when neither the project nor the user config says "open".
+	if surf.Network == "host" {
+		return nil, fmt.Errorf("hisn backend: .wakil/sandbox.json hisn.network = \"host\" is not allowed: a project may narrow to \"open\" but never widen; remove the key or set it to \"open\"")
+	}
+	if surf.Network != "" && surf.Network != "open" {
+		return nil, fmt.Errorf("hisn backend: .wakil/sandbox.json hisn.network %q: want \"open\" (the only project value; it narrows)", surf.Network)
+	}
+	if opts.Network != "" && opts.Network != "host" && opts.Network != "open" {
+		return nil, fmt.Errorf("hisn backend: sandbox.hisn.network_mode %q: want \"host\" or \"open\"", opts.Network)
+	}
+	// Effective: "open" if either the user config or the project says so.
+	if surf.Network == "open" || opts.Network == "open" {
+		surf.Network = "open"
+	} else {
+		surf.Network = "" // "host" is the default; policyFor fills it in
+	}
 	opts.Surface = surf
 	// The state directory is the user's trust root (approvals, profiles, owner
 	// records): no writable surface may reach it, whatever put it there.
@@ -339,7 +363,7 @@ func PlannedRisk(ctx context.Context, opts Options) (Risk, error) {
 			return Risk{}, fmt.Errorf("hisn state dir: %w", err)
 		}
 		pp := policyParams{Cwd: b.opts.HostCwd, Home: b.opts.HomeRoot, Hostname: "wakil-plan",
-			GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
+			Network: b.opts.Surface.Network, GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
 		homeP, err := b.homePersist(s)
 		if err != nil {
 			return Risk{}, err
@@ -640,6 +664,20 @@ func (b *Backend) AgentRoot() string { return b.opts.HostCwd }
 // SandboxRootfs is the resolved sandbox.hisn.rootfs (store name or absolute
 // path), or "" for the host toolchain. Used in tool-facing error messages.
 func (b *Backend) SandboxRootfs() string { return b.opts.Surface.Rootfs }
+
+// SetNetworkMode sets the session network mode for the next session start.
+// "open" narrows outbound to public TCP only (hisn 0.6.0); "host" is the
+// default. A running session keeps its mode; the value applies to the next
+// Start. The caller validates; this method clamps "" to "host".
+func (b *Backend) SetNetworkMode(mode string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if mode != "open" {
+		mode = "" // "host" is the default; policyFor fills it in
+	}
+	b.opts.Network = mode
+	b.opts.Surface.Network = mode
+}
 
 // SandboxTempDir implements sandbox.Backend: the session-private /tmp.
 func (b *Backend) SandboxTempDir() string { return "/tmp" }

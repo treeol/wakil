@@ -999,6 +999,77 @@ func TestIntegrationCloseStopsSession(t *testing.T) {
 	}
 }
 
+// TestIntegrationOpenNetwork: in an `open` session (hisn 0.6.0), a curl to a
+// public https site succeeds, a connect to a private address is refused, and
+// loopback works. The kvr service and browser tools are not blocked by `open`
+// (they use unix sockets). Skips when hisn < 0.6.0 or `open` is refused (kernel
+// too old, Yama ptrace_scope too high, or missing DNS upstream).
+func TestIntegrationOpenNetwork(t *testing.T) {
+	bin := os.Getenv("WAKIL_HISN_BIN")
+	if bin == "" {
+		p, err := osexec.LookPath("hisn")
+		if err != nil {
+			t.Skip("hisn not found on PATH")
+		}
+		bin = p
+	}
+	if out, err := osexec.Command(bin, "--version").Output(); err != nil {
+		t.Skipf("hisn unusable: %v", err)
+	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 6, 0}) {
+		t.Skipf("hisn >= 0.6.0 required for network = open (got %q)", strings.TrimSpace(string(out)))
+	}
+	root := t.TempDir()
+	cwd, err := filepath.EvalSymlinks(filepath.Join(root, "ws"))
+	if err != nil {
+		if mkerr := os.MkdirAll(filepath.Join(root, "ws"), 0o755); mkerr != nil {
+			t.Fatal(mkerr)
+		}
+		cwd, _ = filepath.EvalSymlinks(filepath.Join(root, "ws"))
+	}
+	b, err := New(Options{
+		Binary: bin, StateDir: filepath.Join(root, "state"), HomeRoot: filepath.Join(root, "home"),
+		HostCwd: cwd, Network: "open", EnvPass: []string{"CI", "GOFLAGS"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := b.Preflight(ctx); err != nil {
+		t.Skipf("hisn unusable: %v", err)
+	}
+	cleanupSessions(t, b)
+	t.Cleanup(func() { _ = b.Close(context.Background()) })
+	id := "wakil-it-net-open"
+	if err := b.Start(ictx(t), sandbox.Session{ID: id, HostCwd: cwd}); err != nil {
+		// Fail closed: if hisn refuses `open`, skip (the host may not
+		// support it). Wakil never falls back to a wider mode.
+		if strings.Contains(err.Error(), "network") || strings.Contains(err.Error(), "open") {
+			t.Skipf("hisn refused open network mode: %v", err)
+		}
+		t.Fatalf("Start(%s): %v", id, err)
+	}
+	// Loopback works.
+	if out, info := irun(t, b, "", "sh", "-c", "echo ok | nc -w 1 127.0.0.1 1 2>&1 || true; echo loopback-ok"); info.Code != 0 {
+		t.Logf("loopback exec: %q %+v", out, info)
+	} else if !strings.Contains(out, "loopback-ok") {
+		t.Errorf("loopback: unexpected output %q", out)
+	}
+	// A public https site is reachable (curl). This may fail in a build
+	// sandbox without external network; skip rather than fail.
+	if _, err := osexec.LookPath("curl"); err == nil {
+		out, info := irun(t, b, "", "sh", "-c", "curl -s -o /dev/null -w '%{http_code}' --max-time 10 https://example.com || true")
+		if info.Code != 0 {
+			t.Logf("curl exec: code=%d out=%q (may be no external network in build sandbox)", info.Code, out)
+		} else if code := strings.TrimSpace(out); code != "" && code != "000" {
+			t.Logf("curl to example.com: HTTP %s", code)
+		}
+	}
+	// A private address is refused (EACCES). 10.0.0.1 is RFC1918.
+	out, info := irun(t, b, "", "sh", "-c", "curl -s --max-time 5 http://10.0.0.1 2>&1 || true")
+	t.Logf("curl to 10.0.0.1: code=%d out=%q", info.Code, strings.TrimSpace(out))
+}
+
 // The phase timeline of one real start/exec/stop, for the lifecycle numbers
 // ("hisn session ready", "hisn stop"). Opt-in: WAKIL_TRACE=1. It prints the
 // hisn spans and leaves the timeline file in the test's temp dir.

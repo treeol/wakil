@@ -91,3 +91,10 @@ func (e *ExitStatusError) Error() string { return "exit status " + strconv.Itoa(
 
 // ExitCode lets errors.As(err, &interface{ExitCode() int}) see the status.
 func (e *ExitStatusError) ExitCode() int { return e.Code }
+
+// NetworkSetter is implemented by executors whose sandbox backend can change
+// its network mode before a session starts. The value is "host" or "open";
+// it applies to the NEXT session start (a running session keeps its mode).
+type NetworkSetter interface {
+	SetNetworkMode(mode string)
+}

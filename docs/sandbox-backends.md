@@ -597,9 +597,16 @@ hisn run --detach -v --session-id <chatID> --profile <state>/hisn/<chatID>.profi
   binary ships none — so use `$HISN_PROFILES` (passed through to hisn) or a
   path-installed copy.
 
-`network = "host"` has no filtering; this is the decided trade-off (builds
-need the network) and is called out in Known limits. `shm = true` is always
-set (Chrome, Node, POSIX shm users need `/dev/shm`).
+`network = "host"` has no filtering; this is the default (builds need the
+network). `network = "open"` (hisn 0.6.0, opt-in via `sandbox.hisn.network_mode`
+or the `/network` command) narrows outbound to public TCP only: unix sockets
+and loopback work; private and LAN addresses, UDP and other families get
+EACCES. DNS is served inside the session. It needs kernel 5.9+ and Yama
+ptrace_scope 0 or 1, and hisn refuses to start otherwise — Wakil reports the
+reason and never falls back to a wider mode (`/network host` or
+`sandbox.hisn.network_mode = "host"` switches back; the next session start
+applies the change). `shm = true` is always set (Chrome, Node, POSIX shm users
+need `/dev/shm`).
 
 ## Per-project overrides: `.wakil/sandbox.json`
 
@@ -618,6 +625,7 @@ Absent file = nothing extra. Unknown keys are errors (the message names the key)
 | `hisn.profile` | name | a built-in or `$HISN_PROFILES` profile used instead of generation; Wakil then only adds grants |
 | `hisn.home` | `"persist"` or `"tmpfs"` | override `sandbox.hisn.home` for this project (name only; the persistent path is never set per project) |
 | `hisn.rootfs` | store name | rootfs for this project (store name only; the absolute-path form is global-only, `sandbox.hisn.rootfs`) |
+| `hisn.network` | `"open"` | narrow the session network to public TCP only (hisn 0.6.0). A project may narrow to `"open"; `"host"` is not allowed (it would widen a user setting that is narrower) |
 
 One complete example (a project that runs a database inside the sandbox, reads
 reference data, and uses the host docker daemon for deploys):
@@ -808,7 +816,8 @@ integration tests).
     "tmp_size_mb": 1024,
     "shm_size_mb": 64,
     "kvr_binary": "",
-    "exec_via_cli": false
+    "exec_via_cli": false,
+    "network_mode": "host"
   }
 }
 ```
@@ -817,7 +826,10 @@ Flag `--sandbox docker|hisn|direct`, env `WAKIL_SANDBOX_BACKEND`. Omit all of
 them to get the default described in [Choosing the backend](#choosing-the-backend)
 (the `"backend": "docker"` above is only what you write to PIN docker). Empty
 `home_root` means `<wakil state dir>/hisn-home/<workspace-hash>`.
-`kvr_binary` empty means `kvr-server` from `PATH`. With `hisn`:
+`kvr_binary` empty means `kvr-server` from `PATH`. `network_mode` is `"host"`
+(default) or `"open"` (opt-in, hisn 0.6.0: public TCP only). A per-repo
+override (`/network open`) and the project file (`.wakil/sandbox.json`
+`hisn.network`) may narrow to `"open"; neither may widen. With `hisn`:
 `browser_enabled` is not forced off (Chromium and `python3` must be in the session), `docker_*` keys are
 ignored, `WorkDir == HostWorkDir`, and `kvr` runs as an in-sandbox service
 when a binary is available (otherwise it stays off with the reason).
@@ -832,7 +844,10 @@ hisn itself inside the sandbox and are rejected in per-exec env.
 ## Known limits (hisn backend)
 
 * `.secrets/` and every other file in cwd is readable by all execs.
-* `network = "host"`: no network isolation.
+* `network = "host"` (default): no network isolation. `network = "open"`
+  (opt-in) narrows outbound to public TCP only; it does not block all access
+  to hosts on the local network (a NAS, a local git server) — those are
+  private addresses and get EACCES. See [Profiles](#profiles).
 * Soft revoke only (see Grants): already-open descriptors may survive.
 * Toolchains installed under the host `$HOME` (rustup, nvm) are not mounted;
   hisn's `mounts.ro` is not exposed.

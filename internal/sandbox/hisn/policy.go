@@ -37,6 +37,7 @@ type policyEnv struct {
 // policyParams are the inputs of one rendered session policy.
 type policyParams struct {
 	Cwd, Home, Hostname string
+	Network             string // "host" (default) or "open"
 	GrantableRW         []string
 	EnvPass             []string
 	ShmSize, TmpSize    int64
@@ -45,14 +46,18 @@ type policyParams struct {
 	Mask                []string
 }
 
-// policyFor builds the session policy. network is "host" by decision: builds
-// need the network and hisn offers no filtering in between. shm is true by
-// decision: /dev/shm is needed by real toolchains (Chrome, Node, POSIX shm),
-// and hisn mounts it with /dev's flags, not /tmp's.
+// policyFor builds the session policy. network is p.Network ("host" by default,
+// "open" when the user opted in); "open" narrows outbound to public TCP only
+// (hisn 0.6.0). shm is true by decision: /dev/shm is needed by real toolchains
+// (Chrome, Node, POSIX shm), and hisn mounts it with /dev's flags, not /tmp's.
 func policyFor(p policyParams) policyFile {
+	net := p.Network
+	if net == "" {
+		net = "host"
+	}
 	pf := policyFile{
 		Version: "hisn-policy/v1",
-		Session: policySession{Cwd: p.Cwd, Home: p.Home, Network: "host", Hostname: p.Hostname,
+		Session: policySession{Cwd: p.Cwd, Home: p.Home, Network: net, Hostname: p.Hostname,
 			Shm: true, ShmSize: p.ShmSize, TmpSize: p.TmpSize},
 		Mounts: policyMounts{GrantableRW: nonNil(p.GrantableRW), RO: p.MountsRO, RW: p.MountsRW, Mask: p.Mask},
 		Env:    policyEnv{Pass: nonNil(p.EnvPass), Set: p.EnvSet},

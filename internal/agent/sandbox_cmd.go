@@ -42,6 +42,9 @@ func FormatSandboxStatus(st sandbox.Status) string {
 	if st.Mode != "" {
 		fmt.Fprintf(&b, "\n  mode: %s", st.Mode)
 	}
+	if st.Network != "" && st.Network != "host" {
+		fmt.Fprintf(&b, "\n  network: %s", st.Network)
+	}
 	if st.Profile != "" {
 		fmt.Fprintf(&b, "\n  profile: %s (hisn profile, used as is)", st.Profile)
 	}

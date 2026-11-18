@@ -25,6 +25,9 @@ type Status struct {
 	Mode        string `json:"mode,omitempty"`
 	Profile     string `json:"profile,omitempty"`      // named profile, if any
 	ProfilePath string `json:"profile_path,omitempty"` // generated profile of the running session
+	// Network is the session network mode: "host" (default) or "open"
+	// (opt-in, hisn 0.6.0).
+	Network string `json:"network,omitempty"`
 	// Risk is the highest label ("none" when nothing widens the sandbox).
 	Risk         string         `json:"risk"`
 	Capabilities []Capability   `json:"capabilities,omitempty"`
@@ -43,6 +46,9 @@ type Status struct {
 // Banner is the one-line startup statement.
 func (s Status) Banner() string {
 	b := "sandbox: backend=" + s.Backend
+	if s.Network != "" && s.Network != "host" {
+		b += " · network=" + s.Network
+	}
 	if s.Risk != "" {
 		b += " · risk=" + s.Risk
 	}

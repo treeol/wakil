@@ -45,7 +45,8 @@
       "tmp_size_mb": 1024,
       "shm_size_mb": 64,
       "kvr_binary": "",
-      "exec_via_cli": false
+      "exec_via_cli": false,
+      "network_mode": "host"
     },
     "docker": {
       "allow_userns": false

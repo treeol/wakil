@@ -516,6 +516,12 @@ type App struct {
 	// in the repository.
 	MashuraLevelOverride string
 
+	// NetworkOverride is the per-repo hisn network mode override
+	// (/network open|host; "" = use the user config). Mirrors
+	// RepoState.Network, persisted on the user's side like ZDR, never
+	// in the repository.
+	NetworkOverride string
+
 	// Unexported auto-counsel bookkeeping (counselCalls, autoCounselSkipGate).
 	// Extracted to counsel_state.go (WP-6.3); embedded here so selector access
 	// is unchanged. The exported counsel fields above stay flat because they are

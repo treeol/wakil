@@ -523,7 +523,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		return launch{}, err
 	}
 	pp := policyParams{Cwd: rec.Cwd, Home: b.opts.HomeRoot, Hostname: hostnameFor(rec.Token),
-		GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
+		Network: b.opts.Surface.Network, GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
 	vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if b.kvrSocket != "" && b.opts.Surface.Profile == "" {
@@ -571,6 +571,12 @@ func validateError(err error, out string) error {
 	msg := strings.TrimSpace(out)
 	if i := strings.Index(msg, "E_RISK_ACK_"); i >= 0 {
 		return &RiskAckError{Detail: strings.TrimSpace(msg[i:]) + "; run `wakil sandbox trust` to review and acknowledge it"}
+	}
+	// Fail closed: when hisn refuses network = "open" (kernel too old,
+	// Yama ptrace_scope too high, or missing DNS upstream), name the
+	// reason and how to switch back. Never fall back to a wider mode.
+	if strings.Contains(msg, "network") && strings.Contains(msg, "open") {
+		return fmt.Errorf("hisn refused the open network mode: %s; switch back with /network host or sandbox.hisn.network_mode = \"host\" (Wakil never falls back to a wider mode)", msg)
 	}
 	return fmt.Errorf("hisn profile validate failed: %w: %s", err, msg)
 }

@@ -115,13 +115,19 @@ type Surface struct {
 	// SSHKeys are the public-key fingerprints the agent may use (hisn [ssh]
 	// keys). Computed by Wakil from .pub files; never a private key.
 	SSHKeys []string
+	// Network is the session network mode: "open" narrows outbound to public
+	// TCP only (hisn 0.6.0). A project may set "open" (it narrows); it may
+	// never set "host" or widen a user setting that is narrower. "" = use
+	// the global sandbox.hisn.network_mode.
+	Network string
 }
 
 // Empty reports whether the surface asks for nothing.
 func (s Surface) Empty() bool {
 	return len(s.Services) == 0 && len(s.Forward) == 0 && len(s.HostServices) == 0 &&
 		len(s.EnvSet) == 0 && len(s.MountsRO) == 0 && len(s.MountsRW) == 0 &&
-		len(s.Mask) == 0 && s.Profile == "" && s.Home == "" && s.Rootfs == ""
+		len(s.Mask) == 0 && s.Profile == "" && s.Home == "" && s.Rootfs == "" &&
+		s.Network == ""
 }
 
 var (

@@ -1271,6 +1271,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 	case "/region":
 		return handleDataSwitchCommand(fields, app, "region")
 
+	case "/network":
+		return handleNetworkCommand(fields, app)
+
 	case "/plan":
 		return HandlePlanCommand(fields, app)
 

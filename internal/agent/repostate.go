@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/exec"
 )
 
 // RepoState is the persisted record of the last terminal settings used in a
@@ -107,6 +108,12 @@ type RepoState struct {
 	// only here, never in the repository — a cloned repo must never be able
 	// to set it.
 	MashuraLevel string `json:"mashura_level,omitempty"`
+
+	// Network is the per-repo hisn network mode override (/network open|host;
+	// "" = use the user config). Stored only here, never in the repository
+	// — a cloned repo must never be able to widen the network. "open"
+	// narrows; "host" removes the override (back to the config default).
+	Network string `json:"network,omitempty"`
 }
 
 const repoStateSchemaVersion = 1
@@ -534,6 +541,16 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 		}
 	}
 
+	// Per-repo hisn network mode override (endpoint-independent, like
+	// zdr/region). "open" narrows; "host" removes the override.
+	if st.Network != "" {
+		a.NetworkOverride = st.Network
+		if ns, ok := a.Exec.(exec.NetworkSetter); ok {
+			ns.SetNetworkMode(st.Network)
+		}
+		applied = append(applied, "network="+st.Network)
+	}
+
 	return applied
 }
 
@@ -585,6 +602,20 @@ func (a *App) EffectiveRegion() string {
 		return a.Cfg.Region
 	}
 	return "off"
+}
+
+// EffectiveNetwork returns the per-repo network override if set, else the user
+// config. "host" is the default. A repo override of "host" is the user's
+// explicit choice to switch back from an "open" config — it is stored on the
+// user's side (RepoState), not in the repository, so it may widen.
+func (a *App) EffectiveNetwork() string {
+	if a.NetworkOverride != "" {
+		return a.NetworkOverride
+	}
+	if a.Cfg.Sandbox.Hisn.NetworkMode == "open" {
+		return "open"
+	}
+	return "host"
 }
 
 // applyThinkFlagLocked applies the --think CLI flag to the session's reasoning

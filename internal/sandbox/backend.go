@@ -132,3 +132,11 @@ type Reconciler interface {
 	// fatal to a working session.
 	Reconcile(ctx context.Context) error
 }
+
+// NetworkBackend is an optional Backend capability: the backend can change
+// its session network mode before a session starts. "open" narrows outbound
+// to public TCP only (hisn 0.6.0); "host" is the default. The value applies
+// to the NEXT session start; a running session keeps its mode.
+type NetworkBackend interface {
+	SetNetworkMode(mode string)
+}

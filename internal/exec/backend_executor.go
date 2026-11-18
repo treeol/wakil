@@ -1056,6 +1056,14 @@ func (e *BackendExecutor) SandboxStatus(ctx context.Context) sandbox.Status {
 	return sandbox.Status{Backend: e.opts.Label, Risk: "none"}
 }
 
+// SetNetworkMode implements NetworkSetter: forward to the backend if it
+// supports it. The value applies to the NEXT session start.
+func (e *BackendExecutor) SetNetworkMode(mode string) {
+	if ns, ok := e.b.(sandbox.NetworkBackend); ok {
+		ns.SetNetworkMode(mode)
+	}
+}
+
 // EnsureSession implements SessionEnsurer: start the session for the bound
 // chat if it is not running yet.
 func (e *BackendExecutor) EnsureSession(ctx context.Context) error {
