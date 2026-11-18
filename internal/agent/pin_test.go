@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -511,45 +514,38 @@ func TestPinnedBreadcrumbSurvivesParentCompact(t *testing.T) {
 func TestIncompleteStatusWarningSurfaced(t *testing.T) {
 	summaryJSON := `{"objective":"find","findings":[{"summary":"partial","location":"a.go:1","kind":"match","weight":"low"}]}`
 
-	// The sseServer wraps to frame[0] (the tool-call frame) when the
-	// parent and the async subagent race on call ordering — the subagent
-	// consumes call 1, so the parent's next call wraps. Without
-	// MaxToolIterations the parent loops through dispatch_subagent calls
-	// indefinitely, growing Conv past any fixed HardMaxBytes. The extra
-	// text frames absorb the subagent's parse-retry and the parent's
-	// forced-final turn without wrapping to the tool-call frame.
-	srv := sseServer(t,
-		// call 0 — parent: dispatch_subagent tool call
-		toolCallFrames("d1", "dispatch_subagent", `{"task":"find things","class":"read"}`),
-		// call 1 — subagent: returns JSON summary (no tools → exits)
-		[]string{contentChunk(summaryJSON)},
-		// call 2+ — parent: final text (also absorbs any subagent retries
-		// and the parent's forced-final fallback without wrapping to the
-		// tool-call frame)
-		[]string{contentChunk("done")},
-		[]string{contentChunk("done")},
-		[]string{contentChunk("done")},
-		[]string{contentChunk("done")},
-		[]string{contentChunk("done")},
-	)
+	// Route by request body, not by call order. sseServer hands out frames
+	// by call index and wraps to frame 0 past the end. Measured with a
+	// logging server under -race, -cover and GOMAXPROCS=2: in two runs the
+	// call with index 3 was served the dispatch_subagent tool-call frame
+	// again and the parent looped to about 7200 requests (7166 and 7208) in
+	// 20s, growing the transcript until guardCurrentTurn refused it. Normal
+	// runs made 2 or 3 requests.
+	var parentCalls, subagentCalls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if isSubagentRequest(body) {
+			subagentCalls.Add(1)
+			writeSSE(w, contentChunk(summaryJSON))
+			return
+		}
+		if parentCalls.Add(1) == 1 {
+			writeSSE(w, toolCallFrames("d1", "dispatch_subagent", `{"task":"find things","class":"read"}`)...)
+			return
+		}
+		writeSSE(w, contentChunk("done"))
+	}))
 	defer srv.Close()
 
 	exec := newFakeExecutor()
 	var out strings.Builder
 	cfg := config.DefaultConfig()
-	// Bound the parent's tool loop so the sseServer-wrapping race
-	// (which replays the tool-call frame on call overrun) cannot grow
-	// the request indefinitely. Three iterations is enough for the
-	// dispatch + drain + final-answer cycle.
-	cfg.MaxToolIterations = 3
-	// Derive the hard-max from the request, not a fixed byte count.
-	// The measured request (user + assistant + tool placeholder) is
-	// ~307 bytes. A 10× margin over the default HardMaxBytes (160000)
-	// keeps the test far from the boundary while still exercising the
-	// guardCurrentTurn path. prompt growth and path-length variance
-	// cannot push a ~300-byte request past 1.6M bytes.
-	cfg.HardMaxBytes = 1600000
-	cfg.CompactAt = 1200000
+	// The transcript this test builds (user text, dispatch call, placeholder,
+	// final text) measured 206 to 307 bytes in normal runs. The hard max is
+	// that upper figure plus a fixed margin, so prompt growth cannot reach it.
+	const measuredTranscriptBytes, marginBytes = 307, 8192
+	cfg.HardMaxBytes = measuredTranscriptBytes + marginBytes
+	cfg.CompactAt = cfg.HardMaxBytes * 3 / 4
 	app := &App{
 		Cfg:     cfg,
 		Client:  newTestClient(srv.URL),
@@ -562,6 +558,17 @@ func TestIncompleteStatusWarningSurfaced(t *testing.T) {
 	_, err := app.Send(context.Background(), "find things")
 	if err != nil {
 		t.Fatal(err)
+	}
+
+	// Routing by body leaves one dispatch and at most one drain re-run.
+	if n := parentCalls.Load(); n < 2 || n > 3 {
+		t.Errorf("parent requests = %d, want 2 or 3", n)
+	}
+	if n := subagentCalls.Load(); n > 1 {
+		t.Errorf("subagent requests = %d, want at most 1", n)
+	}
+	if got := TranscriptSize(app.Conv); got >= cfg.HardMaxBytes {
+		t.Errorf("transcript = %d bytes, want below HardMaxBytes %d", got, cfg.HardMaxBytes)
 	}
 
 	// The subagent didn't exhaust (MaxToolIterations=16, only 1 call), so
