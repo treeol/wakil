@@ -13,44 +13,21 @@ import (
 	"github.com/treeol/wakil/internal/sandbox"
 )
 
-// ProfileMinVersion is the first hisn release with profiles (hisn-profile/v1,
-// [[services]], [[forward]], [[host_services]], risk labels). Older hisn keeps
-// the bare --policy path; everything that needs the 0.3 surface is then a hard
-// error, never silently dropped.
-const ProfileMinVersion = "0.3.1"
-
 // homePersistFor returns the [home] persist path for a session: the root when
-// the mode is persist and hisn supports [home] (>= ProfileHomeMinVersion), or
-// "" (no table) for tmpfs. A tmpfs request on hisn < 0.3.3 is an error (D10):
-// the old home mount cannot be removed without losing what the user asked
-// for, so it never falls back silently.
-func homePersistFor(mode, root string, ver [3]int) (string, error) {
+// the mode is persist, or "" (no table) for tmpfs.
+func homePersistFor(mode, root string) (string, error) {
 	switch mode {
 	case "", HomePersist:
 		if root == "" {
 			return "", nil
 		}
-		want, _ := ParseVersion(ProfileHomeMinVersion)
-		if !VersionAtLeast(ver, want) {
-			return "", nil // hisn < 0.3.3: the 0.4.x home mount stays (caller)
-		}
 		return root, nil
 	case HomeTmpfs:
-		want, _ := ParseVersion(ProfileHomeMinVersion)
-		if !VersionAtLeast(ver, want) {
-			return "", fmt.Errorf("sandbox.hisn.home = \"tmpfs\" needs hisn >= %s (found %d.%d.%d): upgrade hisn or set home to \"persist\"", ProfileHomeMinVersion, ver[0], ver[1], ver[2])
-		}
 		return "", nil
 	default:
 		return "", fmt.Errorf("sandbox.hisn.home %q: want \"persist\" or \"tmpfs\"", mode)
 	}
 }
-
-// ProfileHomeMinVersion is the minimum hisn release Wakil supports for the 0.3
-// surface: [home], [rootfs], [ssh], and read-only host files mounted at a
-// different in-session path ("src:dst", hisn 0.3.3). Older hisn is refused
-// with a message naming this version; there is no same-path fallback.
-const ProfileHomeMinVersion = "0.3.3"
 
 // KnownHostsMount is the in-session destination of the host ~/.ssh/known_hosts
 // (read-only, "src:dst" form). It lives under /wakil/<purpose>/ — hisn 0.3.3
@@ -145,30 +122,6 @@ func (s Surface) Empty() bool {
 	return len(s.Services) == 0 && len(s.Forward) == 0 && len(s.HostServices) == 0 &&
 		len(s.EnvSet) == 0 && len(s.MountsRO) == 0 && len(s.MountsRW) == 0 &&
 		len(s.Mask) == 0 && s.Profile == "" && s.Home == "" && s.Rootfs == ""
-}
-
-// needs03 names the requested features that exist only in hisn >= 0.3.1.
-func (s Surface) needs03() []string {
-	var f []string
-	if s.Profile != "" {
-		f = append(f, "hisn.profile")
-	}
-	if len(s.Services) > 0 {
-		f = append(f, "hisn.services")
-	}
-	if len(s.Forward) > 0 {
-		f = append(f, "hisn.forward")
-	}
-	if len(s.HostServices) > 0 {
-		f = append(f, "hisn.host_services")
-	}
-	if s.Rootfs != "" {
-		f = append(f, "hisn.rootfs")
-	}
-	if s.SSHAgent {
-		f = append(f, "sandbox.hisn.ssh_agent")
-	}
-	return f
 }
 
 var (
@@ -520,26 +473,6 @@ func buildProfile(p policyParams, s Surface, homePersist string) ([]byte, error)
 	return buf.Bytes(), nil
 }
 
-// profileArgs is the `hisn run --detach` command line in profile mode. The
-// network comes from the profile's [policy], not from a CLI override.
-func profileArgs(id, name, profile, cwd string) []string {
-	return []string{"run", "--detach", "-v", "--session-id", id,
-		"--profile", profile, "--cwd", cwd, "--ready-fd", "3", "--name", name}
-}
-
-// namedArgs is the command line for a named hisn profile: Wakil adds nothing
-// but initial grants.
-func namedArgs(id, sessName, profile, cwd string, ro, rw []string) []string {
-	a := profileArgs(id, sessName, profile, cwd)
-	for _, p := range ro {
-		a = append(a, "--grant", p+":ro")
-	}
-	for _, p := range rw {
-		a = append(a, "--grant", p+":rw")
-	}
-	return a
-}
-
 // profilePath is where the generated profile of chat id lives: Wakil's state
 // dir, NEVER the project (hisn rejects a profile under the session cwd, a rw
 // grant or the home with E_PROFILE_UNTRUSTED: the sandbox could rewrite it).
@@ -589,12 +522,6 @@ func checkProfileTrust(profile, cwd, home string, rw []string) error {
 		}
 	}
 	return nil
-}
-
-// featureError names every requested 0.3 feature and the version it needs.
-func featureError(features []string, got [3]int) error {
-	return fmt.Errorf("%s need hisn >= %s (found %d.%d.%d): upgrade hisn or remove them from .wakil/sandbox.json",
-		strings.Join(features, ", "), ProfileMinVersion, got[0], got[1], got[2])
 }
 
 // CheckStateOutside reports (as an E_PROFILE_UNTRUSTED error) whether the

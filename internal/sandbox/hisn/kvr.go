@@ -66,13 +66,10 @@ type kvrPlan struct {
 // <cwd>/.wakil/kvr-<inst>.sock, so two Wakil processes on one workspace never
 // share (or unlink) each other's socket. A project-declared socket is the
 // user's choice and used as written.
-func planKVR(cwd string, s Surface, o KVROptions, profileMode bool, extraVisible []string, inst string) (kvrPlan, error) {
+func planKVR(cwd string, s Surface, o KVROptions, extraVisible []string, inst string) (kvrPlan, error) {
 	off := func(why string) (kvrPlan, error) { return kvrPlan{Note: "off (" + why + ")"}, nil }
 	if !o.Enabled {
 		return off("kvr_disabled")
-	}
-	if !profileMode {
-		return off("needs hisn >= " + ProfileMinVersion + " (in-sandbox services)")
 	}
 	if s.Profile != "" {
 		return off("a named hisn profile is used as is; declare a kvr service in it and Wakil cannot reach its socket")
@@ -221,7 +218,7 @@ func sweepStaleKVR(dir, keep string) {
 // planKVR decides, once, whether the staging service runs and adds it to the
 // surface so the risk check sees exactly the profile that will start.
 func (b *Backend) planKVR() error {
-	p, err := planKVR(b.opts.HostCwd, b.opts.Surface, b.opts.KVR, b.profileMode(), b.opts.Surface.MountsRO, b.inst)
+	p, err := planKVR(b.opts.HostCwd, b.opts.Surface, b.opts.KVR, b.opts.Surface.MountsRO, b.inst)
 	if err != nil {
 		return err
 	}

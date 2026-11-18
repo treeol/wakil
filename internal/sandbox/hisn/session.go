@@ -368,17 +368,13 @@ func (b *Backend) startLocked(ctx context.Context, s sandbox.Session) (*live, er
 		fmt.Fprintf(errWriter, "hisn: %s\n", note)
 		notes = append(notes, note)
 	}
-	// A CRASHED leftover (hisn 0.4.0) keeps its name reserved until pruned, so
-	// `hisn run --name` would refuse; from hisn 0.4.1 a STOPPED one does too
-	// ("name ... is already in use", exit 125), while 0.4.0 frees it at stop
-	// and the stopped directory stays for the audit until Reconcile. `hisn ls
-	// --prune` archives it and frees the name; it removes provably dead
-	// directories only (every dead directory of this user, as it always has —
-	// see ADR 0012).
-	stoppedHoldsName := VersionAtLeast(b.ver, [3]int{0, 4, 1})
+	// A CRASHED or STOPPED leftover keeps its name reserved until pruned
+	// (hisn 0.4.1+), so `hisn run --name` would refuse ("name ... is already
+	// in use", exit 125). `hisn ls --prune` archives it and frees the name;
+	// it removes provably dead directories only.
 	needPrune := false
 	for _, e := range sessions {
-		if (e.ID == s.ID || e.Name == name) && e.Ended() && (stoppedHoldsName || !e.Stopped()) {
+		if (e.ID == s.ID || e.Name == name) && e.Ended() {
 			needPrune = true
 		}
 	}
@@ -471,15 +467,23 @@ func (b *Backend) newLive(rec record, sup *supervisorProc) *live {
 	return l
 }
 
-// supervisorArgs is the `hisn run --detach` command line of the bare-policy path
-// (hisn < 0.3.1). `-v` is REQUIRED: hisn prints nothing to stderr without it, so
-// a failed start would be undiagnosable. `--ready-fd 3` (0.2.1): hisn writes
-// "ready\n" to fd 3 once the session is live — the write end of the readiness
-// pipe, passed as the child's fd 3 via ExtraFiles. Nothing weaker than that line
+// sessionArgs is the single `hisn run --detach` command line builder. The
+// network comes from the profile's [policy], not from a CLI override.
+// `-v` is REQUIRED: hisn prints nothing to stderr without it, so a failed
+// start would be undiagnosable. `--ready-fd 3` (0.2.1): hisn writes "ready\n"
+// to fd 3 once the session is live — the write end of the readiness pipe,
+// passed as the child's fd 3 via ExtraFiles. Nothing weaker than that line
 // plus a `live` confirm passes.
-func supervisorArgs(id, name, policy, cwd string) []string {
-	return []string{"run", "--detach", "-v", "--session-id", id,
-		"--policy", policy, "--cwd", cwd, "--network", "host", "--ready-fd", "3", "--name", name}
+func sessionArgs(id, name, profile, cwd string, ro, rw []string) []string {
+	a := []string{"run", "--detach", "-v", "--session-id", id,
+		"--profile", profile, "--cwd", cwd, "--ready-fd", "3", "--name", name}
+	for _, p := range ro {
+		a = append(a, "--grant", p+":ro")
+	}
+	for _, p := range rw {
+		a = append(a, "--grant", p+":rw")
+	}
+	return a
 }
 
 // launch is everything needed to start one session: the supervisor command
@@ -493,10 +497,9 @@ type launch struct {
 	persist string
 }
 
-// prepareLaunch renders and validates what hisn is started with. Three modes:
+// prepareLaunch renders and validates what hisn is started with. Two modes:
 //
-//   - policy: hisn < 0.3.1, a bare hisn-policy/v1 file (`--policy`);
-//   - profile: hisn >= 0.3.1, a generated hisn-profile/v1 file (`--profile`);
+//   - profile: a generated hisn-profile/v1 file (`--profile`);
 //   - named: a hisn profile chosen by the project (hisn.profile), used as is;
 //     Wakil only adds initial grants.
 //
@@ -513,7 +516,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		if err := os.MkdirAll(b.procCwd(), 0o700); err != nil {
 			return launch{}, fmt.Errorf("hisn supervisor cwd: %w", err)
 		}
-		return launch{args: namedArgs(rec.ID, rec.Name, s.Profile, rec.Cwd, s.MountsRO, s.MountsRW), dir: b.procCwd(), mode: "named"}, nil
+		return launch{args: sessionArgs(rec.ID, rec.Name, s.Profile, rec.Cwd, s.MountsRO, s.MountsRW), dir: b.procCwd(), mode: "named"}, nil
 	}
 	s, err := b.withGitConfig(s)
 	if err != nil {
@@ -523,21 +526,6 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 		GrantableRW: b.opts.GrantableRW, EnvPass: b.signingEnvPass(), ShmSize: b.opts.ShmSizeMB, TmpSize: b.opts.TmpSizeMB}
 	vctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	if !b.profileMode() {
-		pp.EnvSet, pp.MountsRO, pp.MountsRW = s.EnvSet, s.MountsRO, s.MountsRW
-		pol, err := buildPolicy(pp)
-		if err != nil {
-			return launch{}, err
-		}
-		path, err := writePolicy(b.sessionsDir(), rec.ID, pol)
-		if err != nil {
-			return launch{}, fmt.Errorf("writing hisn policy: %w", err)
-		}
-		if out, err := b.output(vctx, false, "policy", "validate", path); err != nil {
-			return launch{}, fmt.Errorf("hisn policy validate failed: %w: %s", err, strings.TrimSpace(out))
-		}
-		return launch{args: supervisorArgs(rec.ID, rec.Name, path, rec.Cwd), mode: "policy"}, nil
-	}
 	if b.kvrSocket != "" && b.opts.Surface.Profile == "" {
 		// The socket directory must be a plain directory Wakil owns and no
 		// stale socket may linger (hisn does not clean it).
@@ -574,7 +562,7 @@ func (b *Backend) prepareLaunch(ctx context.Context, rec record) (launch, error)
 	if verr != nil {
 		return launch{}, rootfsError(validateError(verr, out), s.Rootfs)
 	}
-	return launch{args: profileArgs(rec.ID, rec.Name, b.profilePath(rec.ID), rec.Cwd), dir: b.procCwd(), mode: "profile", persist: homeP}, nil
+	return launch{args: sessionArgs(rec.ID, rec.Name, b.profilePath(rec.ID), rec.Cwd, nil, nil), dir: b.procCwd(), mode: "profile", persist: homeP}, nil
 }
 
 // validateError turns `hisn profile validate` output into an error; the risk
@@ -1185,5 +1173,5 @@ func (b *Backend) homePersist(s Surface) (string, error) {
 	if s.Home != "" {
 		mode = s.Home
 	}
-	return homePersistFor(mode, b.opts.HomeRoot, b.ver)
+	return homePersistFor(mode, b.opts.HomeRoot)
 }

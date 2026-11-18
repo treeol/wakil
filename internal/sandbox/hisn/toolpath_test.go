@@ -138,9 +138,6 @@ func TestIntegrationToolPath(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !b.profileMode() {
-				t.Fatal("hisn >= 0.3.1 must start in profile mode")
-			}
 			runToolPathCases(t, toolApp(t, b, sec))
 		})
 	}

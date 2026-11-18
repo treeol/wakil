@@ -172,16 +172,15 @@ func TestStopUsesHisnStopAndKeepsTheDirectory(t *testing.T) {
 // On hisn 0.4.0 a stopped session releases its name at once: the next chat session of the
 // same name starts, and neither the Stop nor the second Start prunes (the
 // stopped directory stays for hisn's audit). Open prunes once, before either.
-func TestStartAfterStopReusesTheNameWithoutPruning(t *testing.T) {
-	// This is the 0.4.0 behavior, which is below the supported floor now, so the
-	// test lowers MinVersion to keep the version-keyed branch covered.
+func TestStartAfterStopReusesTheNameWithPruning(t *testing.T) {
+	// Since hisn 0.4.1 a stopped session holds its name, so Start must prune
+	// the stopped directory before reusing the name.
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.0")
-	b, err := openWith(t, fe, func(o *Options) { o.MinVersion = "0.4.0" })
+	setVersion(t, fe, "0.6.0")
+	b, err := openWith(t, fe, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := strings.Count(calls(t, fe), "ls --prune")
 	for i := 0; i < 2; i++ {
 		if err := b.Start(ctxT(t), sandbox.Session{ID: "reuse", HostCwd: fe.cwd}); err != nil {
 			t.Fatalf("start %d: %v", i, err)
@@ -190,11 +189,9 @@ func TestStartAfterStopReusesTheNameWithoutPruning(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got := strings.Count(calls(t, fe), "ls --prune"); got != before {
-		t.Errorf("stop/start of a stopped session pruned %d time(s); the audit directory must stay", got-before)
-	}
-	if got := fe.stoppedIDs(); len(got) != 1 {
-		t.Errorf("the stopped directory must remain: %v", got)
+	// Each start after the first prunes the stopped directory of this chat.
+	if got := strings.Count(calls(t, fe), "ls --prune"); got < 1 {
+		t.Errorf("stop/start of a stopped session must prune (got %d prune calls)", got)
 	}
 }
 
@@ -466,7 +463,7 @@ func TestListSessionsStillReadsV1(t *testing.T) {
 // (TestStartAfterStopReusesTheNameWithoutPruning).
 func TestStartAfterStopPrunesOn041(t *testing.T) {
 	fe := newFakeEnv(t)
-	_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.4.2"), 0o600)
+	_ = os.WriteFile(filepath.Join(fe.state, "version"), []byte("0.6.0"), 0o600)
 	b, err := Open(ctxT(t), fe.options())
 	if err != nil {
 		t.Fatal(err)

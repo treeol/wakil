@@ -217,7 +217,7 @@ func TestRealHisnAckMatrix(t *testing.T) {
 func TestRealHisnAcceptsPersistentHome(t *testing.T) {
 	bin := realHisnOffline(t)
 	if v, err := ParseVersion(mustVersion(t, bin)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
-		t.Skipf("[home] needs hisn >= %s; this hisn is %q", ProfileHomeMinVersion, mustVersion(t, bin))
+		t.Skipf("[home] needs hisn >= %s; this hisn is %q", MinVersion, mustVersion(t, bin))
 	}
 	d := realDirs(t, "ws", "state-home", "out")
 	ws, home := d[0], d[1]
@@ -252,7 +252,7 @@ func mustVersion(t *testing.T, bin string) string {
 func TestRealHisnAcceptsSSHTable(t *testing.T) {
 	bin := realHisnOffline(t)
 	if v, err := ParseVersion(mustVersion(t, bin)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
-		t.Skipf("[ssh] needs hisn >= %s; this hisn is %q", ProfileHomeMinVersion, mustVersion(t, bin))
+		t.Skipf("[ssh] needs hisn >= %s; this hisn is %q", MinVersion, mustVersion(t, bin))
 	}
 	d := realDirs(t, "ws", "home", "out")
 	prof, err := buildProfile(policyParams{Cwd: d[0], Home: d[1], Hostname: "wakil-0123456789abcdef",

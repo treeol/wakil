@@ -1,7 +1,6 @@
 package hisn
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"os"
@@ -47,15 +46,12 @@ func startChat(t *testing.T, b *Backend, fe *fakeEnv, id string) error {
 
 // ---- version gating, both ways ----
 
-func TestProfileModeOn031(t *testing.T) {
+func TestProfileModeStartsWithProfile(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, nil)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !b.profileMode() {
-		t.Fatal("0.3.1 must select profile mode")
 	}
 	if err := startChat(t, b, fe, "pm1"); err != nil {
 		t.Fatal(err)
@@ -91,16 +87,15 @@ func TestProfileModeOn031(t *testing.T) {
 	}
 }
 
-// Below the 0.4.2 floor there is no bare --policy path any more: Open refuses
-// 0.2.x, 0.3.x, 0.4.0 and 0.4.1 hisn and names the minimum. (The pre-0.3.3
-// branches were removed with the floor; see MinVersion.)
+// Below the 0.6.0 floor there is no bare --policy path any more: Open refuses
+// any older hisn and names the minimum.
 func TestBelowFloorRefusedNamingMinimum(t *testing.T) {
-	for _, v := range []string{"0.2.2", "0.3.1", "0.3.2", "0.3.3", "0.4.0", "0.4.1"} {
+	for _, v := range []string{"0.2.2", "0.3.1", "0.3.2", "0.3.3", "0.4.0", "0.4.1", "0.4.2", "0.5.0", "0.5.1"} {
 		fe := newFakeEnv(t)
 		setVersion(t, fe, v)
 		_, err := openWith(t, fe, nil)
-		if err == nil || !strings.Contains(err.Error(), "0.4.2") {
-			t.Errorf("hisn %s: want a refusal naming 0.4.2, got %v", v, err)
+		if err == nil || !strings.Contains(err.Error(), MinVersion) {
+			t.Errorf("hisn %s: want a refusal naming %s, got %v", v, MinVersion, err)
 		}
 	}
 }
@@ -108,10 +103,6 @@ func TestBelowFloorRefusedNamingMinimum(t *testing.T) {
 func TestProfileEncodingKeepsPolicy(t *testing.T) {
 	pp := policyParams{Cwd: "/w", Home: "/h", Hostname: "wakil-x", GrantableRW: []string{"/srv/out"},
 		EnvPass: []string{"CI"}, ShmSize: 64, TmpSize: 1024}
-	legacy, err := buildPolicy(pp)
-	if err != nil {
-		t.Fatal(err)
-	}
 	prof, err := buildProfile(pp, Surface{}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -123,22 +114,23 @@ func TestProfileEncodingKeepsPolicy(t *testing.T) {
 	if _, err := toml.Decode(string(prof), &doc); err != nil {
 		t.Fatal(err)
 	}
-	var leg map[string]any
-	if _, err := toml.Decode(string(legacy), &leg); err != nil {
-		t.Fatal(err)
-	}
 	if doc.Version != "hisn-profile/v1" {
 		t.Errorf("version = %q", doc.Version)
 	}
-	var a, b bytes.Buffer
-	if err := toml.NewEncoder(&a).Encode(doc.Policy); err != nil {
-		t.Fatal(err)
+	// The [policy] section must carry the session network, cwd, home and env.
+	pol := doc.Policy
+	if pol == nil {
+		t.Fatal("profile must have a [policy] section")
 	}
-	if err := toml.NewEncoder(&b).Encode(leg); err != nil {
-		t.Fatal(err)
+	sess, ok := pol["session"].(map[string]any)
+	if !ok {
+		t.Fatalf("profile [policy] must have [session]: %v", pol)
 	}
-	if a.String() != b.String() {
-		t.Errorf("[policy] differs from the bare policy:\n--- profile\n%s\n--- legacy\n%s", a.String(), b.String())
+	if sess["network"] != "host" {
+		t.Errorf("network = %v, want host", sess["network"])
+	}
+	if sess["cwd"] != "/w" {
+		t.Errorf("cwd = %v, want /w", sess["cwd"])
 	}
 	if strings.Contains(string(prof), "services") || strings.Contains(string(prof), "forward") || strings.Contains(string(prof), "risk_ack") {
 		t.Errorf("no surface requested, none rendered:\n%s", prof)
@@ -261,7 +253,7 @@ func TestTrustPrecheck(t *testing.T) {
 
 func TestNamedProfile(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	pdir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(pdir, "deploy.toml"), []byte("version = \"hisn-profile/v1\"\n[policy]\nversion = \"hisn-policy/v1\"\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -296,7 +288,7 @@ func TestNamedProfile(t *testing.T) {
 
 func TestNamedProfileNotFoundSurfacesHisn(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	// Caught at plan time, in Open, before any session: hisn's own error text.
 	_, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Profile: "nope"} })
 	if err == nil || !strings.Contains(err.Error(), "E_PROFILE_NOTFOUND") {
@@ -309,7 +301,7 @@ func TestNamedProfileNotFoundSurfacesHisn(t *testing.T) {
 
 func TestReconcileNamedUsesSupervisorHandle(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -334,7 +326,7 @@ var dockerFwd = []Forward{{Name: "docker", Socket: "/var/run/docker.sock", Expos
 func TestRiskRefusedBeforeAnySession(t *testing.T) {
 	for name, ack := range map[string]string{"missing": "", "mismatch": "signing"} {
 		fe := newFakeEnv(t)
-		setVersion(t, fe, "0.4.2")
+		setVersion(t, fe, "0.6.0")
 		_, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: ack} })
 		var re *RiskAckError
 		if !errors.As(err, &re) || !strings.Contains(err.Error(), "wakil sandbox trust") {
@@ -354,7 +346,7 @@ func TestRiskRefusedBeforeAnySession(t *testing.T) {
 
 func TestRiskAckAccepted(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: "root-equivalent"} })
 	if err != nil {
 		t.Fatal(err)
@@ -379,12 +371,12 @@ func TestRiskAckAccepted(t *testing.T) {
 func TestDataLabelNeedsAckInWakil(t *testing.T) {
 	fwd := []Forward{{Name: "x", Socket: "/run/user/1/x.sock", Expose: "/run/x.sock", Risk: "data"}}
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	if _, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: fwd} }); err == nil {
 		t.Fatal("a data label without hisn.risk_ack must be refused")
 	}
 	fe2 := newFakeEnv(t)
-	setVersion(t, fe2, "0.4.2")
+	setVersion(t, fe2, "0.6.0")
 	if _, err := openWith(t, fe2, func(o *Options) { o.Surface = Surface{Forward: fwd, RiskAck: "data"} }); err != nil {
 		t.Fatalf("data with matching ack: %v", err)
 	}
@@ -395,7 +387,7 @@ func TestDataLabelNeedsAckInWakil(t *testing.T) {
 // Open starts with no risk_ack, and the banner marks it "(wakil default)".
 func TestNoSurfaceSelfAckedHomePersist(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, nil)
 	if err != nil {
 		t.Fatalf("no surface must start without a risk_ack: %v", err)
@@ -423,7 +415,7 @@ func TestNamedProfileRiskExplainedByName(t *testing.T) {
 	}
 	for _, ack := range []string{"", "root-equivalent"} {
 		fe := newFakeEnv(t)
-		setVersion(t, fe, "0.4.2")
+		setVersion(t, fe, "0.6.0")
 		o := fe.options()
 		o.Env = append(o.Env, "HISN_PROFILES="+pdir)
 		o.Surface = Surface{Profile: "dk", RiskAck: ack}
@@ -448,7 +440,7 @@ func TestNamedProfileRiskExplainedByName(t *testing.T) {
 // If the running session turns out riskier than planned, it is stopped.
 func TestPostStartRiskMismatchStopsSession(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, func(o *Options) { o.Surface = Surface{Forward: dockerFwd, RiskAck: "root-equivalent"} })
 	if err != nil {
 		t.Fatal(err)
@@ -486,7 +478,7 @@ func TestExplainParsing(t *testing.T) {
 // from the sandbox, however the writable surface is configured.
 func TestStateDirNeverWritableFromSandbox(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	home := filepath.Dir(fe.sdir) // a prefix that CONTAINS the state dir
 	cases := map[string]func(*Options){
 		"grantable_rw containing it": func(o *Options) { o.GrantableRW = []string{home} },
@@ -503,7 +495,7 @@ func TestStateDirNeverWritableFromSandbox(t *testing.T) {
 	}
 	// Unrelated writable surfaces are untouched.
 	ok := t.TempDir()
-	if _, err := openWith(t, newFakeEnvVersioned(t, "0.4.2"), func(o *Options) { o.GrantableRW = []string{ok}; o.Surface = Surface{MountsRW: []string{ok}} }); err != nil {
+	if _, err := openWith(t, newFakeEnvVersioned(t, "0.6.0"), func(o *Options) { o.GrantableRW = []string{ok}; o.Surface = Surface{MountsRW: []string{ok}} }); err != nil {
 		t.Errorf("an unrelated rw surface must still work: %v", err)
 	}
 }
@@ -520,7 +512,7 @@ func newFakeEnvVersioned(t *testing.T, v string) *fakeEnv {
 // line).
 func TestDynamicRWGrantOverStateDirRefused(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, nil)
 	if err != nil {
 		t.Fatal(err)

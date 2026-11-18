@@ -118,7 +118,7 @@ func TestRootfsErrorFix(t *testing.T) {
 func TestRealHisnAcceptsRootfs(t *testing.T) {
 	bin := realHisnOffline(t)
 	if v, err := ParseVersion(mustVersion(t, bin)); err != nil || !VersionAtLeast(v, [3]int{0, 3, 2}) {
-		t.Skipf("[rootfs] needs hisn >= %s; this hisn is %q", ProfileHomeMinVersion, mustVersion(t, bin))
+		t.Skipf("[rootfs] needs hisn >= %s; this hisn is %q", MinVersion, mustVersion(t, bin))
 	}
 	if err := osexec.Command(bin, "rootfs", "path", "wakil-dev").Run(); err != nil {
 		t.Skip("rootfs wakil-dev is not in this host's hisn store; import it with `hisn rootfs import wakil-dev --from-image wakil-dev` to run this test")

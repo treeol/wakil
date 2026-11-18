@@ -178,8 +178,7 @@ func (l *live) ctl() *ctl.Client {
 type Backend struct {
 	opts Options
 	pm   *sandbox.PathMap
-	// ver is the hisn version seen by Preflight (zero until then); it selects
-	// profile mode (>= ProfileMinVersion) or the bare --policy path.
+	// ver is the hisn version seen by Preflight (zero until then).
 	ver [3]int
 	// planned is the plan-time risk evaluation (hisn profile explain).
 	planned explainDoc
@@ -331,9 +330,6 @@ func PlannedRisk(ctx context.Context, opts Options) (Risk, error) {
 	}
 	if err := b.Preflight(ctx); err != nil {
 		return Risk{}, err
-	}
-	if !b.profileMode() {
-		return Risk{Label: "none", Ack: "none"}, nil
 	}
 	s := b.opts.Surface
 	target := ""

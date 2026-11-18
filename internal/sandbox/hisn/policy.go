@@ -1,14 +1,5 @@
 package hisn
 
-import (
-	"bytes"
-	"fmt"
-	"os"
-	"path/filepath"
-
-	"github.com/BurntSushi/toml"
-)
-
 // policyFile mirrors the hisn-policy/v1 TOML schema (only what Wakil sets).
 type policyFile struct {
 	Version string        `toml:"version"`
@@ -72,30 +63,9 @@ func policyFor(p policyParams) policyFile {
 	return pf
 }
 
-// buildPolicy renders a bare hisn-policy/v1 document (hisn < 0.3.1 path).
-func buildPolicy(p policyParams) ([]byte, error) {
-	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(policyFor(p)); err != nil {
-		return nil, fmt.Errorf("encoding hisn policy: %w", err)
-	}
-	return buf.Bytes(), nil
-}
-
 func nonNil(s []string) []string {
 	if s == nil {
 		return []string{}
 	}
 	return s
-}
-
-// writePolicy writes the policy (0600) into dir and returns its path.
-func writePolicy(dir, id string, data []byte) (string, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return "", err
-	}
-	p := filepath.Join(dir, id+".toml")
-	if err := os.WriteFile(p, data, 0o600); err != nil {
-		return "", err
-	}
-	return p, nil
 }

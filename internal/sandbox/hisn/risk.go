@@ -164,9 +164,6 @@ func (b *Backend) verifyRisk(ctx context.Context, id string, persist string) (in
 func (b *Backend) plan(ctx context.Context) error {
 	s := b.opts.Surface
 	b.planned = explainDoc{Risk: "none", Capabilities: []sandbox.Capability{}}
-	if !b.profileMode() {
-		return nil // no 0.3 surface: the 0.2 sandbox or bare policy, label none
-	}
 	// A generated profile with no requested surface still carries Wakil's own
 	// [home] persist on hisn >= 0.3.3; explain it only then. Without [home]
 	// (hisn 0.3.1) there is nothing to explain and the old no-question path holds.
@@ -217,10 +214,8 @@ func (b *Backend) SandboxStatus(ctx context.Context) sandbox.Status {
 	switch {
 	case s.Profile != "":
 		st.Mode, st.Profile = "named profile", s.Profile
-	case b.profileMode():
-		st.Mode = "generated profile"
 	default:
-		st.Mode = "bare policy (hisn < " + ProfileMinVersion + ")"
+		st.Mode = "generated profile"
 	}
 	for _, f := range s.Forward {
 		st.Forwards = append(st.Forwards, fmt.Sprintf("%s: %s → %s", f.Name, f.Socket, f.Expose))

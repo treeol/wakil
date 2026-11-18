@@ -77,9 +77,6 @@ func TestIntegrationProfileStart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !b.profileMode() {
-		t.Fatal("hisn >= 0.3.1 must start in profile mode")
-	}
 	istart(t, b, "wakil-it-prof", cwd)
 	if _, err := os.Stat(b.profilePath("wakil-it-prof")); err != nil {
 		t.Errorf("generated profile must be in the state dir: %v", err)

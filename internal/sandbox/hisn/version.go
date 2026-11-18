@@ -66,15 +66,6 @@ func (b *Backend) Preflight(ctx context.Context) error {
 		return fmt.Errorf("sandbox backend hisn: hisn %d.%d.%d is too old, need >= %s", got[0], got[1], got[2], b.opts.MinVersion)
 	}
 	b.ver = got
-	if f := b.opts.Surface.needs03(); len(f) > 0 && !b.profileMode() {
-		return fmt.Errorf("sandbox backend hisn: %w", featureError(f, got))
-	}
-	if b.opts.Surface.Rootfs != "" {
-		want032, _ := ParseVersion(ProfileHomeMinVersion)
-		if !VersionAtLeast(got, want032) {
-			return fmt.Errorf("sandbox backend hisn: sandbox.hisn.rootfs needs hisn >= %s (found %d.%d.%d): upgrade hisn or unset rootfs", ProfileHomeMinVersion, got[0], got[1], got[2])
-		}
-	}
 	endCheck := timeline.Begin("hisn check")
 	out, err = b.output(ctx, false, "check")
 	endCheck()
@@ -105,13 +96,6 @@ func preflightSSHAgent() error {
 		return fmt.Errorf("sandbox.hisn.ssh_agent: SSH_AUTH_SOCK %q is not a socket (ssh_agent = true requires a host agent socket)", sock)
 	}
 	return nil
-}
-
-// profileMode reports whether sessions start from a hisn-profile/v1 file
-// (hisn >= ProfileMinVersion); older hisn gets the bare --policy document.
-func (b *Backend) profileMode() bool {
-	want, _ := ParseVersion(ProfileMinVersion)
-	return VersionAtLeast(b.ver, want)
 }
 
 func tailLines(s string, n int) string {

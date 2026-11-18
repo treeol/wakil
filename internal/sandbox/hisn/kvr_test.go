@@ -21,14 +21,14 @@ func kvrOpts(bin string) KVROptions {
 
 func TestPlanKVRDefaultService(t *testing.T) {
 	bin, _ := filepath.EvalSymlinks("/bin/sh") // under /usr or /bin: visible
-	p, err := planKVR("/w", Surface{}, kvrOpts(bin), true, nil, "")
+	p, err := planKVR("/w", Surface{}, kvrOpts(bin), nil, "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !p.Add || p.Socket != "/w/.wakil/kvr.sock" {
 		t.Fatalf("%+v", p)
 	}
-	if q, _ := planKVR("/w", Surface{}, kvrOpts(bin), true, nil, "ab12cd34"); q.Socket != "/w/.wakil/kvr-ab12cd34.sock" {
+	if q, _ := planKVR("/w", Surface{}, kvrOpts(bin), nil, "ab12cd34"); q.Socket != "/w/.wakil/kvr-ab12cd34.sock" {
 		t.Errorf("a per-process instance gets its own socket: %q", q.Socket)
 	}
 	ex := strings.Join(p.Service.Exec, " ")
@@ -46,26 +46,24 @@ func TestPlanKVRDefaultService(t *testing.T) {
 func TestPlanKVROffReasons(t *testing.T) {
 	bin, _ := filepath.EvalSymlinks("/bin/sh")
 	cases := map[string]struct {
-		s       Surface
-		o       KVROptions
-		profile bool
-		want    string
+		s    Surface
+		o    KVROptions
+		want string
 	}{
-		"disabled":      {Surface{}, KVROptions{}, true, "kvr_disabled"},
-		"0.2.x":         {Surface{}, kvrOpts(bin), false, "needs hisn >= 0.3.1"},
-		"named profile": {Surface{Profile: "p"}, kvrOpts(bin), true, "named hisn profile"},
-		"no binary":     {Surface{}, kvrOpts(""), true, "no kvr-server binary"},
-		"not visible":   {Surface{}, kvrOpts(writeExe(t, t.TempDir())), true, "not visible inside the sandbox"},
+		"disabled":      {Surface{}, KVROptions{}, "kvr_disabled"},
+		"named profile": {Surface{Profile: "p"}, kvrOpts(bin), "named hisn profile"},
+		"no binary":     {Surface{}, kvrOpts(""), "no kvr-server binary"},
+		"not visible":   {Surface{}, kvrOpts(writeExe(t, t.TempDir())), "not visible inside the sandbox"},
 	}
 	for name, c := range cases {
-		p, err := planKVR("/w", c.s, c.o, c.profile, nil, "")
+		p, err := planKVR("/w", c.s, c.o, nil, "")
 		if err != nil || p.Socket != "" || p.Add || !strings.Contains(p.Note, c.want) {
 			t.Errorf("%s: %+v %v (want note containing %q)", name, p, err, c.want)
 		}
 	}
 	// A binary in a directory the project lists under mounts_ro IS visible.
 	dir := t.TempDir()
-	if p, err := planKVR("/w", Surface{}, kvrOpts(writeExe(t, dir)), true, []string{dir}, ""); err != nil || !p.Add {
+	if p, err := planKVR("/w", Surface{}, kvrOpts(writeExe(t, dir)), []string{dir}, ""); err != nil || !p.Add {
 		t.Errorf("mounts_ro dir must make the binary visible: %+v %v", p, err)
 	}
 }
@@ -94,7 +92,7 @@ func TestPlanKVRSymlinkedBinaryResolved(t *testing.T) {
 
 func TestPlanKVRProjectService(t *testing.T) {
 	good := Surface{Services: []Service{{Name: "kvr", Exec: []string{"x"}, Socket: "/w/.wakil/k.sock", ReadySocket: "/w/.wakil/k.sock"}}}
-	if p, err := planKVR("/w", good, kvrOpts(""), true, nil, ""); err != nil || p.Socket != "/w/.wakil/k.sock" || p.Add {
+	if p, err := planKVR("/w", good, kvrOpts(""), nil, ""); err != nil || p.Socket != "/w/.wakil/k.sock" || p.Add {
 		t.Fatalf("project kvr is used as is: %+v %v", p, err)
 	}
 	bad := map[string]Surface{
@@ -105,7 +103,7 @@ func TestPlanKVRProjectService(t *testing.T) {
 		"ready differs": {Services: []Service{{Name: "kvr", Exec: []string{"x"}, Socket: "/w/.wakil/k.sock", ReadySocket: "/w/.wakil/o.sock"}}},
 	}
 	for name, s := range bad {
-		if _, err := planKVR("/w", s, kvrOpts(""), true, nil, ""); err == nil {
+		if _, err := planKVR("/w", s, kvrOpts(""), nil, ""); err == nil {
 			t.Errorf("%s must be refused", name)
 		}
 	}
@@ -187,7 +185,7 @@ func TestPrepareKVRDir(t *testing.T) {
 
 func kvrBackend(t *testing.T, fe *fakeEnv, bin string, mut func(*Options)) *Backend {
 	t.Helper()
-	setVersion(t, fe, "0.4.2")
+	setVersion(t, fe, "0.6.0")
 	b, err := openWith(t, fe, func(o *Options) {
 		o.KVR = kvrOpts(bin)
 		if mut != nil {
