@@ -511,25 +511,45 @@ func TestPinnedBreadcrumbSurvivesParentCompact(t *testing.T) {
 func TestIncompleteStatusWarningSurfaced(t *testing.T) {
 	summaryJSON := `{"objective":"find","findings":[{"summary":"partial","location":"a.go:1","kind":"match","weight":"low"}]}`
 
+	// The sseServer wraps to frame[0] (the tool-call frame) when the
+	// parent and the async subagent race on call ordering — the subagent
+	// consumes call 1, so the parent's next call wraps. Without
+	// MaxToolIterations the parent loops through dispatch_subagent calls
+	// indefinitely, growing Conv past any fixed HardMaxBytes. The extra
+	// text frames absorb the subagent's parse-retry and the parent's
+	// forced-final turn without wrapping to the tool-call frame.
 	srv := sseServer(t,
 		// call 0 — parent: dispatch_subagent tool call
 		toolCallFrames("d1", "dispatch_subagent", `{"task":"find things","class":"read"}`),
 		// call 1 — subagent: returns JSON summary (no tools → exits)
 		[]string{contentChunk(summaryJSON)},
-		// call 2 — parent: final text
+		// call 2+ — parent: final text (also absorbs any subagent retries
+		// and the parent's forced-final fallback without wrapping to the
+		// tool-call frame)
+		[]string{contentChunk("done")},
+		[]string{contentChunk("done")},
+		[]string{contentChunk("done")},
+		[]string{contentChunk("done")},
 		[]string{contentChunk("done")},
 	)
 	defer srv.Close()
 
 	exec := newFakeExecutor()
 	var out strings.Builder
-	// Raise the hard-max ceiling: the parent's default (160000) is at the
-	// same boundary the subagent's system prompt + task + tool history
-	// fluctuate around, so guardCurrentTurn fails intermittently under -race
-	// when the request lands a few bytes over the limit.
 	cfg := config.DefaultConfig()
-	cfg.HardMaxBytes = 320000
-	cfg.CompactAt = 240000
+	// Bound the parent's tool loop so the sseServer-wrapping race
+	// (which replays the tool-call frame on call overrun) cannot grow
+	// the request indefinitely. Three iterations is enough for the
+	// dispatch + drain + final-answer cycle.
+	cfg.MaxToolIterations = 3
+	// Derive the hard-max from the request, not a fixed byte count.
+	// The measured request (user + assistant + tool placeholder) is
+	// ~307 bytes. A 10× margin over the default HardMaxBytes (160000)
+	// keeps the test far from the boundary while still exercising the
+	// guardCurrentTurn path. prompt growth and path-length variance
+	// cannot push a ~300-byte request past 1.6M bytes.
+	cfg.HardMaxBytes = 1600000
+	cfg.CompactAt = 1200000
 	app := &App{
 		Cfg:     cfg,
 		Client:  newTestClient(srv.URL),
