@@ -2066,7 +2066,44 @@ func (a *App) buildPreamble(today string) string {
 			parts = append(parts, memLine)
 		}
 	}
+	// Network mode: last line of the per-session suffix so any /network change
+	// only invalidates the tail of the system prompt.
+	parts = append(parts, networkModeLine(a.sessionNetworkMode()))
 	return strings.Join(parts, "\n")
+}
+
+// sessionNetworkMode returns the active session's real network mode ("open" or
+// "host"). When the executor reports a live mode via exec.NetworkGetter (e.g.
+// hisn, which includes .wakil/sandbox.json narrowing and SetNetworkMode
+// updates), that value is authoritative; otherwise fall back to
+// EffectiveNetwork (per-repo /network override, then config, then "host").
+func (a *App) sessionNetworkMode() string {
+	if ng, ok := a.Exec.(exec.NetworkGetter); ok {
+		if m := ng.NetworkMode(); m == "open" || m == "host" {
+			return m
+		}
+	}
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.EffectiveNetwork()
+}
+
+// networkModeLine formats the single-line network-mode notice placed at the
+// end of the system prompt's per-session suffix.
+func networkModeLine(mode string) string {
+	if mode == "open" {
+		return "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them)."
+	}
+	return "Network mode: host (LAN and internet reachable)."
+}
+
+// invalidatePreambleLocked marks an already-built preamble stale so the next
+// ensurePreamble refreshes Conv[0] in place (preserving prompt caching until a
+// session setting actually changes). Caller holds stateMu.Lock.
+func (a *App) invalidatePreambleLocked() {
+	if a.preambleDay != "" {
+		a.preambleDay = preambleRefreshSentinel
+	}
 }
 
 // ensurePreamble keeps Conv[0] as a day-stable pinned system message carrying
@@ -2088,7 +2125,10 @@ func (a *App) ensurePreamble() {
 		return
 	}
 	today := time.Now().Format("Monday, 2 January 2006")
-	if a.preambleDay == today {
+	a.stateMu.RLock()
+	prevDay := a.preambleDay
+	a.stateMu.RUnlock()
+	if prevDay == today {
 		return
 	}
 
@@ -2103,7 +2143,7 @@ func (a *App) ensurePreamble() {
 	// from Background() rather than the turn ctx so pruning is independent of
 	// turn cancellation — best-effort cleanup should complete even if the user
 	// aborts the turn.
-	if a.preambleDay == "" {
+	if prevDay == "" {
 		pruneCtx, pruneCancel := context.WithTimeout(context.Background(), pruneWorktreesTimeout)
 		pruneStaleWorktrees(pruneCtx, a)
 		pruneCancel()
@@ -2111,7 +2151,6 @@ func (a *App) ensurePreamble() {
 
 	text := a.buildPreamble(today)
 	a.convMu.Lock()
-	defer a.convMu.Unlock()
 	// A pinned first system message that this process has not yet adopted as
 	// its preamble (preambleDay == "") is a foreign seed — the stop-mode
 	// handoff context seeded by HandoffConversation on a fresh App.
@@ -2133,7 +2172,7 @@ func (a *App) ensurePreamble() {
 	// prepended again on /prompt switches that reset preambleDay).
 	isHandoffSeed := strings.HasPrefix(firstContent, handoffBlockHeader)
 	isOwnedPreamble := strings.Contains(firstContent, "Current date:")
-	if firstPinned && (isHandoffSeed || (a.preambleDay == "" && !isOwnedPreamble)) {
+	if firstPinned && (isHandoffSeed || (prevDay == "" && !isOwnedPreamble)) {
 		// Pinned handoff seed — insert the preamble ahead of it.
 		a.Conv = append([]proxy.Message{{Role: "system", Content: StrPtr(text), Pinned: true}}, a.Conv...)
 	} else if firstSystem {
@@ -2150,7 +2189,10 @@ func (a *App) ensurePreamble() {
 		// being a system message).
 		a.Conv = append([]proxy.Message{{Role: "system", Content: StrPtr(text), Pinned: true}}, a.Conv...)
 	}
+	a.convMu.Unlock()
+	a.stateMu.Lock()
 	a.preambleDay = today
+	a.stateMu.Unlock()
 }
 
 // streamSink returns the per-call SSE content sink. Beyond forwarding deltas to

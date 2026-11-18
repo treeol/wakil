@@ -545,6 +545,7 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	// zdr/region). "open" narrows; "host" removes the override.
 	if st.Network != "" {
 		a.NetworkOverride = st.Network
+		a.invalidatePreambleLocked()
 		if ns, ok := a.Exec.(exec.NetworkSetter); ok {
 			ns.SetNetworkMode(st.Network)
 		}

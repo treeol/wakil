@@ -181,6 +181,7 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 	case "reset":
 		app.stateMu.Lock()
 		app.NetworkOverride = ""
+		app.invalidatePreambleLocked()
 		app.stateMu.Unlock()
 		app.saveRepoState(func(s *RepoState) { s.Network = "" })
 		// Resetting must reach the backend too: without it the backend keeps
@@ -195,6 +196,7 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 	case "host", "open":
 		app.stateMu.Lock()
 		app.NetworkOverride = arg
+		app.invalidatePreambleLocked()
 		app.stateMu.Unlock()
 		app.saveRepoState(func(s *RepoState) { s.Network = arg })
 		// Push to the backend so the NEXT session start uses it. A running

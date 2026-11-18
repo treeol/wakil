@@ -679,6 +679,18 @@ func (b *Backend) SetNetworkMode(mode string) {
 	b.opts.Surface.Network = mode
 }
 
+// NetworkMode implements sandbox.NetworkGetter, returning the effective
+// session network mode ("open" or "host") including any project-file narrowing
+// or SetNetworkMode override.
+func (b *Backend) NetworkMode() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.opts.Surface.Network == "open" {
+		return "open"
+	}
+	return "host"
+}
+
 // SandboxTempDir implements sandbox.Backend: the session-private /tmp.
 func (b *Backend) SandboxTempDir() string { return "/tmp" }
 

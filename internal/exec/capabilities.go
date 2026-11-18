@@ -98,3 +98,9 @@ func (e *ExitStatusError) ExitCode() int { return e.Code }
 type NetworkSetter interface {
 	SetNetworkMode(mode string)
 }
+
+// NetworkGetter is implemented by executors that can report the effective
+// sandbox network mode ("host" or "open") without shelling out.
+type NetworkGetter interface {
+	NetworkMode() string
+}

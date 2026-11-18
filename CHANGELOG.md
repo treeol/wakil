@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Active network mode in the system prompt.** Wakil now appends one line at the end of the per-session system prompt stating the active network mode — `host` (LAN and internet reachable) or `open` (public internet over TCP only; LAN and private addresses are refused with a permission error). The line reflects the real session mode (user config, project `.wakil/sandbox.json` narrowing, and per-repo `/network` overrides) and updates in place for the next request when `/network` changes.
+
 ### Changed
 
 - **System prompt updated to match current Wakil features.** `prompts/agent.txt` (and the `/prompt core` split files `prompts/core.txt` and `prompts/extension.txt`) now reflects current features and removes stale references: ungated read-only `git_*` tools and `read_file_full`, Mashūra levels (`off|low|medium|high`) and Wakil-started automatic struggle rounds, per-session `/grants` and `/auto` rules, `/zdr` and `/region` data policy, `/network host|open`, template skill tools (`apply_skill_template`, `capture_skill_template`, `check_skill_template`), what survives mid-turn `collapse_context`, and `/handoff [stop|proceed]`.

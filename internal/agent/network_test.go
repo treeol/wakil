@@ -78,6 +78,14 @@ func newNetworkSetter() *networkSetter { return &networkSetter{fakeExecutor: new
 
 func (n *networkSetter) SetNetworkMode(mode string) { n.last = mode }
 
+type networkGetterSetter struct {
+	*fakeExecutor
+	mode string
+}
+
+func (n *networkGetterSetter) SetNetworkMode(mode string) { n.mode = mode }
+func (n *networkGetterSetter) NetworkMode() string        { return n.mode }
+
 // TestNetworkResetReachesBackend: /network reset must push the effective mode
 // (override cleared → config/default) to the backend, so the next session
 // start uses the reset value instead of the previous override.
@@ -174,5 +182,120 @@ func TestEffectiveNetwork(t *testing.T) {
 	app.NetworkOverride = "open"
 	if got := app.EffectiveNetwork(); got != "open" {
 		t.Errorf("override open over config default: want %q, got %q", "open", got)
+	}
+}
+
+// TestSystemPromptNetworkMode verifies both modes ("host" and "open") appear
+// as the final line of the system prompt's per-session suffix, reflect
+// per-repo /network overrides and backend-reported modes, and update in place
+// on /network changes for the next request without disturbing the static prefix.
+func TestSystemPromptNetworkMode(t *testing.T) {
+	const staticPrefix = "STATIC AGENT PROMPT PREFIX"
+	wantHost := "Network mode: host (LAN and internet reachable)."
+	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them)."
+
+	lastLine := func(s string) string {
+		lines := strings.Split(s, "\n")
+		return lines[len(lines)-1]
+	}
+
+	// 1. Default ("host") mode ends with the host line, static prefix first.
+	app := &App{
+		Cfg:         config.Config{},
+		AgentPrompt: staticPrefix,
+		InjectDate:  true,
+	}
+	app.ensurePreamble()
+	if len(app.Conv) != 1 || app.Conv[0].Role != "system" {
+		t.Fatalf("Conv = %+v, want 1 system message", app.Conv)
+	}
+	got := DerefStr(app.Conv[0].Content)
+	if !strings.HasPrefix(got, staticPrefix) {
+		t.Errorf("system prompt must start with static prefix, got:\n%s", got)
+	}
+	if ll := lastLine(got); ll != wantHost {
+		t.Errorf("host last line = %q, want %q", ll, wantHost)
+	}
+
+	// 2. /network open updates Conv[0] in place on the next ensurePreamble().
+	handled, _, cmd := handleNetworkCommand([]string{"/network", "open"}, app)
+	if !handled || cmd == nil {
+		t.Fatal("/network open must be handled")
+	}
+	cmd()
+	app.ensurePreamble()
+	if len(app.Conv) != 1 {
+		t.Fatalf("after /network open: len(Conv) = %d, want 1 (in-place refresh)", len(app.Conv))
+	}
+	got = DerefStr(app.Conv[0].Content)
+	if !strings.HasPrefix(got, staticPrefix) {
+		t.Errorf("after /network open: static prefix lost")
+	}
+	if ll := lastLine(got); ll != wantOpen {
+		t.Errorf("open last line = %q, want %q", ll, wantOpen)
+	}
+
+	// 3. /network host switches it back on the next ensurePreamble().
+	handled, _, cmd = handleNetworkCommand([]string{"/network", "host"}, app)
+	if !handled || cmd == nil {
+		t.Fatal("/network host must be handled")
+	}
+	cmd()
+	app.ensurePreamble()
+	if ll := lastLine(DerefStr(app.Conv[0].Content)); ll != wantHost {
+		t.Errorf("after /network host: last line = %q, want %q", ll, wantHost)
+	}
+
+	// 4. Config default "open" + /network reset restores "open".
+	appOpenCfg := &App{
+		Cfg:         config.Config{Sandbox: config.SandboxConfig{Hisn: config.HisnConfig{NetworkMode: "open"}}},
+		AgentPrompt: staticPrefix,
+		InjectDate:  true,
+	}
+	appOpenCfg.ensurePreamble()
+	if ll := lastLine(DerefStr(appOpenCfg.Conv[0].Content)); ll != wantOpen {
+		t.Errorf("config open: last line = %q, want %q", ll, wantOpen)
+	}
+	handleNetworkCommand([]string{"/network", "host"}, appOpenCfg)
+	appOpenCfg.ensurePreamble()
+	if ll := lastLine(DerefStr(appOpenCfg.Conv[0].Content)); ll != wantHost {
+		t.Errorf("override host over open config: last line = %q, want %q", ll, wantHost)
+	}
+	handleNetworkCommand([]string{"/network", "reset"}, appOpenCfg)
+	appOpenCfg.ensurePreamble()
+	if ll := lastLine(DerefStr(appOpenCfg.Conv[0].Content)); ll != wantOpen {
+		t.Errorf("reset back to open config: last line = %q, want %q", ll, wantOpen)
+	}
+
+	// 5. Executor reporting "open" via NetworkGetter (e.g. .wakil/sandbox.json narrowing).
+	ngs := &networkGetterSetter{fakeExecutor: newFakeExecutor(), mode: "open"}
+	appBackend := &App{
+		Cfg:        config.Config{},
+		Exec:       ngs,
+		InjectDate: true,
+	}
+	appBackend.ensurePreamble()
+	if ll := lastLine(DerefStr(appBackend.Conv[0].Content)); ll != wantOpen {
+		t.Errorf("backend-narrowed open: last line = %q, want %q", ll, wantOpen)
+	}
+	handleNetworkCommand([]string{"/network", "host"}, appBackend)
+	appBackend.ensurePreamble()
+	if ll := lastLine(DerefStr(appBackend.Conv[0].Content)); ll != wantHost {
+		t.Errorf("after /network host on backend: last line = %q, want %q", ll, wantHost)
+	}
+
+	// 6. Per-repo RepoState restore sets the mode in the system prompt.
+	repoDir := t.TempDir()
+	if err := updateRepoState(repoDir, func(s *RepoState) { s.Network = "open" }); err != nil {
+		t.Fatalf("save repo state: %v", err)
+	}
+	appRepo := &App{
+		Cfg:        config.Config{WorkDir: repoDir},
+		InjectDate: true,
+	}
+	RestoreRepoState(appRepo)
+	appRepo.ensurePreamble()
+	if ll := lastLine(DerefStr(appRepo.Conv[0].Content)); ll != wantOpen {
+		t.Errorf("per-repo restored open: last line = %q, want %q", ll, wantOpen)
 	}
 }

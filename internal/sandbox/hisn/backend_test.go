@@ -577,6 +577,37 @@ func TestUnreapableSupervisorKeepsRecoveryUntilRetry(t *testing.T) {
 	}
 }
 
+func TestNetworkModeGetterAndSetter(t *testing.T) {
+	_, fe := openFake(t)
+	opts := fe.options()
+	b, err := New(opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.NetworkMode(); got != "host" {
+		t.Fatalf("default NetworkMode = %q, want host", got)
+	}
+	b.SetNetworkMode("open")
+	if got := b.NetworkMode(); got != "open" {
+		t.Fatalf("after SetNetworkMode(open) = %q, want open", got)
+	}
+	b.SetNetworkMode("host")
+	if got := b.NetworkMode(); got != "host" {
+		t.Fatalf("after SetNetworkMode(host) = %q, want host", got)
+	}
+
+	// Project-surface narrowing to "open" is reported immediately by NetworkMode().
+	optsOpen := fe.options()
+	optsOpen.Surface.Network = "open"
+	bOpen, err := New(optsOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := bOpen.NetworkMode(); got != "open" {
+		t.Fatalf("surface-narrowed NetworkMode = %q, want open", got)
+	}
+}
+
 func contains(s []string, v string) bool {
 	for _, x := range s {
 		if x == v {

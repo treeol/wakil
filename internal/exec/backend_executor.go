@@ -1064,6 +1064,15 @@ func (e *BackendExecutor) SetNetworkMode(mode string) {
 	}
 }
 
+// NetworkMode implements NetworkGetter: report the backend's effective network
+// mode ("open" or "host") when supported, else "".
+func (e *BackendExecutor) NetworkMode() string {
+	if ng, ok := e.b.(sandbox.NetworkGetter); ok {
+		return ng.NetworkMode()
+	}
+	return ""
+}
+
 // EnsureSession implements SessionEnsurer: start the session for the bound
 // chat if it is not running yet.
 func (e *BackendExecutor) EnsureSession(ctx context.Context) error {

@@ -140,3 +140,11 @@ type Reconciler interface {
 type NetworkBackend interface {
 	SetNetworkMode(mode string)
 }
+
+// NetworkGetter is an optional Backend capability: reports the effective
+// session network mode ("host" or "open"), including any project-file
+// narrowing or SetNetworkMode override. Must be fast and in-memory (no shell
+// out), because the agent reads it while assembling the system prompt.
+type NetworkGetter interface {
+	NetworkMode() string
+}
