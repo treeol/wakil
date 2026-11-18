@@ -412,6 +412,7 @@ type App struct {
 	// lever on prompt-cache prefix stability (see internal/proxy/client.go
 	// Stream: this is messages[0], the earliest possible byte position).
 	preambleDay string
+	preambleGen uint64 // incremented on explicit preamble invalidation; guarded by stateMu
 
 	// Session is the on-disk record persisted after each turn. nil disables
 	// persistence (e.g. in tests).
@@ -2102,6 +2103,7 @@ func networkModeLine(mode string) string {
 // ensurePreamble refreshes Conv[0] in place (preserving prompt caching until a
 // session setting actually changes). Caller holds stateMu.Lock.
 func (a *App) invalidatePreambleLocked() {
+	a.preambleGen++
 	if a.preambleDay != "" {
 		a.preambleDay = preambleRefreshSentinel
 	}
@@ -2128,6 +2130,7 @@ func (a *App) ensurePreamble() {
 	today := time.Now().Format("Monday, 2 January 2006")
 	a.stateMu.RLock()
 	prevDay := a.preambleDay
+	startGen := a.preambleGen
 	a.stateMu.RUnlock()
 	if prevDay == today {
 		return
@@ -2192,7 +2195,9 @@ func (a *App) ensurePreamble() {
 	}
 	a.convMu.Unlock()
 	a.stateMu.Lock()
-	a.preambleDay = today
+	if a.preambleGen == startGen {
+		a.preambleDay = today
+	}
 	a.stateMu.Unlock()
 }
 

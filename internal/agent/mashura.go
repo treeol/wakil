@@ -1472,9 +1472,10 @@ func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, k
 		key     string
 	}
 	// EXIT≠0 streak: the two most recent calls both failed. Pure read-only
-	// exploration misses (e.g. probing two nonexistent file paths) are not
-	// a build/edit struggle and must not start an automatic Mashūra round.
-	if last.ExitErr && prev.ExitErr && !(isReadOnlyExplorationTrace(last) && isReadOnlyExplorationTrace(prev)) {
+	// exploration misses (e.g. probing a nonexistent file path, even right
+	// after an earlier failure) are not a build/edit struggle and must not
+	// start an automatic Mashūra round.
+	if last.ExitErr && prev.ExitErr && !isReadOnlyExplorationTrace(last) {
 		s := fmt.Sprintf("repeated failures: %s %q keeps exiting non-zero", displayAbbrev(last.Abbrev), last.Command)
 		if last.FirstLine != "" {
 			s += " — " + last.FirstLine

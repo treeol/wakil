@@ -245,3 +245,16 @@ func TestAutoCounsel_ReadOnlyExplorationNeverFires(t *testing.T) {
 		t.Errorf("read-only exploration should not emit struggle/auto-counsel lines, got:\n%s", out.String())
 	}
 }
+
+// TestDetectStruggle_ReadOnlyProbeAfterFailureDoesNotFire verifies that a
+// failed read-only probe immediately following a failed write/shell does not
+// fire the "repeated failures" rule against the read-only probe.
+func TestDetectStruggle_ReadOnlyProbeAfterFailureDoesNotFire(t *testing.T) {
+	traces := []ToolTraceEntry{
+		{Abbrev: "edit", Command: "a.go", ExitErr: true, FirstLine: "old_string not found"},
+		{Abbrev: "read", Command: "missing.go", ExitErr: true, ReadOnly: true, FirstLine: "open missing.go: no such file"},
+	}
+	if s, d, r, _ := detectStruggleScan(traces); d {
+		t.Errorf("read-only probe after failed edit must not fire struggle detector; got rule=%q symptom=%q", r, s)
+	}
+}

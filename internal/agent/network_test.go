@@ -298,4 +298,27 @@ func TestSystemPromptNetworkMode(t *testing.T) {
 	if ll := lastLine(DerefStr(appRepo.Conv[0].Content)); ll != wantOpen {
 		t.Errorf("per-repo restored open: last line = %q, want %q", ll, wantOpen)
 	}
+
+	// 7. Concurrent invalidation during ensurePreamble must not be lost:
+	// if preambleGen advances before ensurePreamble finishes, preambleDay
+	// stays stale so the next ensurePreamble rebuilds with the new mode.
+	appGen := &App{
+		Cfg:        config.Config{WorkDir: t.TempDir()},
+		InjectDate: true,
+	}
+	appGen.ensurePreamble()
+	appGen.stateMu.Lock()
+	appGen.invalidatePreambleLocked()
+	genAfterFirst := appGen.preambleGen
+	appGen.stateMu.Unlock()
+	if genAfterFirst == 0 {
+		t.Fatalf("expected preambleGen > 0 after invalidatePreambleLocked")
+	}
+	appGen.ensurePreamble()
+	appGen.stateMu.RLock()
+	dayAfterRebuild := appGen.preambleDay
+	appGen.stateMu.RUnlock()
+	if dayAfterRebuild == "" || dayAfterRebuild == preambleRefreshSentinel {
+		t.Errorf("preambleDay after uncontested rebuild = %q, want today", dayAfterRebuild)
+	}
 }

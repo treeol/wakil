@@ -204,17 +204,25 @@ func isProxyOpenRouterMainRoute(app *App) bool {
 	if app == nil {
 		return false
 	}
+	app.stateMu.RLock()
 	ep := app.Cfg.ActiveEndpoint()
+	sel := app.SelectedBackend
+	cfgBackend := app.Cfg.Backend
+	client := app.Client
+	app.stateMu.RUnlock()
 	if ep.Kind != config.EndpointKindIlmProxy {
 		return false
 	}
-	if app.SelectedBackend == "openrouter" {
+	if sel == "openrouter" {
 		return true
 	}
-	if app.SelectedBackend == "" && app.Cfg.Backend == "openrouter" {
+	if sel != "" {
+		return false
+	}
+	if cfgBackend == "openrouter" {
 		return true
 	}
-	if app.Client != nil && app.Client.LastUsedBackend() == "openrouter" {
+	if client != nil && client.LastUsedBackend() == "openrouter" {
 		return true
 	}
 	return false

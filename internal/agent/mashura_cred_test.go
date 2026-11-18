@@ -265,4 +265,26 @@ func TestMashuraStatus_CredentialSource(t *testing.T) {
 			t.Errorf("status missing fail-closed error:\n%s", out)
 		}
 	})
+
+	t.Run("proxy switched away from openrouter hides proxy note", func(t *testing.T) {
+		t.Setenv("OPENROUTER_API_KEY", "fake-env-key")
+		client := &proxy.Client{}
+		// Simulate an earlier request that used "openrouter", followed by an
+		// explicit switch to a different proxy backend ("anthropic").
+		app := &App{
+			Cfg: config.Config{
+				EndpointName:        "proxy",
+				Endpoint:            config.EndpointConfig{Kind: config.EndpointKindIlmProxy, BaseURL: "http://127.0.0.1:8080", Model: "ilm"},
+				OpenRouterAPIKeyEnv: "OPENROUTER_API_KEY",
+				OracleEnabled:       true,
+				OracleModel:         "openrouter:anthropic/claude-sonnet-4",
+			},
+			Client:          client,
+			SelectedBackend: "anthropic",
+		}
+		out := mashuraStatus(app)
+		if strings.Contains(out, "held by the proxy") {
+			t.Errorf("switched-away proxy backend must not print proxy OpenRouter note:\n%s", out)
+		}
+	})
 }
