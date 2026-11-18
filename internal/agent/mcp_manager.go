@@ -1007,13 +1007,12 @@ func mashuraOffered(cfg config.Config, repoLevel string) bool {
 	return keyPresentForMashura(cfg)
 }
 
-// keyPresentForMashura reports whether the API key the panel needs is
-// present: the OpenRouter key (openrouter_api_key_env). The direct Anthropic
-// path was removed and every member routes through OpenRouter
-// (mashuraPanelKeys), so an Anthropic key alone never counts — legacy or
-// block.
+// keyPresentForMashura reports whether the OpenRouter credential the panel
+// needs is present, via the single ResolveOpenRouterCredential resolver. Every
+// member routes through OpenRouter, so an Anthropic key alone never counts.
 func keyPresentForMashura(cfg config.Config) bool {
-	return os.Getenv(cfg.OpenRouterAPIKeyEnv) != ""
+	_, err := cfg.ResolveOpenRouterCredential()
+	return err == nil
 }
 
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string) []proxy.Tool {

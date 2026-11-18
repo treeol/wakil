@@ -290,7 +290,7 @@ reference covering every section below.
 | `max_tool_iterations` | `0` | Hard cap on tool round-trips per turn; `0` = unlimited |
 | `browser_path` | `""` | Override Chromium/Chrome binary path *(empty = search PATH)* |
 | `browser_idle_timeout_seconds` | `0` (→ 600) | Stop the headless browser after this many seconds without a `browser_*` call; the next call starts a fresh one. The browser is also stopped on `/new`, chat end and exit. It is started lazily on the first call, never with the container |
-| `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Env var for the OpenRouter API key *(used by mashura panel calls routed through OpenRouter)* |
+| `openrouter_api_key_env` | `"OPENROUTER_API_KEY"` | Fallback env var for Mashūra's OpenRouter API key when no OpenRouter endpoint (`openrouter.ai`, `eu.openrouter.ai`, `us.openrouter.ai`) is configured in `endpoints` (for example, when the main backend is a local endpoint or an `ilm-proxy` route). When an OpenRouter endpoint is configured, Mashūra uses that endpoint's credential directly and fails closed if it is missing. |
 | `subagent_max_tool_iterations` | `0` (→ 40) | Cap on tool round-trips per subagent dispatch; `0` = use built-in default |
 | `subagent_turn_tool_budget` | `0` (→ 120000) | Per-turn cumulative tool output budget for subagents; `0` = use built-in default *(an operator cap on the class-based work budget: lowers it, never raises it)* |
 | `subagent_tool_result_cap` | `0` (→ 12000) | Per-result char cap for subagents; `0` = use built-in default |

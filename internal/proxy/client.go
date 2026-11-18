@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,6 +18,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/diag"
 )
 
@@ -503,27 +503,12 @@ func (c *Client) appAttributionHeaders() (referer, title, categories string) {
 	return referer, title, categories
 }
 
-// IsOpenRouterHost reports whether baseURL targets OpenRouter's API. The
-// rule is the exact host list the policy (policy.go classifyHost) uses:
-// openrouter.ai, eu.openrouter.ai, us.openrouter.ai — and nothing else.
-// api.openrouter.ai or any other *.openrouter.ai subdomain does NOT count.
-// All OpenRouter classification in Wakil goes through this one function.
+// IsOpenRouterHost delegates to config.IsOpenRouterHost — the exact three-host
+// list (openrouter.ai, eu.openrouter.ai, us.openrouter.ai) shared across
+// attribution headers, context limits, cost pricing, credential resolution,
+// and the data policy.
 func IsOpenRouterHost(baseURL string) bool {
-	u, err := url.Parse(baseURL)
-	if err != nil || u.Host == "" {
-		// A bare host name (no scheme) is treated as its own host: classifyHost
-		// feeds it bare names, the other callers feed URLs.
-		switch strings.ToLower(strings.TrimSpace(baseURL)) {
-		case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
-			return true
-		}
-		return false
-	}
-	switch strings.ToLower(u.Hostname()) {
-	case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
-		return true
-	}
-	return false
+	return config.IsOpenRouterHost(baseURL)
 }
 
 // isOpenRouterHost is the package-local alias for IsOpenRouterHost.

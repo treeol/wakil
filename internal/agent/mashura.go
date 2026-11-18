@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -805,11 +804,10 @@ func (a *App) fallbackModel() string {
 	if strings.HasPrefix(a.Cfg.OracleModel, "anthropic:") || strings.HasPrefix(a.Cfg.OracleModel, "openrouter:") {
 		return a.Cfg.OracleModel
 	}
-	// Auto-detect based on the OpenRouter key: before the direct Anthropic
-	// path was removed, an Anthropic key could select the direct path. Now
-	// Anthropic members are served through OpenRouter, so the OpenRouter key
-	// is the only signal; without it the preflight fails closed.
-	if os.Getenv(a.Cfg.OpenRouterAPIKeyEnv) != "" {
+	// Auto-detect based on the OpenRouter credential: every member routes
+	// through OpenRouter, so the resolved OpenRouter credential is the only
+	// signal; without it the preflight fails closed.
+	if _, err := a.Cfg.ResolveOpenRouterCredential(); err == nil {
 		return "openrouter:" + defaultOpenRouterModel
 	}
 	return "anthropic:" + a.Cfg.OracleModel
@@ -826,16 +824,17 @@ func (a *App) defaultPanel() (string, config.MashuraPanelConfig, bool) {
 	return a.resolvePanel("", "")
 }
 
-// mashuraPanelKeys collects the OpenRouter API key for the panel, checking it
-// is present before the gate fires. Every member routes through OpenRouter
-// now: a configured "anthropic:<model>" member is mapped mechanically to the
-// OpenRouter slug "anthropic/<model>" and uses the OpenRouter key.
+// mashuraPanelKeys collects the OpenRouter Authorization credential for the
+// panel via the single OpenRouter credential resolver, checking it is present
+// before the gate fires. Every member routes through OpenRouter now: a
+// configured "anthropic:<model>" member is mapped mechanically to the
+// OpenRouter slug "anthropic/<model>" and uses the resolved credential.
 func (a *App) mashuraPanelKeys(panel config.MashuraPanelConfig) (map[string]string, error) {
-	key := os.Getenv(a.Cfg.OpenRouterAPIKeyEnv)
-	if key == "" {
-		return nil, fmt.Errorf("mashūra API key not set (%s)", a.Cfg.OpenRouterAPIKeyEnv)
+	cred, err := a.Cfg.ResolveOpenRouterCredential()
+	if err != nil {
+		return nil, err
 	}
-	return map[string]string{"openrouter": key}, nil
+	return map[string]string{"openrouter": cred.AuthHeader}, nil
 }
 
 // mashuraCore returns the authoritative context shared by every mashura tool,

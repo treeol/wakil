@@ -531,9 +531,9 @@ func callMember(ctx context.Context, prov, model, question, briefing, appendix s
 	}
 	key := apiKeys["openrouter"]
 	if key == "" {
-		// Members that were configured against a direct Anthropic key keep
-		// reading it from the openrouter slot (mashuraPanelKeys maps both
-		// onto the OpenRouter key); a missing key here is a wiring error.
+		// All Mashūra members route through OpenRouter and read the resolved
+		// credential from the "openrouter" slot; prov fallback is kept only for
+		// direct unit-test callers.
 		key = apiKeys[prov]
 	}
 	return callOpenRouter(ctx, slug, key, question, briefing, appendix, ccfg)
@@ -784,11 +784,15 @@ func orChat(ctx context.Context, req orReq, apiKey, label string, ccfg PanelCall
 	// OpenRouter origin; in tests the injected client targets the httptest
 	// server (whose host classifies local, so both switches off keep the
 	// wire bytes identical).
+	authHeader := apiKey
+	if authHeader != "" && !strings.Contains(authHeader, " ") {
+		authHeader = "Bearer " + authHeader
+	}
 	chatReq := proxy.ChatRequest{
 		BaseURL:      endpoint,
 		Model:        req.Model,
 		Body:         body,
-		Headers:      map[string]string{"Authorization": "Bearer " + apiKey},
+		Headers:      map[string]string{"Authorization": authHeader},
 		IdleTimeout:  counselStreamIdleTimeout,
 		TotalTimeout: timeout,
 		Observe:      nil,

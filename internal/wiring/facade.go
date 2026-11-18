@@ -280,16 +280,16 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	rawTools := app.RawTools
 	infoPanelOpen := app.InfoPanelOpen
 	wf := app.Workflow
-	// Copy config fields needed by mashuraPanelLabelFromFields under the lock to
-	// avoid a whole-Cfg struct copy racing with stateMu-guarded Cfg
-	// field writes (SetMaxParallel, applyModelOverrideLocked). These
-	// specific fields are never written at runtime, but the struct copy
-	// reads sibling fields that are.
+	// Copy config fields needed by mashuraPanelLabelFromFields and credential
+	// check under the lock to avoid a whole-Cfg struct copy racing with
+	// stateMu-guarded Cfg field writes (SetMaxParallel,
+	// applyModelOverrideLocked).
 	oracleEnabled := app.Cfg.OracleEnabled
-	oracleAPIKeyEnv := app.Cfg.OracleAPIKeyEnv
 	mashuraToolPanels := app.Cfg.MashuraToolPanels
 	mashuraPanels := app.Cfg.MashuraPanels
 	oracleModel := app.Cfg.OracleModel
+	_, openrouterCredErr := app.Cfg.ResolveOpenRouterCredential()
+	openrouterOk := openrouterCredErr == nil
 	// SidebarLabel may read mutable workflow state — copy under lock.
 	var workflowLabel string
 	if wf != nil {
@@ -334,11 +334,9 @@ func (f *wiringFacade) Info() sessionclient.InfoSnapshot {
 	info.InfoPanelOpen = infoPanelOpen
 
 	// Oracle label with the "no key" fallback the old TUI computed inline
-	// (env checks belong wiring-side, not in the render path).
+	// (credential checks belong wiring-side, not in the render path).
 	if oracleEnabled {
-		anthropicOk := os.Getenv(oracleAPIKeyEnv) != ""
-		openrouterOk := os.Getenv(app.Cfg.OpenRouterAPIKeyEnv) != ""
-		if anthropicOk || openrouterOk {
+		if openrouterOk {
 			info.OracleLabel = mashuraPanelLabelFromFields(mashuraToolPanels, mashuraPanels, oracleModel)
 		} else {
 			info.OracleLabel = "no key"

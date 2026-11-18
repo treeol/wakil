@@ -143,6 +143,19 @@ func mashuraStatus(app *App) string {
 		sb.WriteString(fmt.Sprintf("timeout:        %ds\n", app.Cfg.OracleTimeoutSeconds))
 		sb.WriteString(fmt.Sprintf("enabled:        %v\n", app.mashuraAvailable()))
 	}
+	cred, credErr := app.Cfg.ResolveOpenRouterCredential()
+	if credErr != nil {
+		sb.WriteString(fmt.Sprintf("credential:     %s (missing: %v)\n", cred.SourceLabel(), credErr))
+	} else {
+		sb.WriteString(fmt.Sprintf("credential:     %s\n", cred.SourceLabel()))
+		if cred.Source == config.OpenRouterSourceEnvironment {
+			if isProxyOpenRouterMainRoute(app) {
+				sb.WriteString("                the main route's OpenRouter key is held by the proxy\n")
+			} else {
+				sb.WriteString("                using environment fallback (no OpenRouter backend configured)\n")
+			}
+		}
+	}
 
 	// Panels
 	if len(app.Cfg.MashuraPanels) == 0 {
@@ -182,6 +195,29 @@ func mashuraStatus(app *App) string {
 	}
 
 	return sb.String()
+}
+
+// isProxyOpenRouterMainRoute reports whether the session's active main route
+// is an ilm-proxy endpoint routed to the "openrouter" backend (where the proxy
+// holds the OpenRouter key server-side rather than Wakil).
+func isProxyOpenRouterMainRoute(app *App) bool {
+	if app == nil {
+		return false
+	}
+	ep := app.Cfg.ActiveEndpoint()
+	if ep.Kind != config.EndpointKindIlmProxy {
+		return false
+	}
+	if app.SelectedBackend == "openrouter" {
+		return true
+	}
+	if app.SelectedBackend == "" && app.Cfg.Backend == "openrouter" {
+		return true
+	}
+	if app.Client != nil && app.Client.LastUsedBackend() == "openrouter" {
+		return true
+	}
+	return false
 }
 
 // handleMashuraPanel handles the /mashura panel subcommand.

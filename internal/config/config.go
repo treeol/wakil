@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2653,6 +2654,129 @@ func (c Config) AuthHeaderFor(ep EndpointConfig) string {
 		return ""
 	}
 	return "Bearer " + c.APIKey
+}
+
+// IsOpenRouterHost reports whether rawURL targets OpenRouter's API. The rule is
+// the exact three-host list shared across attribution headers, context limits,
+// cost pricing, credential resolution, and the data policy: openrouter.ai,
+// eu.openrouter.ai, us.openrouter.ai — and nothing else.
+func IsOpenRouterHost(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		switch strings.ToLower(strings.TrimSpace(rawURL)) {
+		case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
+			return true
+		}
+		return false
+	}
+	switch strings.ToLower(u.Hostname()) {
+	case "openrouter.ai", "eu.openrouter.ai", "us.openrouter.ai":
+		return true
+	}
+	return false
+}
+
+// OpenRouterCredentialSource classifies where ResolveOpenRouterCredential
+// obtained (or looked for) its credential.
+type OpenRouterCredentialSource string
+
+const (
+	OpenRouterSourceBackendConfig OpenRouterCredentialSource = "backend config"
+	OpenRouterSourceEnvironment   OpenRouterCredentialSource = "environment"
+)
+
+// OpenRouterCredential describes the resolved OpenRouter Authorization header
+// and where it came from, without ever formatting the secret in SourceDetail.
+type OpenRouterCredential struct {
+	AuthHeader   string
+	Source       OpenRouterCredentialSource
+	EndpointName string // non-empty when Source == OpenRouterSourceBackendConfig
+	EnvVar       string // non-empty when Source == OpenRouterSourceEnvironment
+}
+
+// SourceLabel formats the credential source for /mashura display, never
+// exposing any secret value.
+func (r OpenRouterCredential) SourceLabel() string {
+	if r.Source == OpenRouterSourceBackendConfig {
+		if r.EndpointName != "" {
+			return fmt.Sprintf("%s (%s)", r.Source, r.EndpointName)
+		}
+		return string(r.Source)
+	}
+	if r.EnvVar != "" {
+		return fmt.Sprintf("%s (%s)", r.Source, r.EnvVar)
+	}
+	return string(r.Source)
+}
+
+// ResolveOpenRouterCredential is the single credential resolver for OpenRouter
+// requests made by Mashūra (and its availability/fallback checks). Order:
+//  1. Active endpoint, if its base_url is an OpenRouter host. Uses AuthHeaderFor
+//     directly (same function a main request uses). If that endpoint has no
+//     credential, fails closed without falling back to the environment variable.
+//  2. First configured endpoint (sorted by name) whose base_url is an OpenRouter
+//     host. Same AuthHeaderFor call and same fail-closed rule.
+//  3. Environment variable named by OpenRouterAPIKeyEnv only when neither (1)
+//     nor (2) found an OpenRouter endpoint.
+//
+// An ilm-proxy endpoint with backend "openrouter" is not an OpenRouter host
+// endpoint (the proxy holds the OpenRouter key server-side), so it falls through
+// to (2) and (3).
+func (c Config) ResolveOpenRouterCredential() (OpenRouterCredential, error) {
+	active := c.ActiveEndpoint()
+	if IsOpenRouterHost(active.BaseURL) {
+		name := c.EndpointName
+		if name == "" {
+			name = "active"
+		}
+		hdr := c.AuthHeaderFor(active)
+		res := OpenRouterCredential{
+			AuthHeader:   hdr,
+			Source:       OpenRouterSourceBackendConfig,
+			EndpointName: name,
+		}
+		if hdr == "" {
+			return res, fmt.Errorf("no credential on endpoint %s", name)
+		}
+		return res, nil
+	}
+
+	if len(c.Endpoints) > 0 {
+		names := make([]string, 0, len(c.Endpoints))
+		for name := range c.Endpoints {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			ep := c.Endpoints[name]
+			if !IsOpenRouterHost(ep.BaseURL) {
+				continue
+			}
+			hdr := c.AuthHeaderFor(ep)
+			res := OpenRouterCredential{
+				AuthHeader:   hdr,
+				Source:       OpenRouterSourceBackendConfig,
+				EndpointName: name,
+			}
+			if hdr == "" {
+				return res, fmt.Errorf("no credential on endpoint %s", name)
+			}
+			return res, nil
+		}
+	}
+
+	envName := c.OpenRouterAPIKeyEnv
+	res := OpenRouterCredential{
+		Source: OpenRouterSourceEnvironment,
+		EnvVar: envName,
+	}
+	if envName != "" {
+		if v := strings.TrimSpace(os.Getenv(envName)); v != "" {
+			res.AuthHeader = "Bearer " + v
+			return res, nil
+		}
+	}
+	return res, fmt.Errorf("mashūra API key not set (%s)", envName)
 }
 
 // NormalizeEndpoint resolves and validates a named entry from the Endpoints
