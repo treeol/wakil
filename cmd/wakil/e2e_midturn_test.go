@@ -291,8 +291,9 @@ func TestE2EMidTurnCollapseKeepsWork(t *testing.T) {
 			}
 		}
 	}
-	// Latest pair present: newest batch tw14 is the last group of the
-	// collapsed request (not the previous request's last group tw13).
+	// Latest pair present: newest batch (immediately following prevLastID)
+	// is the last group of the collapsed request, not the previous request's
+	// last group.
 	if len(collapsedGroups) == 0 {
 		t.Errorf("missing latest pair: collapsed groups=0")
 	} else {
@@ -302,9 +303,6 @@ func TestE2EMidTurnCollapseKeepsWork(t *testing.T) {
 		}
 		if prevPos+1 < len(scriptIDs) && newestID != scriptIDs[prevPos+1] {
 			t.Errorf("latest pair is %q, want newest scripted ID %q, not previous last %q", newestID, scriptIDs[prevPos+1], prevLastID)
-		}
-		if newestID != "tw14" {
-			t.Errorf("latest pair is %q, want tw14 retained (not tw13)", newestID)
 		}
 		if newestID == prevLastID {
 			t.Errorf("latest pair %q duplicates previous request last group; newest batch not retained", newestID)
