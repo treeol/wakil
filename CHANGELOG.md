@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`network = "open"` for hisn sessions (hisn 0.6.0).** `sandbox.hisn.network_mode = "open"` (config) or `/network open` (slash command) narrows outbound network to public TCP only: unix sockets and loopback work; private and LAN addresses, UDP and other families get EACCES; DNS is served inside the session. It needs kernel 5.9+ and Yama ptrace_scope 0 or 1; hisn refuses to start otherwise and Wakil reports the reason — it never falls back to a wider mode. The project file (`.wakil/sandbox.json` `hisn.network`) may narrow to `"open"` but never widen; the per-repo override (`/network`) may set either. A change applies from the next session start. The startup banner and `/sandbox` show the network mode in use.
+
+### Changed
+
+- **Minimum hisn raised to 0.6.0.** Older hisn is refused at startup; there is no fallback.
+
+### Fixed
+
+- **Flaky TUI test nil pointer.** `fakeFacade.DispatchCommand` panicked through its embedded nil interface when a slash command reached the real program through the screen harness, racing the test's skip check (`TestPerfWritesToDiag`, `TestScreenNewAndResume`). The fake now returns a safe empty `CommandResult`.
+
 ## [0.8.4] - 2026-11-16
 
 ### Fixed
