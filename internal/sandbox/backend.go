@@ -10,11 +10,11 @@ import (
 )
 
 // MinHisnVersion is the oldest hisn release the hisn backend (and the
-// launcher's default-backend decision) supports: 0.4.2. It lives here, in the
+// launcher's default-backend decision) supports. It lives here, in the
 // leaf backend-neutral package both internal/config and internal/sandbox/hisn
 // already import, so the minimum cannot drift between the two constants that
 // used to guard selection and refusal separately.
-const MinHisnVersion = "0.4.2"
+const MinHisnVersion = "0.6.0"
 
 // Sentinel errors shared by all backends.
 var (

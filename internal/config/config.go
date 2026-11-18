@@ -1364,13 +1364,14 @@ const (
 	SandboxBackendDirect = "direct"
 )
 
-// MinHisnVersion is the oldest hisn release the backend supports: 0.4.2
-// (the `run --detach` contract that returns once the session is up,
-// supervisor.pid as "<pid> <starttime>", `ls --prune --name-prefix`; on top
-// of 0.4.0's named sessions, hisn-ls/v2 states, the client record on control
-// requests, `hisn stop`, and 0.3.3's profiles, risk labels, [home]/[rootfs]/[ssh]
-// and "src:dst" read-only mounts). It aliases sandbox.MinHisnVersion, the
-// single definition both this package and the hisn backend share.
+// MinHisnVersion is the oldest hisn release the backend supports: 0.6.0
+// (the `network = "open"` mode on top of 0.5.x's additive ls --json and
+// sessioninfo fields, and 0.4.2's `run --detach` contract, supervisor.pid,
+// `ls --prune --name-prefix`, named sessions, hisn-ls/v2 states, the client
+// record on control requests, `hisn stop`, and 0.3.3's profiles, risk labels,
+// [home]/[rootfs]/[ssh] and "src:dst" read-only mounts). It aliases
+// sandbox.MinHisnVersion, the single definition both this package and the
+// hisn backend share.
 const MinHisnVersion = sandbox.MinHisnVersion
 
 // DefaultHisnEnvPass is the set of variable names allowed through into hisn
@@ -3141,10 +3142,10 @@ func (c Config) workDirSource() string {
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty
 // exactly when hisn is usable as the default backend.
 type HisnAvailability struct {
-	// Version is the parsed `hisn --version` (e.g. "0.4.2") when known.
+	// Version is the parsed `hisn --version` (e.g. "0.6.0") when known.
 	Version string
 	// Reason says why hisn cannot be the default ("hisn not found in PATH",
-	// "hisn 0.3.3 is older than 0.4.2", "hisn check failed: ..."), or "".
+	// "hisn 0.3.3 is older than 0.6.0", "hisn check failed: ..."), or "".
 	Reason string
 }
 
