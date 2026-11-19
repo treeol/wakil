@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/treeol/wakil/internal/sandbox"
 	"github.com/treeol/wakil/internal/timeline"
 )
 
@@ -63,7 +64,7 @@ func (b *Backend) Preflight(ctx context.Context) error {
 		return err
 	}
 	if !VersionAtLeast(got, want) {
-		return fmt.Errorf("sandbox backend hisn: hisn %d.%d.%d is too old, need >= %s", got[0], got[1], got[2], b.opts.MinVersion)
+		return fmt.Errorf("sandbox backend hisn: hisn %d.%d.%d is too old, need >= %s%s", got[0], got[1], got[2], b.opts.MinVersion, minReasonSuffix(b.opts.MinVersion))
 	}
 	b.ver = got
 	endCheck := timeline.Begin("hisn check")
@@ -104,4 +105,14 @@ func tailLines(s string, n int) string {
 		lines = lines[len(lines)-n:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// minReasonSuffix is " (security fix for network = "open")" when min is the
+// release Wakil requires (sandbox.MinHisnVersion), else "". A custom minimum
+// (tests, probes with another floor) carries no claim about why it is set.
+func minReasonSuffix(min string) string {
+	if min != sandbox.MinHisnVersion {
+		return ""
+	}
+	return " (" + sandbox.MinHisnReason + ")"
 }

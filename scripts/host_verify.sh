@@ -308,7 +308,7 @@ else
   skip=$((skip+1))
 fi
 
-# --- 16. Real-hisn integration tests (hisn 0.6.0) ---
+# --- 16. Real-hisn integration tests (hisn 0.6.1) ---
 # Runs the TestIntegration* suite against the real hisn on PATH, with
 # the user's REAL HOME restored for that command (the tests read
 # ~/.ssh/known_hosts, the host ssh agent, etc.). The check is:

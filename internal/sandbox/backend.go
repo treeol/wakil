@@ -10,11 +10,17 @@ import (
 )
 
 // MinHisnVersion is the oldest hisn release the hisn backend (and the
-// launcher's default-backend decision) supports. It lives here, in the
-// leaf backend-neutral package both internal/config and internal/sandbox/hisn
-// already import, so the minimum cannot drift between the two constants that
-// used to guard selection and refusal separately.
-const MinHisnVersion = "0.6.0"
+// launcher's default-backend decision) supports. 0.6.1 is a security release:
+// in 0.6.0, network = "open" did not fully enforce the network policy for a
+// socket handed to a program before a connect that then failed. The constant
+// lives here, in the leaf backend-neutral package both internal/config and
+// internal/sandbox/hisn already import, so the minimum cannot drift between the
+// two constants that used to guard selection and refusal separately.
+const MinHisnVersion = "0.6.1"
+
+// MinHisnReason is why MinHisnVersion is the minimum, in a form that follows
+// "need >= <version>" in a user-facing message.
+const MinHisnReason = "security fix for network = \"open\""
 
 // Sentinel errors shared by all backends.
 var (

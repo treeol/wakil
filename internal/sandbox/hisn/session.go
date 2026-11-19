@@ -684,12 +684,33 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 }
 
 // withSupervisorStderr appends the supervisor's exit state and captured stderr.
+// When the session was started with network = "open" and hisn's own output
+// names that mode (its refusal: kernel older than 5.14, Yama ptrace_scope,
+// no DNS upstream, ...), hisn's line leads the error and the way back to
+// "host" follows it; the full stderr stays in the tail.
 func (b *Backend) withSupervisorStderr(err error, sup *supervisorProc) error {
 	msg := sup.stderrText()
 	if msg == "" {
 		msg = "(no output)"
 	}
-	return fmt.Errorf("%w (supervisor %s; log %s); stderr: %s", err, sup.exitStatus(), sup.logPath, msg)
+	full := fmt.Errorf("%w (supervisor %s; log %s); stderr: %s", err, sup.exitStatus(), sup.logPath, msg)
+	if b.opts.Surface.Network == "open" {
+		if line := openRefusalLine(msg); line != "" {
+			return fmt.Errorf("hisn refused the open network mode: %s; switch back with /network host or sandbox.hisn.network_mode = \"host\" (Wakil never falls back to a wider mode): %w", line, full)
+		}
+	}
+	return full
+}
+
+// openRefusalLine returns the first line of hisn's output that names
+// network = "open" (hisn's own refusal text), trimmed, or "".
+func openRefusalLine(out string) string {
+	for _, l := range strings.Split(out, "\n") {
+		if l = strings.TrimSpace(l); strings.Contains(l, `network = "open"`) {
+			return l
+		}
+	}
+	return ""
 }
 
 // runtimeRoots mirrors hisn's session-directory candidates, in preference order:

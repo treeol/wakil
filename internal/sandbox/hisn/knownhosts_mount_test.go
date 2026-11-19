@@ -24,6 +24,22 @@ func TestPreflightRefusesHisn032NamingMinimum(t *testing.T) {
 	}
 }
 
+// A refusal for the real minimum names the reason: hisn before 0.6.1 does not
+// fully enforce network = "open", so the user knows why an upgrade is needed.
+func TestPreflightRefusalNamesSecurityReason(t *testing.T) {
+	fe := newFakeEnv(t)
+	setVersion(t, fe, "0.6.0")
+	_, err := Open(ctxT(t), fe.options())
+	if err == nil {
+		t.Fatal("hisn 0.6.0 must be refused")
+	}
+	for _, want := range []string{"0.6.0", "need >= 0.6.1", "security fix", `network = "open"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal lacks %q: %v", want, err)
+		}
+	}
+}
+
 // The rendered generated profile carries the known_hosts mount as one
 // read-only "src:dst" entry (host file -> in-session path) and never as a bare
 // same-path entry.

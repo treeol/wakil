@@ -35,6 +35,19 @@ func TestProbe(t *testing.T) {
 			t.Errorf("v=%q why=%q", v, why)
 		}
 	})
+	t.Run("too old names the security reason", func(t *testing.T) {
+		fe := newFakeEnv(t)
+		setVersion(t, fe, "0.6.0")
+		v, why := Probe(ctxT(t), fe.bin, MinVersion)
+		if v != "0.6.0" {
+			t.Fatalf("v=%q", v)
+		}
+		for _, want := range []string{"hisn 0.6.0 is older than 0.6.1", "security fix", `network = "open"`} {
+			if !strings.Contains(why, want) {
+				t.Errorf("why lacks %q: %q", want, why)
+			}
+		}
+	})
 	t.Run("check fails", func(t *testing.T) {
 		fe := newFakeEnv(t)
 		_ = os.WriteFile(filepath.Join(fe.state, "check_fail"), nil, 0o600)

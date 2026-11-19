@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **hisn 0.6.1 is now required (security fix for `network = "open"`).** In hisn 0.6.0 the open network mode did not fully enforce the network policy for a socket handed to a program before a connect that then failed; 0.6.1 enforces it. A narrower timing limitation remains and is documented by hisn — use `open` only for code you trust until hisn 0.6.2. Wakil, `wakil doctor`, the startup banner and `install.sh` now require 0.6.1 (the sandbox image pins the 0.6.1 release, checksums from its `SHA256SUMS`); an older hisn is refused with a message naming 0.6.1 and the reason, and with no explicit `sandbox.backend` the default falls back to Docker. `network = "host"` (still the default) and `none` behave as before.
+
+### Changed
+
+- **Open mode needs kernel 5.14 or newer** (was 5.9). On an older kernel hisn refuses to start an open session. `/network`, `/help`, the docs and the network line of the system prompt now say that open is meant for code you trust and needs kernel 5.14+.
+
+### Fixed
+
+- **A refused open session shows hisn's own error.** When hisn refuses to start a session in open mode (kernel, Yama `ptrace_scope`, DNS upstream), the error now leads with hisn's own line and how to switch back with `/network host`, instead of only a generic "exited before the session was ready".
+
 ## [0.8.6] - 2026-11-19
 
 ### Added

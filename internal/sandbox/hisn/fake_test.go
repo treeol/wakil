@@ -77,7 +77,7 @@ func fakeMain(state string, args []string) int {
 	case "--version":
 		v, err := os.ReadFile(filepath.Join(state, "version"))
 		if err != nil {
-			v = []byte("0.6.0")
+			v = []byte("0.6.1")
 		}
 		fmt.Printf("hisn %s\n", strings.TrimSpace(string(v)))
 		return 0
@@ -154,7 +154,7 @@ func hasFlag(args []string, name string) bool {
 // return while the session lives (0.4.0). 0.4.1: the run process exits 0
 // after printing the ready line; the supervisor lives on as a child that
 // serves the control socket. run_mode (a file in the fake state) selects a
-// failure to inject: fail | hang | nosock | late:<ms> | crash:<ms> | ignoreterm
+// failure to inject: fail | refuseopen | hang | nosock | late:<ms> | crash:<ms> | ignoreterm
 // | detach041.
 func fakeRun(state string, args []string) int {
 	id := flagVal(args, "--session-id")
@@ -170,6 +170,11 @@ func fakeRun(state string, args []string) int {
 	name := flagVal(args, "--name")
 	if mode == "fail" {
 		fmt.Fprintln(os.Stderr, "hisn: injected failure: cannot create sandbox")
+		return 125
+	}
+	if mode == "refuseopen" { // hisn 0.6.1 style refusal of network = "open"
+		fmt.Fprintln(os.Stderr, "hisn: starting session")
+		fmt.Fprintln(os.Stderr, `hisn: refusing to start network = "open": this kernel lacks SECCOMP_ADDFD (kernel >= 5.14 required)`)
 		return 125
 	}
 	if mode == "hang" { // never becomes ready, no socket

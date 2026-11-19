@@ -38,7 +38,7 @@ func Probe(ctx context.Context, binary, defaultMin string) (version, reason stri
 		return version, "internal: bad minimum version " + defaultMin
 	}
 	if !VersionAtLeast(got, want) {
-		return version, fmt.Sprintf("hisn %s is older than %s", version, defaultMin)
+		return version, fmt.Sprintf("hisn %s is older than %s%s", version, defaultMin, minReasonSuffix(defaultMin))
 	}
 	if cout, err := b.output(ctx, false, "check"); err != nil {
 		return version, "hisn check failed: " + firstLine(tailLines(cout, 12), "this host cannot run hisn sessions")
