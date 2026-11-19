@@ -1,0 +1,7 @@
+In this repository, the directory docs/ holds about 60 files of prose, each about 8 KB. Every file states exactly one number, in words, somewhere in its prose and names a category (one of alpha, beta, gamma, delta, epsilon, zeta). The number appears in words ("seven", "twenty-three", ...) and the category is stated in a sentence like "this file concerns the alpha category".
+
+Write a file result.json in the repository root with one key per category and the sum of the numbers in that category, as JSON:
+
+{"alpha": 42, "beta": 17, ...}
+
+Do not change any file under docs/. Do not create new files at the repository root other than result.json.

@@ -1,0 +1,9 @@
+The command in cmd/grep prints every line of standard input that contains a fixed string. Give it a new flag, -n, that prefixes each matching line with its 1-based line number followed by a colon, like grep -n.
+
+Defined behaviour:
+- -n without arguments prints "LINE:content" for matching lines.
+- Without -n the output is unchanged (matching lines only).
+- The search string remains the first non-flag argument; flags may come before or after it.
+- Unknown flags are an error (exit 3, and usage on stderr).
+
+Write the change into cmd/grep. Do not create new files at the repository root.

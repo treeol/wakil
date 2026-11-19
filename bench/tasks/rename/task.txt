@@ -1,0 +1,3 @@
+In this repository, the function OldName in package shared is used by many packages. Rename the exported function OldName to NewName (everywhere it is defined and used) so the whole module still builds and all tests pass.
+
+Do not change the function's behaviour or signature. Do not create new files at the repository root.

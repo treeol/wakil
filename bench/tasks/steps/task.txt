@@ -1,0 +1,12 @@
+This task has six numbered steps. Each step leaves one artifact in the repository root. Do exactly what each step says, in order.
+
+Step 1: Write the number 1 into the file step1.txt.
+Step 2: Write the word "final" into the file step2.txt.
+Step 3: Write the number 11 into the file step3.txt.
+Step 4: Write the word "six" into the file step4.txt.
+Step 5: Write the number 100 into the file step5.txt.
+Step 6: Write the word "last" into the file step6.txt.
+
+Facts you may rely on: the repository root is the current directory; files are plain text; "write the number N" means the file contains exactly "N" and nothing else; "write the word X" means the file contains exactly "X" and nothing else (no trailing newline matters — a trailing newline is acceptable).
+
+Do all six steps. Do not create files other than step1.txt through step6.txt at the repository root.

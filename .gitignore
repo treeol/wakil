@@ -50,6 +50,9 @@ hisn-*-linux-gnu
 # experiment / run directories
 runs/
 
+# bench harness results (one CSV per run; see bench/README.md)
+bench/results/
+
 # trace output
 *.trace
 *.jsonl.trace

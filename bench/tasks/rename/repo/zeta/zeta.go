@@ -1,0 +1,7 @@
+// Package zeta uses the shared helper.
+package zeta
+
+import "frename/shared"
+
+// Total returns the shared sum of a and b.
+func Total(a, b int) int { return shared.OldName(a, b) }

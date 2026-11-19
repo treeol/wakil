@@ -1,0 +1,3 @@
+In this repository, the package wordcount converts text to a frequency map. One of its functions has a real bug: it counts overlapping words or miscounts case. Find the bug and fix it. A test that reproduces the bug is hidden; your fix must make the package correct under any reasonable test of frequency counting.
+
+Write the fix into the package. Do not create new files at the repository root.
