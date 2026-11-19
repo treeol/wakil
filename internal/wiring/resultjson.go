@@ -27,6 +27,7 @@ type ResultJSON struct {
 	Version       string   `json:"wakil_version"`
 	Model         string   `json:"model"`
 	ExitReason    string   `json:"exit_reason"`
+	Workdir       string   `json:"workdir,omitempty"`
 	Seconds       float64  `json:"seconds"`
 	TokensIn      *int64   `json:"tokens_in"`
 	TokensOut     *int64   `json:"tokens_out"`
@@ -61,10 +62,14 @@ func exitReasonName(code int) string {
 // code and writes it as one JSON object to path. Tool/collapse/mashura
 // counts come from the live conversation and collapse records, not the
 // saved session snapshot (which only exists with --transcript).
-func writeResultJSON(path string, app *agent.App, code int, started time.Time) error {
+//
+// workdir is the resolved workspace folder the session actually ran in;
+// empty when unknown (e.g. bootstrap failure before resolution).
+func writeResultJSON(path string, app *agent.App, code int, started time.Time, workdir string) error {
 	res := ResultJSON{
 		Version:    buildinfo.ResolvedVersion(),
 		ExitReason: exitReasonName(code),
+		Workdir:    workdir,
 		Seconds:    time.Since(started).Seconds(),
 	}
 	if app != nil && app.Client != nil {

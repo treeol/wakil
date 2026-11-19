@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **`wakil run --result-json <file>` writes one JSON object at exit** with `wakil_version`, `model`, `exit_reason`, `seconds`, `tokens_in`, `tokens_out`, `cost_usd`, `tool_calls`, `collapses` and `mashura_rounds` (unknown values are null). For a bench harness that needs per-run numbers without parsing the JSONL transcript.
+- **`wakil run --result-json <file>` writes one JSON object at exit** with `wakil_version`, `model`, `exit_reason`, `workdir`, `seconds`, `tokens_in`, `tokens_out`, `cost_usd`, `tool_calls`, `collapses` and `mashura_rounds` (unknown values are null). The `workdir` field records the resolved workspace folder the session actually ran in, so a bench harness can verify the agent used the expected temp folder. For a bench harness that needs per-run numbers without parsing the JSONL transcript.
+
+### Fixed
+
+- **Redirect classification in `IsDestructiveShell` / `IsReadOnlyShell`.** fd duplication (`2>&1`, `>&2`, `1>&2`, `2>&-`) and redirects to `/dev/null` (`>/dev/null`, `2>/dev/null`, `&>/dev/null`) no longer make a command destructive or disqualify it from read-only classification — they only copy or discard existing output and do not write to a new file. A redirect to any other path stays destructive (`>file`, `>>file`, `2>file`, `&>file`). Tests cover both directions, including `cmd > file 2>&1` (destructive: the `>file` wins) and quoted `>` inside arguments. The new `hasDestructiveRedirect` helper scans each `>` occurrence and classifies it by its left and right context.
 
 ## [0.8.7] - 2026-11-19
 

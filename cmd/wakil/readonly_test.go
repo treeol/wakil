@@ -81,15 +81,15 @@ func TestIsDestructiveShell(t *testing.T) {
 		{"X=1 rm -rf /", "env-var prefix hides rm"},
 		{"FOO=bar mv a b", "env-var prefix hides mv"},
 		{"A=1 B=2 chmod -R 777 .", "multiple env-var prefixes hide chmod -R"},
-		// P0-2: redirection → destructive.
+		// P0-2: redirection → destructive (writes to a file).
 		{"echo x > /etc/hosts", "redirection to file"},
 		{"echo x >> /etc/hosts", "append redirection"},
-		{"echo x 2> /dev/null", "fd redirection"},
-		{"echo x &> /dev/null", "combined redirection"},
 		// P0-2: command substitution → destructive.
 		{"cat $(rm -rf /tmp/x)", "command substitution"},
 		{"cat `whoami`", "backtick substitution"},
 		{"cat <(grep needle file)", "process substitution"},
+		// Mixed: file redirect + fd dup — the file write makes it destructive.
+		{"echo x > /tmp/out 2>&1", "file redirect + fd dup"},
 		// Existing chaining cases (must still work).
 		{"echo ok && rm -rf /tmp/x", "rm after &&"},
 		{"ls | rm -rf", "rm in pipeline"},
@@ -126,6 +126,17 @@ func TestIsDestructiveShell(t *testing.T) {
 		// Env-var prefix before a safe command should NOT gate.
 		{"X=1 ls -la", "env-var prefix + safe command"},
 		{"FOO=bar echo hi", "env-var prefix + echo"},
+		// fd duplication and /dev/null redirects: only copy or discard
+		// output, never write a file — not destructive.
+		{"echo x 2>&1", "fd duplication (2>&1)"},
+		{"echo x >&2", "fd duplication (>&2)"},
+		{"echo x 1>&2", "fd duplication (1>&2)"},
+		{"echo x 2>&-", "fd close (2>&-)"},
+		{"echo x 2>/dev/null", "redirect stderr to /dev/null"},
+		{"echo x &>/dev/null", "combined redirect to /dev/null"},
+		{"cat a 2>&1", "cat with fd dup"},
+		{"go test ./... 2>&1", "go test with fd dup"},
+		{"go vet ./... 2>/dev/null", "go vet with /dev/null redirect"},
 	}
 	for _, tc := range shouldNotGate {
 		if agent.IsDestructiveShell(tc.cmd) {

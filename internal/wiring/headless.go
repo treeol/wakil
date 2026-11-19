@@ -75,6 +75,11 @@ type HeadlessOptions struct {
 	// harness passes this so a run's tokens/cost/counts are captured without
 	// parsing the JSONL transcript.
 	ResultJSON string
+	// Workdir is the resolved workspace folder the session actually ran
+	// in, written into the result JSON so the bench harness can verify the
+	// agent ran in the expected temp folder. Set by RunHeadless from
+	// cfg.HostWorkDir (the config-layer value, after env/flag resolution).
+	Workdir string
 	// Continuous turns on the experimental bounded continuous coordinator. CLI
 	// opt-in only; never enabled by a config file.
 	Continuous *ContinuousOptions
@@ -236,10 +241,17 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	started := time.Now()
 	ran := false
 
+	// Stamp the resolved workspace folder onto opts so writeResultJSON
+	// can report it. cfg.HostWorkDir is the config-layer value after env
+	// and flag resolution (WAKIL_HOST_WORKDIR > ILM_HOST_WORKDIR > config
+	// file > cwd). Empty when the config did not resolve one (e.g. direct
+	// mode falls back to cwd inside NewDirectExecutor, not here).
+	opts.Workdir = cfg.HostWorkDir
+
 	// Bootstrap failures must still leave a result file (bench harness).
 	defer func() {
 		if opts.ResultJSON != "" && !ran {
-			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, started); werr != nil {
+			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, started, opts.Workdir); werr != nil {
 				fmt.Fprintln(os.Stderr, "result-json:", werr)
 			}
 		}
@@ -364,7 +376,7 @@ func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 		if err != nil {
 			resCode = ExitError
 		}
-		if werr := writeResultJSON(opts.ResultJSON, app, resCode, started); werr != nil {
+		if werr := writeResultJSON(opts.ResultJSON, app, resCode, started, opts.Workdir); werr != nil {
 			fmt.Fprintln(os.Stderr, "result-json:", werr)
 		}
 	}

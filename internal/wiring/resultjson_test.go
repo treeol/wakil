@@ -77,7 +77,7 @@ func TestResultJSON_SingleTask(t *testing.T) {
 
 func TestResultJSON_NilApp(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, nil, ExitError, time.Now()); err != nil {
+	if err := writeResultJSON(p, nil, ExitError, time.Now(), ""); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)

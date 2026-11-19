@@ -275,6 +275,24 @@ run_one() {
     fi
     exit_reason=$(json_field "$result_json" "exit_reason")
 
+    # Workdir guard: verify the agent ran in the temp folder we set
+    # up, not in the user's configured work_dir. The result JSON carries
+    # the resolved workdir from the binary; mismatch means the sandbox
+    # mounted the wrong directory.
+    _actual_workdir=$(json_field "$result_json" "workdir")
+    if [ -n "$_actual_workdir" ] && [ "$_actual_workdir" != "$workdir" ]; then
+        echo "$prog: WRONG WORKDIR in $task run $run: binary reports workdir=$_actual_workdir, expected $workdir — agent ran in the wrong folder" >&2
+        result="error"
+        exit_reason="wrong-workdir"
+        csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+        cat "$log_file" 2>/dev/null || true
+        rm -rf "$workdir"
+        return 1
+    fi
+    # If the binary did not report a workdir at all (old binary or stub
+    # without the field), the guard is skipped — only a mismatch is an
+    # error, not a missing field.
+
     csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
 
     # Progress: one line after each run with the result, elapsed time,
@@ -338,7 +356,7 @@ run_all() {
         task_idx=$((task_idx + 1))
         i=1
         while [ "$i" -le "$runs" ]; do
-            run_one "$task" "$i" "$1"
+            run_one "$task" "$i" "$1" || return 1
             i=$((i + 1))
         done
     done
@@ -381,7 +399,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$workdir/.bench-result.json" <<JSON
-{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0}
 JSON
     exit 0 ;;
 esac
@@ -398,6 +416,31 @@ case "$1" in
 esac
 EOF
     chmod +x "$stub_slow"
+
+    # Stub that reports a wrong workdir in result-json (the guard
+    # must catch this and stop the bench with wrong-workdir).
+    stub_wrong="$tmpdir/wakil-wrong"
+    cat > "$stub_wrong" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-wrong/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-wrong/0.0.0","model":"stub","exit_reason":"pass","workdir":"/tmp/definitely-wrong","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+JSON
+    exit 0 ;;
+esac
+EOF
+    chmod +x "$stub_wrong"
 
     echo "== self-test: stub that changes nothing (expect fail on every task) =="
     task_idx=0
@@ -420,6 +463,20 @@ EOF
     BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-slow" "$stub_slow"
     timeout_sec="$_saved_timeout"
 
+    echo "== self-test: stub that reports a wrong workdir (expect error + stop) =="
+    _saved_timeout="$timeout_sec"
+    timeout_sec=5
+    task_idx=1
+    _rc=0
+    ( set +e; BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-wrong" "$stub_wrong" ) || _rc=$?
+    timeout_sec="$_saved_timeout"
+    if [ "$_rc" -ne 1 ]; then
+        echo "self-test FAILED: wrong-workdir guard did not stop the bench (exit=$_rc)" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    echo "  wrong-workdir guard fired correctly (bench stopped with exit 1)"
+
     echo
     echo "== self-test summary =="
     echo "CSV: $csv_file"
@@ -441,7 +498,7 @@ main() {
         */*) [ -x "$wakil_bin" ] || { echo "$prog: wakil binary not executable: $wakil_bin" >&2; exit 1; } ;;
     esac
 
-    run_all "$wakil_bin"
+    run_all "$wakil_bin" || exit 1
 
     echo
     echo "== this run =="

@@ -46,6 +46,12 @@ For each task and run number:
    task's repository, not whatever the user's config file points at.
 4. `check.sh` from the task folder runs in the work folder; exit 0 is a
    pass.
+5. **Workdir guard.** After each run, the harness reads the `workdir`
+   field from the result JSON and compares it to the temp folder it set up.
+   On mismatch the run is marked `error` with `exit_reason=wrong-workdir`
+   and the whole bench stops at once. A binary that does not report
+   a `workdir` field is skipped (only a mismatch is an error, not a
+   missing field).
 
 The task's `check.sh`, `hidden/` files and `solution/` reference result
 are **never** copied into the work folder: the agent cannot pass by
