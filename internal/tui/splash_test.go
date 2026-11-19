@@ -7,42 +7,59 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
+// The logo has ONE size: 40 columns x 20 rows, whatever the pane offers.
 func TestPickSplashLogo(t *testing.T) {
+	const wantCols, wantRows = 40, 20
+	if got := logoSprite.brailleRows(splashCols); splashCols != wantCols || got != wantRows {
+		t.Fatalf("logo size = %dx%d, want %dx%d", splashCols, got, wantCols, wantRows)
+	}
 	cases := []struct {
 		name      string
 		w, h      int
 		truecolor bool
-		wantCols  int // 0 = fallback
+		want      bool // logo drawn (else fallback)
 	}{
-		{"large pane", 120, 50, true, 64},
-		{"width limited", 40, 50, true, 40},
-		{"height limited", 120, 20, true, 40}, // 40 cols -> 20 braille rows; 41 would need 21
-		{"smallest", 24, 20, true, 24},
-		{"too narrow", 23, 50, true, 0},
-		{"too short", 120, 11, true, 0},
-		{"no truecolor", 120, 50, false, 0},
+		{"large pane", 200, 80, true, true},
+		{"exact fit", 40, 20, true, true},
+		{"too narrow by one", 39, 50, true, false},
+		{"too short by one", 120, 19, true, false},
+		{"no truecolor", 120, 50, false, false},
 	}
 	for _, c := range cases {
 		got := pickSplashLogo(c.w, c.h, c.truecolor)
-		if c.wantCols == 0 {
+		if !c.want {
 			if got != "" {
 				t.Errorf("%s: want fallback, got logo", c.name)
 			}
 			continue
 		}
-		if got == "" {
-			t.Errorf("%s: got fallback, want %d cols", c.name, c.wantCols)
-			continue
-		}
 		lines := strings.Split(got, "\n")
-		if len(lines) > c.h {
-			t.Errorf("%s: rows = %d, exceeds pane height %d", c.name, len(lines), c.h)
+		if len(lines) != wantRows {
+			t.Errorf("%s: rows = %d, want %d", c.name, len(lines), wantRows)
 		}
 		for i, l := range lines {
-			if w := ansi.StringWidth(l); w != c.wantCols {
-				t.Errorf("%s: row %d width = %d, want %d", c.name, i, w, c.wantCols)
+			if w := ansi.StringWidth(l); w != wantCols {
+				t.Errorf("%s: row %d width = %d, want %d", c.name, i, w, wantCols)
 				break
 			}
+		}
+	}
+}
+
+// A pane too narrow for the logo shows the name as plain text, not a figlet
+// wordmark that would not fit either.
+func TestRenderSplashNarrowShowsPlainName(t *testing.T) {
+	forceTruecolor(t)
+	out := ansi.Strip(renderSplash(30, 30))
+	if !strings.Contains(out, "wakīl") {
+		t.Fatalf("narrow splash lacks the plain name:\n%s", out)
+	}
+	if strings.Contains(out, "_|_|_|") || strings.ContainsRune(out, '\u28ff') {
+		t.Fatalf("narrow splash drew art:\n%s", out)
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if w := ansi.StringWidth(l); w > 30 {
+			t.Fatalf("line wider than the pane (%d > 30): %q", w, l)
 		}
 	}
 }

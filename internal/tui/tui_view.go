@@ -389,10 +389,19 @@ func (m tuiModel) statusRows() int {
 	return len(m.statusLines())
 }
 
+// booting reports whether this is the start-up model: no conversation yet
+// (facade nil) and a status text naming what is still starting.
+func (m tuiModel) booting() bool {
+	return m.facade == nil && m.bootStatus != ""
+}
+
 // statusVisible reports whether the status line should be rendered. It's
 // hidden on a fresh start before the user sends their first message (clean
 // splash look); once a turn has been sent or is streaming, it stays visible.
 func (m tuiModel) statusVisible() bool {
+	if m.booting() {
+		return true
+	}
 	if m.compact() {
 		// Compact mode drops the status line, except for the two things that
 		// live only there and would otherwise break: reverse search (ctrl+r)
@@ -510,6 +519,9 @@ func (m tuiModel) statusLines() []string {
 	w := m.width - borderW
 	if w < 1 {
 		w = 1
+	}
+	if m.booting() {
+		return []string{ansi.Truncate(renderBootStatus(m.bootStatus), w, "")}
 	}
 	if sp := m.searchPrompt(); sp != "" {
 		l := renderStatusDot(m.state, m.dotPhase, m.rotating) + " " + sp
@@ -1306,11 +1318,16 @@ var splashArt = []string{
 }
 
 // renderSplash produces the centered start-up splash for the conversation pane
-// when no conversation has started yet: the embedded logo (see splash.go) on
-// truecolor terminals large enough to show it, otherwise the figlet "wakil"
-// wordmark. There is no tagline.
+// when no conversation has started yet: the embedded logo (see splash.go) at
+// its fixed 40 x 20 size on truecolor terminals with room for it; narrower
+// than that, the name "wakīl" as plain text; otherwise (no truecolor, or too
+// short) the figlet "wakil" wordmark. There is no tagline.
 func renderSplash(vpW, vpH int) string {
 	art := pickSplashLogo(vpW, vpH, splashTruecolor())
+	if art == "" && vpW < splashCols {
+		// Too narrow for the logo: the name as plain text.
+		art = lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("wakīl")
+	}
 	if art == "" {
 		accent := lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
 		var artLines []string

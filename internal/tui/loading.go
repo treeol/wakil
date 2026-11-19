@@ -1,20 +1,16 @@
 package tui
 
 import (
-	"fmt"
-	"strings"
-
-	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
 
-// loadingProgressMsg updates the status text shown by the loading model.
+// loadingProgressMsg updates the status text shown by the start-up model.
 type loadingProgressMsg struct {
 	text string
 }
 
-// SendLoadingProgress sends a progress update to the loading model.
+// SendLoadingProgress sends a progress update to the start-up model.
 func SendLoadingProgress(text string) {
 	if programSend != nil {
 		programSend(loadingProgressMsg{text: text})
@@ -29,24 +25,21 @@ type BootstrapDone interface {
 	IsBootstrapDone()
 }
 
-// loadingModel is shown during startup while the container and conversation
-// are being set up. It renders a centered bordered box with the "wakīl"
-// wordmark, a spinner, live status text, and a progress bar that fills as
-// bootstrap stages complete.
+// renderBootStatus is the one-line status the normal view shows while the
+// conversation is still being built, e.g. "· starting container…".
+func renderBootStatus(text string) string {
+	return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("· " + text)
+}
+
+// loadingModel is the program's first model. There is no separate loading
+// screen: it renders the normal view (splash logo and input box) from the
+// first frame, with a one-line status in the status zone naming what is still
+// starting. It carries no conversation, so nothing is sent from it: Enter is
+// ignored, typed text is kept and moved into the real input at the swap, and
+// ctrl+c quits. It never runs tuiModel.Update, so the real model alone
+// reports "prompt ready".
 type loadingModel struct {
-	width  int
-	height int
-	ready  bool
-	sp     spinner.Model
-	status string
-
-	// stage tracks how many SendLoadingProgress calls have arrived, used
-	// to advance the progress bar.
-	stage int
-
-	// totalStages is the expected number of bootstrap stages (for the
-	// progress bar). 4: container/executor → session → subscribe → done.
-	totalStages int
+	view tuiModel
 
 	// bootstrapCmd is the tea.Cmd that runs the async startup work.
 	bootstrapCmd tea.Cmd
@@ -55,143 +48,75 @@ type loadingModel struct {
 	swapFn func(tea.Msg) (tea.Model, tea.Cmd)
 }
 
-// NewLoadingModel creates a loading model with a spinner and progress bar.
+// NewLoadingModel creates the start-up model. status is the first status line.
 func NewLoadingModel(status string, bootstrapCmd tea.Cmd, swapFn func(tea.Msg) (tea.Model, tea.Cmd)) tea.Model {
-	sp := spinner.New()
-	sp.Spinner = spinner.Dot
-	sp.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
-	return &loadingModel{
-		status:       status,
-		sp:           sp,
-		totalStages:  4,
-		bootstrapCmd: bootstrapCmd,
-		swapFn:       swapFn,
-	}
+	v := newBaseModel()
+	v.bootStatus = status
+	v.convCacheBox = &convPaneCache{}
+	return &loadingModel{view: v, bootstrapCmd: bootstrapCmd, swapFn: swapFn}
 }
 
 func (m *loadingModel) Init() tea.Cmd {
-	return tea.Batch(m.sp.Tick, m.bootstrapCmd)
+	return m.bootstrapCmd
 }
 
 func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.ready = true
+		m.view.width = msg.Width
+		m.view.height = msg.Height
+		m.view, _ = m.view.reflowResize()
+		m.view.ready = true
+		timelineOnce("first-frame-boot", "first frame (start-up view)")
 		return m, nil
 
-	case spinner.TickMsg:
-		var cmd tea.Cmd
-		m.sp, cmd = m.sp.Update(msg)
-		return m, cmd
-
 	case loadingProgressMsg:
-		m.status = msg.text
-		m.stage++
+		m.view.bootStatus = msg.text
+		// The status text never changes the row count (always one row), so
+		// no reflow is needed.
 		return m, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
+		switch msg.String() {
+		case "ctrl+c", "ctrl+d":
 			return m, tea.Quit
+		case "enter", "alt+enter", "shift+enter":
+			return m, nil
 		}
-		return m, nil
+		var cmd tea.Cmd
+		m.view.ta, cmd = m.view.ta.Update(msg)
+		return m, cmd
 
 	case BootstrapDone:
-		if m.swapFn != nil {
-			newModel, initCmd := m.swapFn(msg)
-			if newModel != nil {
-				if m.ready {
-					nm, _ := newModel.Update(tea.WindowSizeMsg{
-						Width:  m.width,
-						Height: m.height,
-					})
-					newModel = nm
-				}
-				if initCmd != nil {
-					return newModel, initCmd
-				}
-				return newModel, nil
-			}
-		}
-		return m, tea.Quit
+		return m.swap(msg)
 
 	default:
 		return m, nil
 	}
 }
 
-// progressBar renders a horizontal progress bar using block characters.
-// filled is 0..total. Width is the bar width in cells.
-func progressBar(filled, total, width int) string {
-	if total <= 0 {
-		total = 1
+// swap installs the real model, keeping what the user typed while starting.
+func (m *loadingModel) swap(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if m.swapFn == nil {
+		return m, tea.Quit
 	}
-	frac := float64(filled) / float64(total)
-	if frac < 0 {
-		frac = 0
+	newModel, initCmd := m.swapFn(msg)
+	if newModel == nil {
+		return m, tea.Quit
 	}
-	if frac > 1 {
-		frac = 1
+	if typed := m.view.ta.Value(); typed != "" {
+		if tm, ok := newModel.(tuiModel); ok {
+			tm.ta.SetValue(typed)
+			newModel = tm
+		}
 	}
-	filledCells := int(frac * float64(width))
-	bar := strings.Repeat("█", filledCells)
-	track := strings.Repeat("░", width-filledCells)
-	return bar + track
+	if m.view.ready {
+		nm, _ := newModel.Update(tea.WindowSizeMsg{Width: m.view.width, Height: m.view.height})
+		newModel = nm
+	}
+	return newModel, initCmd
 }
 
 func (m *loadingModel) View() string {
-	if !m.ready {
-		return "starting wakil…\n"
-	}
-
-	// Color palette.
-	accent := lipgloss.Color("39")  // bright blue
-	label := lipgloss.Color("252")  // light gray
-	dimmed := lipgloss.Color("240") // dim gray
-	border := lipgloss.Color("238") // dark border
-
-	// Wordmark.
-	title := lipgloss.NewStyle().
-		Foreground(accent).
-		Render("wakīl")
-
-	// Spinner + status.
-	spinnerText := fmt.Sprintf("%s %s",
-		m.sp.View(),
-		lipgloss.NewStyle().Foreground(label).Render(m.status),
-	)
-
-	// Progress bar.
-	barW := 30
-	bar := lipgloss.NewStyle().
-		Foreground(accent).
-		Render(progressBar(m.stage, m.totalStages, barW))
-
-	// Hint.
-	hint := lipgloss.NewStyle().Foreground(dimmed).Render("press q to abort")
-
-	// Assemble the content inside a bordered box.
-	content := lipgloss.JoinVertical(lipgloss.Center,
-		title,
-		"",
-		spinnerText,
-		"",
-		bar,
-		"",
-		hint,
-	)
-
-	// Bordered box.
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(border).
-		Padding(1, 2).
-		Render(content)
-
-	// Center in the terminal.
-	return lipgloss.Place(m.width, m.height,
-		lipgloss.Center, lipgloss.Center,
-		box,
-	)
+	return m.view.view()
 }

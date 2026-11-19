@@ -247,6 +247,10 @@ type tuiModel struct {
 	facade    sessionclient.Facade
 	manager   sessionclient.ConversationManager
 	principal core.Principal
+	// bootStatus is the one-line "what is still starting" text shown in the
+	// status zone while the real conversation is being built. Only the
+	// start-up model (see loading.go, facade == nil) sets it.
+	bootStatus string
 	// sessionID is the CURRENT facade's session ID, cached at attach and
 	// rotation time. It guards the event switch against stale pump deliveries
 	// from a prior conversation (never re-fetched per event — a Snapshot call

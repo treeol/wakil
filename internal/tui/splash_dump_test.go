@@ -13,7 +13,7 @@ func TestDumpSplashANSI(t *testing.T) {
 	if path == "" {
 		t.Skip("WAKIL_DUMP_SPLASH not set")
 	}
-	out := pickSplashLogo(splashMaxCols, 100, true)
+	out := pickSplashLogo(splashCols, 100, true)
 	if out == "" {
 		t.Fatal("no logo rendered")
 	}

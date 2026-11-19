@@ -182,7 +182,8 @@ The schedule can also be set via `mashura_mode` in the config file. See
 
 ## Layout
 
-- **Splash:** an empty conversation shows the wakil logo, drawn at runtime as braille truecolor art and scaled to the pane. Terminals without truecolor, or panes that are too small, get a plain wordmark instead. The embedded images are produced by `scripts/gen_splash_logo.py` (dev-time, needs Pillow).
+- **Splash:** an empty conversation shows the wakil logo, drawn at runtime as braille truecolor art at one fixed size (40 columns x 20 rows; it does not scale with the terminal). A pane narrower than 40 columns shows the name "wakīl" as plain text; terminals without truecolor, or panes shorter than 20 rows, get the figlet wordmark instead.
+- **Start-up:** there is no separate loading screen. The normal view (splash, input box) is drawn at once, with a one-line status in the status zone (`· starting container…`) naming what is still starting until the session is ready. Text typed meanwhile is kept and moves into the input when the session is ready; Enter does nothing until then and Ctrl+C quits. The embedded images are produced by `scripts/gen_splash_logo.py` (dev-time, needs Pillow).
 - **Prompt bar:** the `┃` at the left of the input turns red while `/auto` is on.
 - **Compact mode:** below 60 columns or 18 rows (this includes zooming the terminal in) the TUI shrinks to a one-line prompt. The status line is hidden, so there is no `copied` flash or `ctx` gauge. Reverse search (`Ctrl+R`) and the rotation indicator (`/new`, `/resume`, `/handoff`) still show the status line, and tool approvals still appear in the conversation. Resizing back restores the normal layout.
 

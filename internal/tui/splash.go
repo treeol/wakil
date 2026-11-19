@@ -28,10 +28,10 @@ var (
 	logoSprite = &splashSprite{data: splashLogoPNG} // start-up splash
 )
 
-const (
-	splashMaxCols = 64 // largest logo render; bigger adds little on a splash
-	splashMinCols = 24 // below this the logo is unrecognisable; use the wordmark
-)
+// The logo has one fixed size: splashCols cells wide, splashRows() tall (40 x
+// 20 for the embedded 384x392 image). It does not scale with the terminal; a
+// pane too small for it gets the wordmark instead (see renderSplash).
+const splashCols = 40
 
 // splashSprite is one embedded image plus a cache of its renders.
 type splashSprite struct {
@@ -69,21 +69,18 @@ func (s *splashSprite) brailleRows(cols int) int {
 	return max(1, int(math.Round(float64(cols*b.Dy())/float64(b.Dx())/2)))
 }
 
-// pickSplashLogo returns the logo scaled to the largest size that fits a
-// vpW x vpH pane, or "" when the terminal lacks truecolor or the pane is too
-// small — the caller then falls back to the figlet wordmark.
+// pickSplashLogo returns the logo at its fixed size when it fits a vpW x vpH
+// pane, or "" when the terminal lacks truecolor or the pane is narrower or
+// shorter than the logo — the caller then falls back to the wordmark.
 func pickSplashLogo(vpW, vpH int, truecolor bool) string {
 	if !truecolor || logoSprite.image() == nil {
 		return ""
 	}
-	cols := min(splashMaxCols, vpW)
-	for cols >= splashMinCols && logoSprite.brailleRows(cols) > vpH {
-		cols--
-	}
-	if cols < splashMinCols {
+	rows := logoSprite.brailleRows(splashCols)
+	if vpW < splashCols || vpH < rows {
 		return ""
 	}
-	return logoSprite.renderBraille(cols, logoSprite.brailleRows(cols))
+	return logoSprite.renderBraille(splashCols, rows)
 }
 
 // renderBraille returns the sprite as braille art cols x cellRows cells, each
