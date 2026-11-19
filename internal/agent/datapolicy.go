@@ -217,19 +217,23 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 }
 
 // networkApplyLine describes when a /network change takes effect:
-//   - No sandbox session running: "no sandbox session is running; the next one starts on <newMode>".
 //   - Running session whose live mode differs: "applies at the next session; current session is still <live>".
 //   - Running session whose live mode already equals newMode: "" (print neither line).
+//   - Sandbox backend that supports network mode with no session running: "no sandbox session is running; the next one starts on <newMode>".
+//   - Direct / Docker / unsupported executor (NetworkMode() == "" or no NetworkGetter): "" (don't falsely claim no sandbox session is running).
 func (a *App) networkApplyLine(newMode string) string {
-	if ng, ok := a.Exec.(exec.NetworkGetter); ok {
-		live, running := ng.LiveNetworkMode()
-		if !running {
-			return fmt.Sprintf("no sandbox session is running; the next one starts on %s", newMode)
-		}
+	ng, ok := a.Exec.(exec.NetworkGetter)
+	if !ok {
+		return ""
+	}
+	if live, running := ng.LiveNetworkMode(); running {
 		if live == newMode {
 			return ""
 		}
 		return fmt.Sprintf("applies at the next session; current session is still %s", live)
+	}
+	if ng.NetworkMode() == "" {
+		return ""
 	}
 	return fmt.Sprintf("no sandbox session is running; the next one starts on %s", newMode)
 }

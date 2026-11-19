@@ -512,4 +512,37 @@ func TestNetworkCommandApplyNotice(t *testing.T) {
 	if strings.Contains(msgSameReset, "current session is still") || strings.Contains(msgSameReset, "no sandbox session is running") {
 		t.Errorf("running-same /network reset must print neither apply line, got %q", msgSameReset)
 	}
+
+	// Case 4: executor without NetworkGetter (e.g. direct/docker) or a
+	// BackendExecutor wrapping a backend that doesn't support network mode
+	// (NetworkMode() == "") must not falsely claim "no sandbox session is running".
+	appUnsupported := &App{
+		Cfg:  config.Config{WorkDir: t.TempDir()},
+		Exec: newFakeExecutor(),
+	}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "open"}, appUnsupported)
+	msgUnsup := cmd().(SysNoteMsg).Text
+	if strings.Contains(msgUnsup, "no sandbox session is running") || strings.Contains(msgUnsup, "current session is still") {
+		t.Errorf("unsupported executor /network open must not emit sandbox apply notice, got %q", msgUnsup)
+	}
+	appEmptyGetter := &App{
+		Cfg:  config.Config{WorkDir: t.TempDir()},
+		Exec: &unsupportedNetworkExec{fakeExecutor: newFakeExecutor()},
+	}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "open"}, appEmptyGetter)
+	msgEmpty := cmd().(SysNoteMsg).Text
+	if strings.Contains(msgEmpty, "no sandbox session is running") || strings.Contains(msgEmpty, "current session is still") {
+		t.Errorf("unsupported backend (NetworkMode()==\"\") /network open must not emit sandbox apply notice, got %q", msgEmpty)
+	}
 }
+
+// unsupportedNetworkExec models BackendExecutor wrapping a sandbox backend
+// without sandbox.NetworkGetter/NetworkBackend: SetNetworkMode is a no-op and
+// NetworkMode/LiveNetworkMode both report unsupported ("", false).
+type unsupportedNetworkExec struct {
+	*fakeExecutor
+}
+
+func (u *unsupportedNetworkExec) SetNetworkMode(string)           {}
+func (u *unsupportedNetworkExec) NetworkMode() string             { return "" }
+func (u *unsupportedNetworkExec) LiveNetworkMode() (string, bool) { return "", false }
