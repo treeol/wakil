@@ -316,11 +316,15 @@ find_prev_csv() {
     printf '%s' "$last"
 }
 
-# print_table <csv>: per-task summary of a CSV.
+# print_table <csv> [model]: per-task summary of a CSV, with the model
+# in the header line when it is known.
 print_table() {
-    f=$1
-    printf '  %-12s %-8s %-8s %s\n' "task" "result" "seconds" "tokens in/out  tool_calls collapses mashura"
-    awk -F, 'NR>1 { printf "  %-12s %-8s %-8s %s/%s  %s %s %s\n", $4, $6, $8, $9, $10, $12, $13, $14 }' "$f"
+    f=$1; _model="$2"
+    if [ -n "$_model" ]; then
+        printf '  model: %s\n' "$_model"
+    fi
+    printf '  %-12s %-8s %-12s %-8s %s\n' "task" "result" "exit_reason" "seconds" "tokens in/out  tool_calls collapses mashura"
+    awk -F, 'NR>1 { printf "  %-12s %-8s %-12s %-8s %s/%s  %s %s %s\n", $4, $6, $7, $8, $9, $10, $12, $13, $14 }' "$f"
 }
 
 # sum_cost <csv>: total cost_usd (n/a and empty cells contribute 0).
@@ -419,7 +423,7 @@ EOF
     echo
     echo "== self-test summary =="
     echo "CSV: $csv_file"
-    print_table "$csv_file"
+    print_table "$csv_file" "$resolved_model"
     echo "total cost: $(sum_cost "$csv_file")"
     echo
     echo "self-test done (harness worked)"
@@ -442,7 +446,7 @@ main() {
     echo
     echo "== this run =="
     echo "CSV: $csv_file"
-    print_table "$csv_file"
+    print_table "$csv_file" "$resolved_model"
     echo "total cost: $(sum_cost "$csv_file")"
 
     prev=$(find_prev_csv)
@@ -450,7 +454,7 @@ main() {
         echo
         echo "== most recent earlier run (model $resolved_model) =="
         echo "CSV: $prev"
-        print_table "$prev"
+        print_table "$prev" "$resolved_model"
         echo "total cost: $(sum_cost "$prev")"
     fi
 }

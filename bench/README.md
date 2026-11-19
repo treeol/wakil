@@ -65,12 +65,13 @@ used here.
 
 Each run's CSV row carries the *resolved* model from the run's
 `--result-json` when the binary reports one, so the CSV names the model
-that actually ran, not the one requested. The `exit_reason` column
-carries the reason string from `--result-json` (`pass`, `declined`,
-`backend_failure`, `gaps`, `error`) when the binary reports one, or
-`n/a` otherwise. Values a binary does not report are `n/a`: the harness
-also works with a binary that lacks `--result-json` (pass/fail and
-seconds only).
+that actually ran, not the one requested. The `model` column is the
+resolved model; the per-run table header prints it too. The
+`exit_reason` column carries the reason string from `--result-json`
+(`pass`, `declined`, `backend_failure`, `gaps`, `error`) when the
+binary reports one, or `n/a` otherwise. Values a binary does not report
+are `n/a`: the harness also works with a binary that lacks
+`--result-json` (pass/fail and seconds only).
 
 ## Self-test
 
