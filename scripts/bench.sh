@@ -195,14 +195,22 @@ run_one() {
     # make ResolveRepoSigning (internal/exec/signing.go) resolve a signing
     # key and the generated hisn profile would carry a "signing" risk label
     # — tripping the sandbox-ack gate (risk.go checkAck) even though bench
-    # tasks never sign. Disable signing in the temp repo's own config so
-    # the profile stays risk-free without an acknowledgement.
+    # tasks never sign.
+    #
+    # git 2.39.5's --type=bool parser maps ANY non-empty string (false,
+    # no, off, 0) to true, so a local "commit.gpgsign = false" does NOT
+    # override the global "commit.gpgsign = true" — the probe still
+    # reads true. The only reliable way to prevent the global value from
+    # leaking in is to point GIT_CONFIG_GLOBAL at /dev/null for every git
+    # command in the temp repo (init, config, commit, and the wakil run).
     cp -R "$tdir/repo/." "$workdir/"
-    ( cd "$workdir" && git init -q \
-        && git config commit.gpgsign false \
-        && git config tag.gpgsign false \
+    (
+        cd "$workdir"
+        export GIT_CONFIG_GLOBAL=/dev/null
+        git init -q \
         && git add -A \
-        && git -c user.email=bench@example.invalid -c user.name=bench commit -qm "bench task $task" ) 2>/dev/null || true
+        && git -c user.email=bench@example.invalid -c user.name=bench commit -qm "bench task $task"
+    ) 2>/dev/null || true
 
     # Optional setup hook (task-level setup.sh, runs in the work copy
     # before the agent). The hook's own location is the task dir; it
@@ -226,13 +234,19 @@ run_one() {
     # agent sees the wrong repository — the one in the config file, not
     # the bench task's freshly-copied repo.
     export WAKIL_HOST_WORKDIR="$workdir"
+    # Prevent the host's global git config (commit.gpgsign=true) from
+    # leaking into the sandbox risk probe and the wakil run: git 2.39.5
+    # maps any non-empty string to true in --type=bool, so a local
+    # "gpgsign = false" cannot override it. GIT_CONFIG_GLOBAL=/dev/null
+    # makes git ignore the global config entirely.
+    export GIT_CONFIG_GLOBAL=/dev/null
 
     # Pre-run sandbox risk probe (best effort, no model call): if the
-    # temp repo still triggers a sandbox risk after Fix 1, report the
-    # label and stop the bench before the model runs. This catches a
-    # signing label that survived because the host config leaked via a
-    # path Fix 1 does not cover (e.g. gpg.program, a keyring, or a
-    # future signing knob).
+    # temp repo still triggers a sandbox risk after the git config guard,
+    # report the label and stop the bench before the model runs. This
+    # catches a signing label that survived because the host config leaked
+    # via a path the guard does not cover (e.g. gpg.program, a keyring,
+    # or a future signing knob).
     _risk_label=$("$bin" sandbox trust "$workdir" 2>&1 | sed -n 's/^→ risk: \([^ ]*\).*/\1/p')
     if [ -n "$_risk_label" ] && [ "$_risk_label" != "none" ]; then
         echo "$prog: $task run $run: sandbox risk label '$_risk_label' is not acknowledged in $workdir — run 'wakil sandbox trust $workdir' to review it" >&2

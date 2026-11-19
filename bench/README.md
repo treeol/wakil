@@ -35,10 +35,15 @@ For each task and run number:
 
 1. `bench/tasks/<name>/repo/` is copied to a fresh temporary folder and
    given `git init` + one commit, so every run starts from the same state
-   and nothing is shared between runs. The temp repo's `.git/config` sets
-   `commit.gpgsign=false` and `tag.gpgsign=false` so a host with global
-   `commit.gpgsign=true` does not make the generated hisn profile carry a
-   "signing" risk label — bench tasks never sign.
+   and nothing is shared between runs. The temp repo does NOT inherit the
+   host's global git config: `GIT_CONFIG_GLOBAL=/dev/null` is set for
+   `git init`, `git commit`, the pre-run `wakil sandbox trust` probe, and
+   `wakil run`. This prevents a host with global `commit.gpgsign=true`
+   from making the generated hisn profile carry a "signing" risk label
+   (git 2.39.5's `--type=bool` maps any non-empty string to `true`, so a
+   local `commit.gpgsign=false` cannot override the global value — only
+   `GIT_CONFIG_GLOBAL=/dev/null` reliably blocks it). Bench tasks never
+   sign.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
 3. **Pre-run sandbox risk probe.** Before the model runs, the harness
