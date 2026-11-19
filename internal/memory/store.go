@@ -990,8 +990,10 @@ func (s *Store) ForgetKey(ctx context.Context, key string) (active bool, propose
 	n, _ := res.RowsAffected()
 	active = n > 0
 
+	// The proposed entry's own note (why it was quarantined) is kept after the
+	// tombstone, so the provenance is not lost.
 	res, err = tx.ExecContext(ctx,
-		"UPDATE entries SET status = 'rejected', note = ? WHERE key = ? AND status = 'proposed'", note, key)
+		"UPDATE entries SET status = 'rejected', note = ? || CASE WHEN COALESCE(note, '') = '' THEN '' ELSE ' (was: ' || note || ')' END WHERE key = ? AND status = 'proposed'", note, key)
 	if err != nil {
 		return false, 0, err
 	}

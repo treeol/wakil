@@ -3298,6 +3298,12 @@ func ApplyDefaultBackend(cfg Config, avail HisnAvailability, extra string) Confi
 		return cfg
 	}
 	stay := func(why string) Config {
+		// The docker backend has no open network mode: a user who opted in to
+		// sandbox.hisn.network_mode = "open" must be told it is NOT applied,
+		// not left to read a version message as if nothing had changed.
+		if cfg.Sandbox.Hisn.NetworkMode == "open" {
+			why += `; sandbox.hisn.network_mode = "open" is NOT applied on docker, which has full network access`
+		}
 		cfg.Sandbox.DefaultNote = "default: docker (" + why + ")"
 		return cfg
 	}

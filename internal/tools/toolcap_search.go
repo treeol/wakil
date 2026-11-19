@@ -57,10 +57,6 @@ func SearchHostCache(chatID, path, pattern, filePattern string, caseInsensitive 
 		return "", fmt.Errorf("%w: %s", ErrHostCacheEscape, path)
 	}
 	dir := filepath.Clean(toolCacheDir(chatID))
-	resolvedDir, err := filepath.EvalSymlinks(dir)
-	if err != nil {
-		return "", err
-	}
 	rel, err := filepath.Rel(dir, filepath.Clean(path))
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", fmt.Errorf("%w: %s", ErrHostCacheEscape, path)
@@ -75,8 +71,34 @@ func SearchHostCache(chatID, path, pattern, filePattern string, caseInsensitive 
 		}
 	}
 
-	r, err := os.OpenRoot(resolvedDir)
+	// Anchor on the toolcache ROOT (a trusted location: the user's own data
+	// directory), then step into toolcache/<chatID> as a root of its own. The
+	// chat directory itself must be a real directory: a symlink there (to
+	// another session's directory or anywhere else) is refused, not followed.
+	// What remains is a swap between the Lstat and the OpenRoot by someone who
+	// can already write the user's data directory, which is no privilege
+	// boundary.
+	cacheRoot, err := filepath.EvalSymlinks(filepath.Clean(ToolCacheRoot()))
 	if err != nil {
+		return "", err
+	}
+	top, err := os.OpenRoot(cacheRoot)
+	if err != nil {
+		return "", err
+	}
+	defer top.Close()
+	li, err := top.Lstat(chatID)
+	if err != nil {
+		return "", err
+	}
+	if !li.IsDir() || li.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("%w: %s", ErrHostCacheEscape, path)
+	}
+	r, err := top.OpenRoot(chatID)
+	if err != nil {
+		if isEscapeErr(err) {
+			return "", fmt.Errorf("%w: %s", ErrHostCacheEscape, path)
+		}
 		return "", err
 	}
 	defer r.Close()

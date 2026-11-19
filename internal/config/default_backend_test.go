@@ -143,3 +143,24 @@ func TestMinHisnDefaultVersionNotBelowMinHisnVersion(t *testing.T) {
 			MinHisnDefaultVersion, MinHisnVersion)
 	}
 }
+
+// A user who opted in to network_mode "open" and lands on docker (hisn missing
+// or too old) is told the open mode is NOT applied there.
+func TestDefaultNoteSaysOpenNotAppliedOnDockerFallback(t *testing.T) {
+	cfg := Config{Sandbox: SandboxConfig{BackendDefaulted: true, Hisn: HisnConfig{NetworkMode: "open"}}}
+	got := ApplyDefaultBackend(cfg, HisnAvailability{Version: "0.6.0", Reason: "hisn 0.6.0 is older than 0.6.1 (security fix for network = \"open\")"}, "")
+	if got.Sandbox.Backend == SandboxBackendHisn {
+		t.Fatal("an old hisn must not become the default backend")
+	}
+	for _, want := range []string{"older than 0.6.1", `"open" is NOT applied on docker`} {
+		if !strings.Contains(got.Sandbox.DefaultNote, want) {
+			t.Errorf("DefaultNote lacks %q: %q", want, got.Sandbox.DefaultNote)
+		}
+	}
+	// No open opt-in: the note is unchanged.
+	cfg.Sandbox.Hisn.NetworkMode = ""
+	got = ApplyDefaultBackend(cfg, HisnAvailability{Reason: "hisn not found in PATH"}, "")
+	if strings.Contains(got.Sandbox.DefaultNote, "NOT applied") {
+		t.Errorf("no open opt-in, yet the note warns about it: %q", got.Sandbox.DefaultNote)
+	}
+}

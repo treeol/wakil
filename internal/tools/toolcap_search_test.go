@@ -73,3 +73,25 @@ func TestSearchHostCacheBinaryCapAndPattern(t *testing.T) {
 		t.Error("a bad file_pattern must be an error")
 	}
 }
+
+// The chat directory itself being a symlink — to another session's directory
+// or to a directory outside the toolcache — is refused, not followed.
+func TestSearchHostCacheRefusesSymlinkedChatDir(t *testing.T) {
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	foreign := SpillToCache("c2", "turn-1", "NEEDLE of c2\n")
+	outside := t.TempDir()
+	if err := os.WriteFile(filepath.Join(outside, "f.txt"), []byte("NEEDLE outside\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for name, target := range map[string]string{"c-to-foreign": filepath.Dir(foreign), "c-to-outside": outside} {
+		link := filepath.Join(ToolCacheRoot(), name)
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		out, err := SearchHostCache(name, link, "NEEDLE", "", false)
+		if !errors.Is(err, ErrHostCacheEscape) || strings.Contains(out, "NEEDLE") {
+			t.Errorf("%s: out=%q err=%v, want ErrHostCacheEscape and no content", name, out, err)
+		}
+	}
+}

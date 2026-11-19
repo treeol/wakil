@@ -348,6 +348,9 @@ func TestMemoryForgetRemovesQuarantinedEntry(t *testing.T) {
 	if err != nil || len(rej) != 1 || !strings.HasPrefix(rej[0].Note, "forgotten: notes/q") {
 		t.Fatalf("rejected = %v, err = %v", rej, err)
 	}
+	if !strings.Contains(rej[0].Note, "(was: quarantined: subagent write)") {
+		t.Errorf("the quarantine reason must survive in the note: %q", rej[0].Note)
+	}
 	// …and it can no longer be promoted.
 	if res := app.ExecuteToolCall(ctx, memToolCall("memory_promote", fmt.Sprintf(`{"id":%d}`, rej[0].ID))).text; !strings.Contains(res, "ERROR") {
 		t.Errorf("promoting a forgotten entry must fail: %s", res)
