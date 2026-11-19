@@ -96,10 +96,12 @@ csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_
 csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
 printf '%s\n' "$csv_header" > "$csv_file"
 
-# The resolved model for the CSV: from --model, else the result-json of the
-# first run (resolved model, not requested), else "config".
+# The resolved model for the CSV: from --model, else the result-json of
+# the first run (resolved model, not requested), else "unknown". The
+# header and CSV never show the literal "config" when --model is not
+# given; a real run fills it from --result-json.
 resolved_model="$model_name"
-[ -n "$resolved_model" ] || resolved_model="config"
+[ -n "$resolved_model" ] || resolved_model="unknown"
 
 # --mashura level -> auto-counsel args for `wakil run`. "off" omits
 # --auto-counsel; other levels pass it.
@@ -188,9 +190,19 @@ run_one() {
     tdir="$tasks_dir/$task"
     workdir=$(mktemp -d "${TMPDIR:-/tmp}/bench-${task}-${run}.XXXXXX")
 
-    # Fresh copy + git init + one commit.
+    # Fresh copy + git init + one commit. The temp repo inherits the
+    # host's global git config, so a host with commit.gpgsign=true would
+    # make ResolveRepoSigning (internal/exec/signing.go) resolve a signing
+    # key and the generated hisn profile would carry a "signing" risk label
+    # — tripping the sandbox-ack gate (risk.go checkAck) even though bench
+    # tasks never sign. Disable signing in the temp repo's own config so
+    # the profile stays risk-free without an acknowledgement.
     cp -R "$tdir/repo/." "$workdir/"
-    ( cd "$workdir" && git init -q && git add -A && git -c user.email=bench@example.invalid -c user.name=bench commit -qm "bench task $task" ) 2>/dev/null || true
+    ( cd "$workdir" && git init -q \
+        && git config commit.gpgsign false \
+        && git config tag.gpgsign false \
+        && git add -A \
+        && git -c user.email=bench@example.invalid -c user.name=bench commit -qm "bench task $task" ) 2>/dev/null || true
 
     # Optional setup hook (task-level setup.sh, runs in the work copy
     # before the agent). The hook's own location is the task dir; it
@@ -214,6 +226,22 @@ run_one() {
     # agent sees the wrong repository — the one in the config file, not
     # the bench task's freshly-copied repo.
     export WAKIL_HOST_WORKDIR="$workdir"
+
+    # Pre-run sandbox risk probe (best effort, no model call): if the
+    # temp repo still triggers a sandbox risk after Fix 1, report the
+    # label and stop the bench before the model runs. This catches a
+    # signing label that survived because the host config leaked via a
+    # path Fix 1 does not cover (e.g. gpg.program, a keyring, or a
+    # future signing knob).
+    _risk_label=$("$bin" sandbox trust "$workdir" 2>&1 | sed -n 's/^→ risk: \([^ ]*\).*/\1/p')
+    if [ -n "$_risk_label" ] && [ "$_risk_label" != "none" ]; then
+        echo "$prog: $task run $run: sandbox risk label '$_risk_label' is not acknowledged in $workdir — run 'wakil sandbox trust $workdir' to review it" >&2
+        result="error"
+        exit_reason="sandbox-not-acknowledged"
+        csv_row "$task" "$run" "$result" "$exit_reason" "0" ""
+        rm -rf "$workdir"
+        return 1
+    fi
     if [ -n "$model_name" ]; then
         WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto $counsel_args \
             --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
@@ -275,6 +303,19 @@ run_one() {
     fi
     exit_reason=$(json_field "$result_json" "exit_reason")
 
+    # Post-run "not acknowledged" detection: when the run failed and the
+    # log mentions the sandbox risk error, the exit reason is
+    # sandbox-not-acknowledged and the bench stops with the label named
+    # (the pre-run probe already caught the common case; this catches a
+    # label that only surfaces after the model ran, e.g. a write that
+    # triggers a new capability).
+    if [ "$result" != "pass" ] && [ -z "$exit_reason" ]; then
+        if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null; then
+            result="error"
+            exit_reason="sandbox-not-acknowledged"
+        fi
+    fi
+
     # Workdir guard: verify the agent ran in the temp folder we set
     # up, not in the user's configured work_dir. The result JSON carries
     # the resolved workdir from the binary; mismatch means the sandbox
@@ -294,6 +335,17 @@ run_one() {
     # error, not a missing field.
 
     csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+
+    # A sandbox-not-acknowledged result is a harness-level error, not a
+    # model failure: stop the whole bench and name the label so the user
+    # can fix it. The label is in the pre-run probe message above.
+    if [ "$exit_reason" = "sandbox-not-acknowledged" ]; then
+        _label=$("$bin" sandbox trust "$workdir" 2>&1 | sed -n 's/^→ risk: \([^ ]*\).*/\1/p')
+        echo "$prog: bench stopped — task $task run $run: sandbox risk label '${_label:-unknown}' is not acknowledged in $workdir" >&2
+        echo "  run 'wakil sandbox trust $workdir' to review and acknowledge it" >&2
+        rm -rf "$workdir"
+        return 1
+    fi
 
     # Progress: one line after each run with the result, elapsed time,
     # tokens, cost, and exit reason (for non-pass results, from
@@ -323,7 +375,10 @@ run_one() {
     rm -rf "$workdir"
 }
 
-# find_prev_csv: the most recent bench CSV (not this run's). Echoes path.
+# find_prev_csv: the most recent bench CSV (not this run's, not a
+# self-test). Echoes path. Self-test CSVs live in $results_dir/selftest/
+# and are excluded by the top-level glob (results_dir/20*-bench.csv matches
+# direct children only, not the selftest/ subdir).
 find_prev_csv() {
     last=""
     for f in "$results_dir"/20*-bench.csv; do
@@ -364,6 +419,14 @@ run_all() {
 
 # ---- self-test -------------------------------------------------------------
 self_test() {
+    # Self-test CSVs go to a separate subdir so find_prev_csv never
+    # picks them up as an earlier run.
+    selftest_dir="$results_dir/selftest"
+    mkdir -p "$selftest_dir"
+    _saved_csv_file="$csv_file"
+    csv_file="$selftest_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
+    printf '%s\n' "$csv_header" > "$csv_file"
+
     tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/bench-selftest.XXXXXX")
 
     # Stub that changes nothing (and writes no result-json, like a binary
@@ -486,6 +549,8 @@ EOF
     echo "self-test done (harness worked)"
 
     rm -rf "$tmpdir"
+    # Restore the real-run CSV so main() and find_prev_csv see it.
+    csv_file="$_saved_csv_file"
 }
 
 main() {

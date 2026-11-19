@@ -35,23 +35,36 @@ For each task and run number:
 
 1. `bench/tasks/<name>/repo/` is copied to a fresh temporary folder and
    given `git init` + one commit, so every run starts from the same state
-   and nothing is shared between runs.
+   and nothing is shared between runs. The temp repo's `.git/config` sets
+   `commit.gpgsign=false` and `tag.gpgsign=false` so a host with global
+   `commit.gpgsign=true` does not make the generated hisn profile carry a
+   "signing" risk label — bench tasks never sign.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
-3. `wakil run --auto [--auto-counsel] --result-json <file> --transcript
+3. **Pre-run sandbox risk probe.** Before the model runs, the harness
+   calls `wakil sandbox trust <workdir>` (best effort, no model call) and
+   extracts the risk label. If the label is not `none`, the run is marked
+   `error` with `exit_reason=sandbox-not-acknowledged` and the bench stops
+   with the label named, so the user can `wakil sandbox trust` it. This
+   catches a signing (or other) risk that survived step 1.
+4. `wakil run --auto [--auto-counsel] --result-json <file> --transcript
    <log>` runs with the task text as the final argument, under a
    `timeout` guard. The transcript is the full output log.
    `WAKIL_HOST_WORKDIR` is set to the temp work copy so the sandbox
    mounts it (not the configured `work_dir`); the agent runs in the
    task's repository, not whatever the user's config file points at.
-4. `check.sh` from the task folder runs in the work folder; exit 0 is a
+5. `check.sh` from the task folder runs in the work folder; exit 0 is a
    pass.
-5. **Workdir guard.** After each run, the harness reads the `workdir`
+6. **Workdir guard.** After each run, the harness reads the `workdir`
    field from the result JSON and compares it to the temp folder it set up.
    On mismatch the run is marked `error` with `exit_reason=wrong-workdir`
    and the whole bench stops at once. A binary that does not report
    a `workdir` field is skipped (only a mismatch is an error, not a
    missing field).
+7. **Post-run "not acknowledged" detection.** When a run fails and the
+   log mentions "sandbox risk is not acknowledged", the exit reason is
+   set to `sandbox-not-acknowledged` and the bench stops with the label
+   named.
 
 The task's `check.sh`, `hidden/` files and `solution/` reference result
 are **never** copied into the work folder: the agent cannot pass by
@@ -71,8 +84,8 @@ used here.
 
 Each run's CSV row carries the *resolved* model from the run's
 `--result-json` when the binary reports one, so the CSV names the model
-that actually ran, not the one requested. The `model` column is the
-resolved model; the per-run table header prints it too. The
+that actually ran, not the one requested. When `--model` is not given
+and no run has reported yet, the column is `unknown` (never `config`).
 `exit_reason` column carries the reason string from `--result-json`
 (`pass`, `declined`, `backend_failure`, `gaps`, `error`) when the
 binary reports one, or `n/a` otherwise. Values a binary does not report
