@@ -2,6 +2,7 @@ package tools
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -152,7 +153,7 @@ func SearchHostCache(chatID, path, pattern, filePattern string, caseInsensitive 
 		if !fi.Mode().IsRegular() {
 			return "", fmt.Errorf("%w: %s", ErrHostCacheNotRegular, path)
 		}
-		if err := searchFile(start); err != nil && err != fs.SkipAll {
+		if err := searchFile(start); err != nil && !errors.Is(err, fs.SkipAll) {
 			return "", err
 		}
 	} else {
@@ -165,7 +166,7 @@ func SearchHostCache(chatID, path, pattern, filePattern string, caseInsensitive 
 			}
 			return searchFile(name)
 		})
-		if werr != nil && werr != fs.SkipAll {
+		if werr != nil && !errors.Is(werr, fs.SkipAll) {
 			return "", werr
 		}
 	}

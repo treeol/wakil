@@ -4,6 +4,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 // VScreen is a minimal terminal emulator for the byte stream Bubble Tea's
@@ -122,16 +123,10 @@ func (v *VScreen) Write(p []byte) (int, error) {
 }
 
 func decodeRune(b []byte) (rune, int) {
-	s := string(b)
-	for i, r := range s {
-		_ = i
-		n := len(string(r))
-		if r == 0xFFFD && len(b) < 4 {
-			return 0, 0
-		}
-		return r, n
+	if !utf8.FullRune(b) {
+		return 0, 0
 	}
-	return 0, 0
+	return utf8.DecodeRune(b)
 }
 
 func (v *VScreen) put(r rune) {

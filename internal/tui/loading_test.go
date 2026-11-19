@@ -10,7 +10,7 @@ import (
 	"github.com/treeol/wakil/internal/core/event"
 )
 
-type bootDone struct{ model tea.Model }
+type bootDone struct{}
 
 func (bootDone) IsBootstrapDone() {}
 
