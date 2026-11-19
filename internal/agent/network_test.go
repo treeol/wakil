@@ -152,8 +152,14 @@ func TestNetworkStatusSource(t *testing.T) {
 	for _, c := range cases {
 		app := &App{Cfg: config.Config{Sandbox: config.SandboxConfig{Hisn: config.HisnConfig{NetworkMode: c.config}}}}
 		app.NetworkOverride = c.override
-		if got := app.networkStatus(); got != c.want {
-			t.Errorf("%s: networkStatus: want %q, got %q", c.name, c.want, got)
+		got := app.networkStatus()
+		first, rest, _ := strings.Cut(got, "\n")
+		if first != c.want {
+			t.Errorf("%s: networkStatus: want %q, got %q", c.name, c.want, first)
+		}
+		// The trust/kernel sentence appears exactly when open is in effect.
+		if hasNote := rest == networkOpenNote; hasNote != strings.HasPrefix(c.want, "network: open") {
+			t.Errorf("%s: open note present=%v, status %q", c.name, hasNote, got)
 		}
 	}
 }
@@ -195,7 +201,7 @@ func TestEffectiveNetwork(t *testing.T) {
 func TestSystemPromptNetworkMode(t *testing.T) {
 	const staticPrefix = "STATIC AGENT PROMPT PREFIX"
 	wantHost := "Network mode: host (LAN and internet reachable)."
-	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them)."
+	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 5.14+)."
 
 	lastLine := func(s string) string {
 		lines := strings.Split(s, "\n")
@@ -380,7 +386,7 @@ func (e *runningSessionNetworkExec) SandboxStatus(_ context.Context) sandbox.Sta
 // prompt line to "open" once the sandbox session is replaced.
 func TestSystemPromptNetworkMode_StaysLiveUntilSessionReplaced(t *testing.T) {
 	wantHost := "Network mode: host (LAN and internet reachable)."
-	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them)."
+	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 5.14+)."
 
 	lastLine := func(s string) string {
 		lines := strings.Split(s, "\n")

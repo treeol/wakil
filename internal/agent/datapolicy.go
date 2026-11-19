@@ -253,5 +253,13 @@ func (a *App) networkStatus() string {
 	if a.NetworkOverride == "" && a.Cfg.Sandbox.Hisn.NetworkMode == "" {
 		src = "default"
 	}
-	return fmt.Sprintf("network: %s (%s)", eff, src)
+	line := fmt.Sprintf("network: %s (%s)", eff, src)
+	if eff == "open" {
+		line += "\n" + networkOpenNote
+	}
+	return line
 }
+
+// networkOpenNote is the one sentence every place that describes the open
+// network mode carries: who it is for and what the host needs.
+const networkOpenNote = "open is meant for code you trust and needs kernel 5.14 or newer."

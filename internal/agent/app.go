@@ -2101,7 +2101,7 @@ func (a *App) sessionNetworkMode() string {
 // end of the system prompt's per-session suffix.
 func networkModeLine(mode string) string {
 	if mode == "open" {
-		return "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them)."
+		return "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 5.14+)."
 	}
 	return "Network mode: host (LAN and internet reachable)."
 }
