@@ -84,7 +84,7 @@ func TestPerfWritesToDiag(t *testing.T) {
 }
 
 // TestPerfSummaryToStdout: the exported stdout form writes the
-// three summary lines plus the log path, and the "no samples"
+// four summary lines plus the log path, and the "no samples"
 // form when the switch is on but nothing was recorded.
 func TestPerfSummaryToStdout(t *testing.T) {
 	restore := setPerfForTest(true)
@@ -114,8 +114,8 @@ func TestPerfSummaryToStdout(t *testing.T) {
 	}
 }
 
-// TestPerfSummaryLines verifies the exit summary is exactly three
-// tuiperf lines (count/median/p99/slowest, update, view).
+// TestPerfSummaryLines verifies the exit summary is exactly four
+// tuiperf lines (count/median/p99/slowest, update, view, start).
 func TestPerfSummaryLines(t *testing.T) {
 	restore := setPerfForTest(true)
 	defer restore()
@@ -129,13 +129,85 @@ func TestPerfSummaryLines(t *testing.T) {
 	}
 	perfPrintSummary()
 	lines := strings.Count(buf.String(), "tuiperf ")
-	if lines != 3 {
-		t.Fatalf("summary: %d tuiperf lines, want 3\n%s", lines, buf.String())
+	if lines != 4 {
+		t.Fatalf("summary: %d tuiperf lines, want 4\n%s", lines, buf.String())
 	}
 	for _, want := range []string{"count=5", "median=", "p99=", "slowest=KeyMsg", "maxframe=100bytes"} {
 		if !strings.Contains(buf.String(), want) {
 			t.Fatalf("summary missing %q\n%s", want, buf.String())
 		}
+	}
+}
+
+// TestPerfStartLine verifies the fourth summary line: the two start times
+// measured from process start, and prompt_ready=n/a when the program quits
+// before prompt ready. The fake backend (newTestTUI's fakeFacade) drives the
+// model to first frame and prompt ready through the same timelineOnce path
+// the real program uses.
+func TestPerfStartLine(t *testing.T) {
+	restore := setPerfForTest(true)
+	defer restore()
+	perfReset()
+	// Isolated perf start-time state (the marks and process start are package
+	// globals). Restore them so other tests are unaffected.
+	perfStartMu.Lock()
+	oldStart, oldFirst, oldReady := perfStart, perfFirstFrame, perfPromptReady
+	perfStart = time.Now()
+	perfFirstFrame, perfPromptReady = time.Time{}, time.Time{}
+	perfStartMu.Unlock()
+	t.Cleanup(func() {
+		perfStartMu.Lock()
+		perfStart, perfFirstFrame, perfPromptReady = oldStart, oldFirst, oldReady
+		perfStartMu.Unlock()
+	})
+
+	// Drive the fake-backend model to first frame (the start-up view's first
+	// window size) and then to prompt ready (the real model's first window
+	// size), exactly as the program does. newTestTUI builds a ready model, so
+	// reset it to not-ready before the first size.
+	m, _ := newTestTUI(t)
+	m.width, m.height = 0, 0
+	m.ready = false
+	// Clear the per-process timelineOnce gates so this test re-fires the same
+	// instants the program records (an earlier test may have consumed them).
+	timelineOnceMu.Lock()
+	delete(timelineSeen, "first-frame")
+	delete(timelineSeen, "first-frame-boot")
+	timelineOnceMu.Unlock()
+	// First frame: the start-up view's first WindowSizeMsg marks first_frame.
+	_, _ = NewLoadingModel("", nil, nil).Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if _, _, have := perfStartMs(); have {
+		t.Fatal("before prompt ready, perfStartMs must report havePrompt=false")
+	}
+	first, _, have := perfStartMs()
+	if have || first < 0 {
+		t.Fatalf("first_frame=%d havePrompt=%v, want first>=0 and havePrompt=false", first, have)
+	}
+	// Prompt ready: the real model handles its first WindowSizeMsg.
+	m2, _ := m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	_ = m2
+	_, prompt, have := perfStartMs()
+	if !have || prompt < first {
+		t.Fatalf("after prompt ready: first=%d prompt=%d have=%v, want have=true and prompt>=first", first, prompt, have)
+	}
+	var buf strings.Builder
+	perfRecord(perfSample{typ: "KeyMsg", updateDur: time.Microsecond, viewDur: time.Microsecond, bytes: 10})
+	PrintPerfSummaryTo(&buf, "/tmp/x/diag.log")
+	if !strings.Contains(buf.String(), "tuiperf start first_frame=") || !strings.Contains(buf.String(), "prompt_ready=") {
+		t.Fatalf("summary missing the start line:\n%s", buf.String())
+	}
+	if strings.Contains(buf.String(), "prompt_ready=n/a") {
+		t.Fatalf("after prompt ready the start line must not say n/a:\n%s", buf.String())
+	}
+	// Quit-before-prompt-ready form: no prompt_ready mark → n/a.
+	perfStartMu.Lock()
+	perfFirstFrame = time.Now()
+	perfPromptReady = time.Time{}
+	perfStartMu.Unlock()
+	buf.Reset()
+	PrintPerfSummaryTo(&buf, "/tmp/x/diag.log")
+	if !strings.Contains(buf.String(), "tuiperf start first_frame=") || !strings.Contains(buf.String(), "prompt_ready=n/a") {
+		t.Fatalf("quit before prompt ready must print prompt_ready=n/a:\n%s", buf.String())
 	}
 }
 

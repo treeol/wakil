@@ -30,6 +30,10 @@ func main() {
 	// load is timed too; --trace joins it once the flags are parsed.
 	mainBegan := time.Now()
 	processStart := timeline.ProcessStart(mainBegan)
+	// The WAKIL_TUI_PERF start-time line is measured from the same process
+	// start (including runtime + package init), so its two times share one
+	// origin with the timeline.
+	tui.SetPerfStart(processStart)
 	if timeline.EnvEnabled() {
 		timeline.Start("", "start", processStart)
 		// Everything between the kernel starting the process and main

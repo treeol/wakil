@@ -16,11 +16,12 @@ package tui
 // output is the frame it was offered).
 //
 // On exit (runTUI's postRunCleanup, cmd/wakil/main.go) perfPrintSummary
-// prints a three-line summary to the same diagnostic log:
+// prints a four-line summary to the same diagnostic log:
 //
 //	tuiperf summary count=N slowest=<type> maxframe=Nbytes
 //	tuiperf update median=… p99=…
 //	tuiperf view median=… p99=…
+//	tuiperf start first_frame=<ms>ms prompt_ready=<ms>ms
 //
 // The update leg is timed in updateTimed (never by calling View: a
 // measurement View would consume the pending OSC 52 escape — Part
@@ -63,6 +64,61 @@ func RefreshPerfFromEnv() {
 // checkPerf reports whether frame timing is recording. It is the only
 // cost paid when the switch is off: one atomic load per Update/View.
 func checkPerf() bool { return perfEnabled.Load() }
+
+// PerfStart is the process-start reference for the start-time line. It is set
+// from main (cmd/wakil/main.go) from timeline.ProcessStart so the two times are
+// measured from the same origin. The zero value means "no reference set".
+var perfStart time.Time
+
+// SetPerfStart records the process start time for the tuiperf start line.
+func SetPerfStart(t time.Time) { perfStart = t }
+
+// perfStartMu guards the mark timestamps.
+var perfStartMu sync.Mutex
+
+// perfFirstFrame / perfPromptReady hold the captured instants (zero = not yet
+// seen). They are set only when the perf switch is on, and only once.
+var perfFirstFrame, perfPromptReady time.Time
+
+// perfMarkFirstFrame records the first-frame instant (start-up view).
+func perfMarkFirstFrame() {
+	if !checkPerf() {
+		return
+	}
+	perfStartMu.Lock()
+	defer perfStartMu.Unlock()
+	if perfFirstFrame.IsZero() {
+		perfFirstFrame = time.Now()
+	}
+}
+
+// perfMarkPromptReady records the prompt-ready instant (the real model's first
+// window size handled — a task can be sent).
+func perfMarkPromptReady() {
+	if !checkPerf() {
+		return
+	}
+	perfStartMu.Lock()
+	defer perfStartMu.Unlock()
+	if perfPromptReady.IsZero() {
+		perfPromptReady = time.Now()
+	}
+}
+
+// perfStartMs returns the two start times in milliseconds from process start.
+// The second value is false when the program quit before prompt ready.
+func perfStartMs() (first, prompt int64, havePrompt bool) {
+	perfStartMu.Lock()
+	defer perfStartMu.Unlock()
+	if perfFirstFrame.IsZero() || perfStart.IsZero() {
+		return 0, 0, false
+	}
+	first = perfFirstFrame.Sub(perfStart).Milliseconds()
+	if perfPromptReady.IsZero() {
+		return first, 0, false
+	}
+	return first, perfPromptReady.Sub(perfStart).Milliseconds(), true
+}
 
 // setPerfForTest flips the switch for tests and returns a restore
 // function. Test-only affordance; production code never calls it.
@@ -181,7 +237,7 @@ func perfSummary() (count int, upMed, upP99, viewMed, viewP99 int64, slowest str
 	return count, medOr0(ups), p99Or0(ups), medOr0(views), p99Or0(views), slowest, maxBytes, true
 }
 
-// perfPrintSummary writes the three-line exit summary to the diagnostic
+// perfPrintSummary writes the four-line exit summary to the diagnostic
 // log. It is a no-op when recording was off or no samples were taken.
 func perfPrintSummary() {
 	count, upMed, upP99, viewMed, viewP99, slowest, maxBytes, ok := perfSummary()
@@ -191,6 +247,17 @@ func perfPrintSummary() {
 	diag.Printf("tuiperf summary count=%d slowest=%s maxframe=%dbytes\n", count, slowest, maxBytes)
 	diag.Printf("tuiperf update median=%dns p99=%dns\n", upMed, upP99)
 	diag.Printf("tuiperf view median=%dns p99=%dns\n", viewMed, viewP99)
+	diag.Printf("%s\n", startLine())
+}
+
+// startLine renders the fourth summary line: the two start times measured from
+// process start, or the documented fallback when the program quit early.
+func startLine() string {
+	first, prompt, have := perfStartMs()
+	if !have {
+		return fmt.Sprintf("tuiperf start first_frame=%dms prompt_ready=n/a", first)
+	}
+	return fmt.Sprintf("tuiperf start first_frame=%dms prompt_ready=%dms", first, prompt)
 }
 
 // PrintPerfSummary is the exported exit hook (cmd/wakil/main.go invokes it
@@ -198,7 +265,7 @@ func perfPrintSummary() {
 // WAKIL_TUI_PERF was unset or no samples were taken.
 func PrintPerfSummary() { perfPrintSummary() }
 
-// PrintPerfSummaryTo writes the exit summary to w (stdout after the
+// PrintPerfSummaryTo writes the four-line exit summary to w (stdout after the
 // terminal is restored) so the user sees it. logPath names the
 // diagnostic log file that holds the per-frame lines. It prints
 // nothing when the switch was off; when on but no samples were
@@ -218,6 +285,7 @@ func PrintPerfSummaryTo(w io.Writer, logPath string) {
 	fmt.Fprintf(w, "tuiperf summary count=%d slowest=%s maxframe=%dbytes log=%s\n", count, slowest, maxBytes, where)
 	fmt.Fprintf(w, "tuiperf update median=%dns p99=%dns\n", upMed, upP99)
 	fmt.Fprintf(w, "tuiperf view median=%dns p99=%dns\n", viewMed, viewP99)
+	fmt.Fprintln(w, startLine())
 }
 
 // perfMsgType names an Update message for the diagnostic log. It is a
