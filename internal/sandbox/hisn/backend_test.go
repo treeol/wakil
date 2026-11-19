@@ -621,6 +621,27 @@ func TestNetworkModeGetterAndSetter(t *testing.T) {
 	if got := b2.ProjectNetworkMode(); got != "open" {
 		t.Fatalf("ProjectNetworkMode = %q, want open", got)
 	}
+	// Reset with no project value but a configured sandbox.hisn.network_mode
+	// "open" returns to open (the config candidate is kept, not dropped).
+	b3, err := New(func() Options {
+		o := fe.options()
+		o.Network = "open"
+		return o
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b3.NetworkMode(); got != "open" {
+		t.Fatalf("config open + no user choice = %q, want open", got)
+	}
+	b3.SetNetworkMode("host")
+	if got := b3.NetworkMode(); got != "host" {
+		t.Fatalf("config open + /network host = %q, want host", got)
+	}
+	b3.SetNetworkMode("")
+	if got := b3.NetworkMode(); got != "open" {
+		t.Fatalf("after /network reset with config open and no project value = %q, want open (reset returns to the config)", got)
+	}
 
 	// Project-surface narrowing to "open" is reported immediately by NetworkMode().
 	optsOpen := fe.options()

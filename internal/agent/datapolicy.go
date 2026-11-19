@@ -282,8 +282,9 @@ func (a *App) projectNetworkOpen() bool {
 }
 
 // networkPrecedenceNote states, in one line, how the repo's .wakil/sandbox.json
-// "open" and the user's /network choice combine (what the code does today).
-const networkPrecedenceNote = "precedence: a repo's .wakil/sandbox.json \"open\" applies at start unless you chose /network host for this repo, which wins; the line above shows your own setting only."
+// "open" and the user's /network choice combine. /network reset returns to it;
+// an explicit /network host still wins over it.
+const networkPrecedenceNote = "precedence: a repo's .wakil/sandbox.json \"open\" is the project's setting, used at start and restored by /network reset — unless you set /network host for this repo, which wins; the line above shows the effective mode and its source."
 
 // networkOpenNote is the one sentence every place that describes the open
 // network mode carries: who it is for and what the host needs.

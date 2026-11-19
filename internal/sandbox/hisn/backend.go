@@ -191,6 +191,10 @@ type Backend struct {
 	// separate from the user override so SetNetworkMode("") resets to the
 	// project setting instead of the built-in default.
 	projectNetwork string
+	// configNetwork is the configured candidate ("open" or ""), kept so a
+	// reset with no project value returns to the user's
+	// sandbox.hisn.network_mode instead of the built-in default.
+	configNetwork string
 	// ver is the hisn version seen by Preflight (zero until then).
 	ver [3]int
 	// planned is the plan-time risk evaluation (hisn profile explain).
@@ -315,9 +319,11 @@ func New(opts Options) (*Backend, error) {
 		return nil, fmt.Errorf("hisn backend: sandbox.hisn.network_mode %q: want \"host\" or \"open\"", opts.Network)
 	}
 	// Effective: "open" if either the user config or the project says so.
-	// Keep the separate candidate so a user's reset (SetNetworkMode("")) drops
-	// only the user choice and the approved narrowing still applies.
+	// Keep the separate candidates so a user's reset (SetNetworkMode("")) drops
+	// only the user choice: the project value first, then the config value, so
+	// an approved narrowing or a configured "open" is never lost.
 	baseNetwork := surf.Network
+	configNetwork := opts.Network
 	if surf.Network == "open" || opts.Network == "open" {
 		surf.Network = "open"
 	} else {
@@ -345,6 +351,7 @@ func New(opts Options) (*Backend, error) {
 		inst:           newToken()[:8],
 		opts:           opts,
 		projectNetwork: baseNetwork,
+		configNetwork:  configNetwork,
 		readyTimeout:   readyCap,
 		stopWait:       stopCap,
 		// hisn mounts cwd at the identical path and gives the sandbox a
@@ -680,7 +687,7 @@ func (b *Backend) SandboxRootfs() string { return b.opts.Surface.Rootfs }
 // SetNetworkMode sets the session network mode for the next session start.
 // "open" narrows outbound to public TCP only (hisn 0.6.0); "host" is the
 // default. A running session keeps its mode; the value applies to the next
-// Start. The caller validates; this method clamps "" to "host".
+// Start. The caller validates; an unknown value is ignored.
 func (b *Backend) SetNetworkMode(mode string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -689,11 +696,14 @@ func (b *Backend) SetNetworkMode(mode string) {
 	}
 	// An explicit value (open or host) is the user's override and wins over
 	// the approved per-project value; "" (reset) clears the user override
-	// and restores the project value (projectNetwork) or the built-in
-	// default. An approved project "open" is never widened back to "host" by
-	// a reset; the user may still explicitly ask for /network host.
+	// and restores the project's value, else the config value, else the
+	// built-in default. An approved project "open" is never widened back to
+	// "host" by a reset; the user may still explicitly ask for /network host.
 	if mode == "" {
 		mode = b.projectNetwork
+		if mode == "" {
+			mode = b.configNetwork
+		}
 	}
 	if mode == "host" {
 		mode = ""

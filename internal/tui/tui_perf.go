@@ -71,7 +71,11 @@ func checkPerf() bool { return perfEnabled.Load() }
 var perfStart time.Time
 
 // SetPerfStart records the process start time for the tuiperf start line.
-func SetPerfStart(t time.Time) { perfStart = t }
+func SetPerfStart(t time.Time) {
+	perfStartMu.Lock()
+	perfStart = t
+	perfStartMu.Unlock()
+}
 
 // perfStartMu guards the mark timestamps.
 var perfStartMu sync.Mutex

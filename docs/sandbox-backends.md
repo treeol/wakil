@@ -634,13 +634,15 @@ disagree (`internal/sandbox/hisn/backend.go` `Open` and `SetNetworkMode`;
     project's setting.
   * `/network reset` **clears your override** and returns to the project's
     setting when `.wakil/sandbox.json` sets one (for example `"open"`),
-    otherwise to your configured `sandbox.hisn.network_mode` or the built-in
-    default (`host`). A running session keeps its mode until the next start.
+    otherwise to the configured `sandbox.hisn.network_mode`, otherwise the
+    built-in default (`host`). A running session keeps its mode until the
+    next start.
 * The `network:` line of `/network` shows the **effective mode and its source**
-  (`user`, `project`, or `default`): `network: host (repo override)`,
-  `network: open (project)`, `network: open (config)`, or
-  `network: host (default)`. `/sandbox` and the system prompt show the mode the
-  backend will actually use or is running.
+  (`repo override`, `project`, `config`, or `default`): `network: host (repo
+  override)`, `network: open (project)`, `network: open (config`) — or, when
+  config says `host`, `network: host (config default)` — or
+  `network: host (default)`. `/sandbox` and the system prompt show the mode
+  the backend will actually use or is running.
 
 ## Per-project overrides: `.wakil/sandbox.json`
 
