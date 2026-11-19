@@ -158,7 +158,9 @@ check build-and-version sh -c 'mkdir -p "$TMPROOT/bin" && go build -o "$TMPROOT/
 # below write to a log and propagate the runner's exit code; the log
 # snippet in `check()` still shows the tail of the output.
 check vet sh -c 'go vet ./... >"$TMPROOT/vet.log" 2>&1; rc=$?; tail -20 "$TMPROOT/vet.log"; exit $rc'
-check gofmt sh -c 'out=$(gofmt -l $(git ls-files "*.go") 2>&1); if [ -n "$out" ]; then echo "$out"; exit 1; fi; echo "gofmt clean"'
+# .tmp*/ (scratch worktrees and notes, gitignored) is skipped explicitly, not
+# only by being untracked: a force-added file there must not fail the check.
+check gofmt sh -c 'out=$(gofmt -l $(git ls-files "*.go" | grep -v "^\.tmp") 2>&1); if [ -n "$out" ]; then echo "$out"; exit 1; fi; echo "gofmt clean"'
 if command -v golangci-lint >/dev/null 2>&1; then
   check golangci-lint sh -c 'golangci-lint run >"$TMPROOT/golangci-lint.log" 2>&1; rc=$?; tail -10 "$TMPROOT/golangci-lint.log"; exit $rc'
 else
@@ -343,17 +345,21 @@ version_ge() {
 }
 
 # Self-test for version_ge — runs before the real-hisn check so a broken
-# comparison is caught before it hides a real hisn. Prints each case.
+# comparison is caught before it hides a real hisn. Prints each case with the
+# result it EXPECTS (true/false) and, on a mismatch, the result it got.
 echo "=== version_ge self-test ==="
 vt_pass=0; vt_fail=0
 version_ge_test() {
-  desc="$1"; a="$2"; b="$3"; expect="$4"
-  if version_ge "$a" "$b"; then got=0; else got=1; fi
+  desc="$1"; in_a="$2"; in_b="$3"; expect="$4"
+  # version_ge normalises into the globals a and b, so print the inputs from
+  # their own copies.
+  if version_ge "$in_a" "$in_b"; then got=0; else got=1; fi
+  want=$([ "$expect" -eq 0 ] && echo true || echo false)
   if [ "$got" -eq "$expect" ]; then
-    echo "  OK   $desc: version_ge $a $b → true"
+    echo "  OK   $desc: version_ge $in_a $in_b → $want"
     vt_pass=$((vt_pass+1))
   else
-    echo "  FAIL $desc: version_ge $a $b → $([ $got -eq 0 ] && echo true || echo false) (expected $([ $expect -eq 0 ] && echo true || echo false))"
+    echo "  FAIL $desc: version_ge $in_a $in_b → $([ "$got" -eq 0 ] && echo true || echo false) (expected $want)"
     vt_fail=$((vt_fail+1))
   fi
 }
