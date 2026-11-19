@@ -552,3 +552,28 @@ type unsupportedNetworkExec struct {
 func (u *unsupportedNetworkExec) SetNetworkMode(string)           {}
 func (u *unsupportedNetworkExec) NetworkMode() string             { return "" }
 func (u *unsupportedNetworkExec) LiveNetworkMode() (string, bool) { return "", false }
+
+// TestNetworkStatusIgnoresProjectOpen documents a known mismatch (see the
+// CHANGELOG and docs/sandbox-backends.md): /network's "network:" line comes
+// from the user's own settings only, so a .wakil/sandbox.json "open" that the
+// backend will apply at the next start is NOT in it. The precedence line the
+// bare /network prints says so.
+func TestNetworkStatusIgnoresProjectOpen(t *testing.T) {
+	app := &App{Cfg: config.Config{}}
+	handled, _, cmd := handleNetworkCommand([]string{"/network"}, app)
+	if !handled {
+		t.Fatal("/network must be handled")
+	}
+	msg := cmd().(SysNoteMsg).Text
+	if !strings.HasPrefix(msg, "network: host (default)") {
+		t.Fatalf("status line = %q", msg)
+	}
+	if !strings.Contains(msg, networkPrecedenceNote) {
+		t.Errorf("bare /network lacks the precedence line:\n%s", msg)
+	}
+	// Setting a mode does not repeat the precedence line.
+	_, _, cmd = handleNetworkCommand([]string{"/network", "open"}, app)
+	if strings.Contains(cmd().(SysNoteMsg).Text, networkPrecedenceNote) {
+		t.Error("the precedence line belongs to the bare /network status only")
+	}
+}

@@ -83,3 +83,46 @@ func TestStartHostFailureNotLabelledOpenRefusal(t *testing.T) {
 		t.Errorf("host-mode failure labelled as an open refusal: %v", err)
 	}
 }
+
+// TestNetworkPrecedenceProjectOpenVersusUserHost pins what the code does today
+// (documented in docs/sandbox-backends.md): a project file's "open" and the
+// user's config "open" are merged by Open (open if either says so), but a later
+// SetNetworkMode — the user's /network, /network reset or the restored per-repo
+// choice — REPLACES the merged value for the next session start. So the user's
+// /network host wins over the project's "open"; a project can still never
+// widen, because "host" in the project file is refused and SetNetworkMode is
+// only reachable from the user's own commands.
+func TestNetworkPrecedenceProjectOpenVersusUserHost(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, err := openWith(t, fe, func(o *Options) { o.Surface.Network = "open" }) // the project file's value
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := b.NetworkMode(); got != "open" {
+		t.Fatalf("project open, no user choice: mode = %q, want open", got)
+	}
+	b.SetNetworkMode("host") // /network host
+	if got := b.NetworkMode(); got != "host" {
+		t.Errorf("after /network host: mode = %q, want host (the user's choice replaces the project's open)", got)
+	}
+	b.SetNetworkMode("open") // /network open
+	if got := b.NetworkMode(); got != "open" {
+		t.Errorf("after /network open: mode = %q, want open", got)
+	}
+	// /network reset pushes the user's own effective value (config or "host"),
+	// which also replaces the project's open: the project file is not consulted
+	// again until the next process start.
+	b.SetNetworkMode("host")
+	if got := b.NetworkMode(); got != "host" {
+		t.Errorf("after /network reset to host: mode = %q, want host", got)
+	}
+}
+
+// A project file can never widen: "host" there is refused at Open.
+func TestProjectHostNetworkRefused(t *testing.T) {
+	fe := newFakeEnv(t)
+	_, err := openWith(t, fe, func(o *Options) { o.Surface.Network = "host" })
+	if err == nil || !strings.Contains(err.Error(), "never widen") {
+		t.Fatalf("project hisn.network=host must be refused, got %v", err)
+	}
+}

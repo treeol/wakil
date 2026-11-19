@@ -616,6 +616,32 @@ back to a wider mode (`/network host` or
 applies the change). `shm = true` is always set (Chrome, Node, POSIX shm users
 need `/dev/shm`).
 
+### Network precedence
+
+What the code does today when the project file and your own `/network` choice
+disagree (`internal/sandbox/hisn/backend.go` `Open` and `SetNetworkMode`;
+`internal/agent/repostate.go` `EffectiveNetwork`):
+
+* At start, `Open` merges the project file and `sandbox.hisn.network_mode`:
+  **open if either says open**, else host. The project file's `"host"` is
+  refused.
+* Any later `/network host`, `/network open` or `/network reset`, and the
+  per-repo choice restored at start (`/network` is remembered per repo, in your
+  own state directory, never in the repository), calls `SetNetworkMode`, which
+  **replaces** that merged value for the next session start. So **your
+  `/network host` wins over the project's `"open"`**, and so does `/network
+  reset` (it pushes your own config value, `host` by default, not the project's).
+  A running session keeps its mode until the next start.
+* The `network:` line of `/network` shows your own setting only (override, config,
+  default). It does not include a project file's `"open"`; the bare `/network`
+  prints a one-line reminder of this. `/sandbox` and the system prompt show the
+  mode the backend will actually use or is running.
+
+Looks wrong, left unchanged: after `/network reset` a project that asked for
+`open` quietly runs on `host` (the reset is read as "back to my defaults"), and
+the `network:` line can say `host` while the next session starts on `open`
+(project file, no per-repo choice) — the reminder line is the only hint.
+
 ## Per-project overrides: `.wakil/sandbox.json`
 
 The project asks for more than the defaults in `<workspace>/.wakil/sandbox.json`.
@@ -633,7 +659,7 @@ Absent file = nothing extra. Unknown keys are errors (the message names the key)
 | `hisn.profile` | name | a built-in or `$HISN_PROFILES` profile used instead of generation; Wakil then only adds grants |
 | `hisn.home` | `"persist"` or `"tmpfs"` | override `sandbox.hisn.home` for this project (name only; the persistent path is never set per project) |
 | `hisn.rootfs` | store name | rootfs for this project (store name only; the absolute-path form is global-only, `sandbox.hisn.rootfs`) |
-| `hisn.network` | `"open"` | narrow the session network to public TCP only (hisn 0.6.0). A project may narrow to `"open"; `"host"` is not allowed (it would widen a user setting that is narrower) |
+| `hisn.network` | `"open"` | narrow the session network to public TCP only (hisn 0.6.0). A project may narrow to `"open"`; `"host"` is not allowed (it would widen a user setting that is narrower). See [Network precedence](#network-precedence) |
 
 One complete example (a project that runs a database inside the sandbox, reads
 reference data, and uses the host docker daemon for deploys):
@@ -837,7 +863,10 @@ them to get the default described in [Choosing the backend](#choosing-the-backen
 `kvr_binary` empty means `kvr-server` from `PATH`. `network_mode` is `"host"`
 (default) or `"open"` (opt-in, hisn 0.6.0: public TCP only; for code you trust, kernel 5.14+). A per-repo
 override (`/network open`) and the project file (`.wakil/sandbox.json`
-`hisn.network`) may narrow to `"open"; neither may widen. With `hisn`:
+`hisn.network`) may narrow to `"open"`; a project file can never widen (its
+`"host"` is refused). Your own `/network host` is a different thing and does
+override a project's `"open"` — see [Network precedence](#network-precedence).
+With `hisn`:
 `browser_enabled` is not forced off (Chromium and `python3` must be in the session), `docker_*` keys are
 ignored, `WorkDir == HostWorkDir`, and `kvr` runs as an in-sandbox service
 when a binary is available (otherwise it stays off with the reason).
