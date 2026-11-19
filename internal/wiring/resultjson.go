@@ -67,18 +67,24 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time) e
 		ExitReason: exitReasonName(code),
 		Seconds:    time.Since(started).Seconds(),
 	}
-	if app != nil {
+	if app != nil && app.Client != nil {
 		res.Model = app.Client.Model
+		// Tokens, cost stay null when the run made no model call, so the
+		// caller can distinguish "not observed" from a true 0 (unpriced
+		// model or zero-cost backend). The sum over rows is the
+		// authoritative total; a run that spent money has rows.
 		if app.Costs != nil {
-			var inTok, outTok int64
 			total, rows := app.Costs.Snapshot()
-			for _, r := range rows {
-				inTok += r.InputTok
-				outTok += r.OutputTok
+			if len(rows) > 0 {
+				var inTok, outTok int64
+				for _, r := range rows {
+					inTok += r.InputTok
+					outTok += r.OutputTok
+				}
+				res.TokensIn = &inTok
+				res.TokensOut = &outTok
+				res.CostUSD = &total
 			}
-			res.TokensIn = &inTok
-			res.TokensOut = &outTok
-			res.CostUSD = &total
 		}
 		toolCalls := 0
 		mashuraTools := 0

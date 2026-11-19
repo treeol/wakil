@@ -78,6 +78,12 @@ tasks_dir="$bench_dir/tasks"
 results_dir="$bench_dir/results"
 mkdir -p "$results_dir"
 
+# Metric columns come from jq parsing of the per-run result JSON; without
+# jq they are honestly n/a, but say so once rather than per row.
+if ! command -v jq >/dev/null 2>&1; then
+    echo "$prog: warning: jq not found — metric columns (tokens, cost, counts) will be n/a" >&2
+fi
+
 csv_header='date,wakil_version,model,task,run,result,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds'
 csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
 printf '%s\n' "$csv_header" > "$csv_file"
