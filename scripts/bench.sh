@@ -209,6 +209,11 @@ run_one() {
 
     start_epoch=$(date +%s)
     set +e
+    # WAKIL_HOST_WORKDIR points the sandbox at the temp work copy so the
+    # agent runs there, not in the configured work_dir. Without it, the
+    # agent sees the wrong repository — the one in the config file, not
+    # the bench task's freshly-copied repo.
+    export WAKIL_HOST_WORKDIR="$workdir"
     if [ -n "$model_name" ]; then
         WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto $counsel_args \
             --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &

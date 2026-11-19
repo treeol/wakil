@@ -41,6 +41,9 @@ For each task and run number:
 3. `wakil run --auto [--auto-counsel] --result-json <file> --transcript
    <log>` runs with the task text as the final argument, under a
    `timeout` guard. The transcript is the full output log.
+   `WAKIL_HOST_WORKDIR` is set to the temp work copy so the sandbox
+   mounts it (not the configured `work_dir`); the agent runs in the
+   task's repository, not whatever the user's config file points at.
 4. `check.sh` from the task folder runs in the work folder; exit 0 is a
    pass.
 
