@@ -141,10 +141,11 @@ type NetworkBackend interface {
 	SetNetworkMode(mode string)
 }
 
-// NetworkGetter is an optional Backend capability: reports the effective
-// session network mode ("host" or "open"), including any project-file
-// narrowing or SetNetworkMode override. Must be fast and in-memory (no shell
-// out), because the agent reads it while assembling the system prompt.
+// NetworkGetter is an optional Backend capability: reports the session network
+// mode ("host" or "open") without shelling out. LiveNetworkMode returns the
+// running session's live mode and ok=true when a session is running, or
+// ("", false) when no session is running yet.
 type NetworkGetter interface {
 	NetworkMode() string
+	LiveNetworkMode() (mode string, running bool)
 }

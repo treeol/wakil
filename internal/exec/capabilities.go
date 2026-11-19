@@ -100,7 +100,9 @@ type NetworkSetter interface {
 }
 
 // NetworkGetter is implemented by executors that can report the effective
-// sandbox network mode ("host" or "open") without shelling out.
+// sandbox network mode ("host" or "open") without shelling out, and whether a
+// sandbox session is currently running.
 type NetworkGetter interface {
 	NetworkMode() string
+	LiveNetworkMode() (mode string, running bool)
 }

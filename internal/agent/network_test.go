@@ -85,8 +85,9 @@ type networkGetterSetter struct {
 	mode string
 }
 
-func (n *networkGetterSetter) SetNetworkMode(mode string) { n.mode = mode }
-func (n *networkGetterSetter) NetworkMode() string        { return n.mode }
+func (n *networkGetterSetter) SetNetworkMode(mode string)      { n.mode = mode }
+func (n *networkGetterSetter) NetworkMode() string             { return n.mode }
+func (n *networkGetterSetter) LiveNetworkMode() (string, bool) { return "", false }
 
 // TestNetworkResetReachesBackend: /network reset must push the effective mode
 // (override cleared → config/default) to the backend, so the next session
@@ -329,8 +330,9 @@ func TestSystemPromptNetworkMode(t *testing.T) {
 // running session keeps its original network mode until replaced.
 type runningSessionNetworkExec struct {
 	*fakeExecutor
-	live   string
-	queued string
+	running bool
+	live    string
+	queued  string
 }
 
 func (e *runningSessionNetworkExec) SetNetworkMode(mode string) {
@@ -341,16 +343,31 @@ func (e *runningSessionNetworkExec) SetNetworkMode(mode string) {
 }
 
 func (e *runningSessionNetworkExec) NetworkMode() string {
-	return e.live
+	if e.running {
+		return e.live
+	}
+	return e.queued
+}
+
+func (e *runningSessionNetworkExec) LiveNetworkMode() (string, bool) {
+	if !e.running {
+		return "", false
+	}
+	return e.live, true
 }
 
 func (e *runningSessionNetworkExec) replaceSession() {
+	e.running = true
 	e.live = e.queued
 }
 
 func (e *runningSessionNetworkExec) SandboxStatus(_ context.Context) sandbox.Status {
-	st := sandbox.Status{Backend: "hisn", Risk: "none", Network: e.live}
-	if e.queued != "" && e.queued != e.live {
+	cur := e.queued
+	if e.running {
+		cur = e.live
+	}
+	st := sandbox.Status{Backend: "hisn", Risk: "none", Network: cur}
+	if e.running && e.queued != "" && e.queued != e.live {
 		st.NextNetwork = e.queued
 	}
 	return st
@@ -372,6 +389,7 @@ func TestSystemPromptNetworkMode_StaysLiveUntilSessionReplaced(t *testing.T) {
 
 	ex := &runningSessionNetworkExec{
 		fakeExecutor: newFakeExecutor(),
+		running:      true,
 		live:         "host",
 		queued:       "host",
 	}
@@ -422,5 +440,76 @@ func TestSystemPromptNetworkMode_StaysLiveUntilSessionReplaced(t *testing.T) {
 	sbOut2 := app.renderSandboxState()
 	if strings.Contains(sbOut2, "next session:") || !strings.Contains(sbOut2, "network: open") {
 		t.Errorf("/sandbox output after replace = \n%s", sbOut2)
+	}
+}
+
+// TestNetworkCommandApplyNotice covers all three /network apply-notice cases:
+//  1. No sandbox session running → "no sandbox session is running; the next one starts on <mode>"
+//  2. Running session with a different live mode → "applies at the next session; current session is still <live>"
+//  3. Running session whose live mode equals the new mode → neither line printed.
+func TestNetworkCommandApplyNotice(t *testing.T) {
+	// Case 1: no sandbox session running.
+	exIdle := &runningSessionNetworkExec{
+		fakeExecutor: newFakeExecutor(),
+		running:      false,
+		queued:       "host",
+	}
+	appIdle := &App{
+		Cfg:  config.Config{WorkDir: t.TempDir()},
+		Exec: exIdle,
+	}
+	handled, _, cmd := handleNetworkCommand([]string{"/network", "open"}, appIdle)
+	if !handled || cmd == nil {
+		t.Fatal("idle /network open must be handled")
+	}
+	msgIdle := cmd().(SysNoteMsg).Text
+	wantIdle := "no sandbox session is running; the next one starts on open"
+	if !strings.Contains(msgIdle, wantIdle) {
+		t.Errorf("idle /network open = %q, want %q", msgIdle, wantIdle)
+	}
+	if strings.Contains(msgIdle, "current session is still") {
+		t.Errorf("idle /network open must not mention a running session: %q", msgIdle)
+	}
+	// Reset while idle also prints the no-running-session line with the effective mode.
+	_, _, cmd = handleNetworkCommand([]string{"/network", "reset"}, appIdle)
+	msgIdleReset := cmd().(SysNoteMsg).Text
+	wantIdleReset := "no sandbox session is running; the next one starts on host"
+	if !strings.Contains(msgIdleReset, wantIdleReset) {
+		t.Errorf("idle /network reset = %q, want %q", msgIdleReset, wantIdleReset)
+	}
+
+	// Case 2: running session whose live mode differs from the new mode.
+	exDiff := &runningSessionNetworkExec{
+		fakeExecutor: newFakeExecutor(),
+		running:      true,
+		live:         "host",
+		queued:       "host",
+	}
+	appDiff := &App{
+		Cfg:  config.Config{WorkDir: t.TempDir()},
+		Exec: exDiff,
+	}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "open"}, appDiff)
+	msgDiff := cmd().(SysNoteMsg).Text
+	wantDiff := "applies at the next session; current session is still host"
+	if !strings.Contains(msgDiff, wantDiff) {
+		t.Errorf("running-different /network open = %q, want %q", msgDiff, wantDiff)
+	}
+	if strings.Contains(msgDiff, "no sandbox session is running") {
+		t.Errorf("running-different must not say no session running: %q", msgDiff)
+	}
+
+	// Case 3: running session whose live mode already equals the new mode.
+	// Setting /network host on a live host session (or /network reset back to
+	// host) must print neither notice line.
+	_, _, cmd = handleNetworkCommand([]string{"/network", "host"}, appDiff)
+	msgSame := cmd().(SysNoteMsg).Text
+	if strings.Contains(msgSame, "current session is still") || strings.Contains(msgSame, "no sandbox session is running") {
+		t.Errorf("running-same /network host must print neither apply line, got %q", msgSame)
+	}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "reset"}, appDiff)
+	msgSameReset := cmd().(SysNoteMsg).Text
+	if strings.Contains(msgSameReset, "current session is still") || strings.Contains(msgSameReset, "no sandbox session is running") {
+		t.Errorf("running-same /network reset must print neither apply line, got %q", msgSameReset)
 	}
 }

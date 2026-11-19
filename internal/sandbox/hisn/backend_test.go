@@ -619,6 +619,12 @@ func TestNetworkMode_LiveVsQueuedWhileSessionRunning(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := b.NetworkMode(); got != "host" {
+		t.Fatalf("default NetworkMode = %q, want host", got)
+	}
+	if live, ok := b.LiveNetworkMode(); ok || live != "" {
+		t.Fatalf("before Start: LiveNetworkMode = (%q, %v), want (\"\", false)", live, ok)
+	}
 	if err := b.Start(context.Background(), sandbox.Session{ID: "chat-live-net"}); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -627,11 +633,17 @@ func TestNetworkMode_LiveVsQueuedWhileSessionRunning(t *testing.T) {
 	if got := b.NetworkMode(); got != "host" {
 		t.Fatalf("running host session: NetworkMode = %q, want host", got)
 	}
+	if live, ok := b.LiveNetworkMode(); !ok || live != "host" {
+		t.Fatalf("running host session: LiveNetworkMode = (%q, %v), want (host, true)", live, ok)
+	}
 
 	// Queue "open" for the next session while the host session is still live.
 	b.SetNetworkMode("open")
 	if got := b.NetworkMode(); got != "host" {
 		t.Fatalf("after SetNetworkMode(open) on running host session: NetworkMode = %q, want host", got)
+	}
+	if live, ok := b.LiveNetworkMode(); !ok || live != "host" {
+		t.Fatalf("after SetNetworkMode(open) on running host session: LiveNetworkMode = (%q, %v), want (host, true)", live, ok)
 	}
 	st := b.SandboxStatus(context.Background())
 	if st.Network != "host" || st.NextNetwork != "open" {

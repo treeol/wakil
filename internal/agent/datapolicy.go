@@ -191,7 +191,9 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 			ns.SetNetworkMode(app.EffectiveNetwork())
 		}
 		msg := app.networkStatus()
-		msg += "\n" + app.networkApplyLine()
+		if line := app.networkApplyLine(app.EffectiveNetwork()); line != "" {
+			msg += "\n" + line
+		}
 		return true, false, note(msg)
 	case "host", "open":
 		app.stateMu.Lock()
@@ -205,17 +207,31 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 			ns.SetNetworkMode(arg)
 		}
 		msg := app.networkStatus()
-		msg += "\n" + app.networkApplyLine()
+		if line := app.networkApplyLine(arg); line != "" {
+			msg += "\n" + line
+		}
 		return true, false, note(msg)
 	default:
 		return true, false, note("usage: /network [host|open|reset]")
 	}
 }
 
-// networkApplyLine describes when a /network change takes effect, naming the
-// live session's current mode.
-func (a *App) networkApplyLine() string {
-	return fmt.Sprintf("applies at the next session; current session is still %s", a.sessionNetworkMode())
+// networkApplyLine describes when a /network change takes effect:
+//   - No sandbox session running: "no sandbox session is running; the next one starts on <newMode>".
+//   - Running session whose live mode differs: "applies at the next session; current session is still <live>".
+//   - Running session whose live mode already equals newMode: "" (print neither line).
+func (a *App) networkApplyLine(newMode string) string {
+	if ng, ok := a.Exec.(exec.NetworkGetter); ok {
+		live, running := ng.LiveNetworkMode()
+		if !running {
+			return fmt.Sprintf("no sandbox session is running; the next one starts on %s", newMode)
+		}
+		if live == newMode {
+			return ""
+		}
+		return fmt.Sprintf("applies at the next session; current session is still %s", live)
+	}
+	return fmt.Sprintf("no sandbox session is running; the next one starts on %s", newMode)
 }
 
 // networkStatus renders the /network status: the effective value and where it

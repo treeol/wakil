@@ -1073,6 +1073,16 @@ func (e *BackendExecutor) NetworkMode() string {
 	return ""
 }
 
+// LiveNetworkMode implements NetworkGetter: report the running session's live
+// network mode and true when a session is alive, or ("", false) when none is
+// running (or unsupported).
+func (e *BackendExecutor) LiveNetworkMode() (string, bool) {
+	if ng, ok := e.b.(sandbox.NetworkGetter); ok {
+		return ng.LiveNetworkMode()
+	}
+	return "", false
+}
+
 // EnsureSession implements SessionEnsurer: start the session for the bound
 // chat if it is not running yet.
 func (e *BackendExecutor) EnsureSession(ctx context.Context) error {

@@ -683,6 +683,21 @@ func (b *Backend) SetNetworkMode(mode string) {
 	b.opts.Surface.Network = mode
 }
 
+// LiveNetworkMode implements sandbox.NetworkGetter, returning the running
+// session's live network mode and true when a session is alive, or ("", false)
+// when no session is running.
+func (b *Backend) LiveNetworkMode() (string, bool) {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.cur != nil && !b.cur.dead() {
+		if b.cur.network == "open" {
+			return "open", true
+		}
+		return "host", true
+	}
+	return "", false
+}
+
 // NetworkMode implements sandbox.NetworkGetter, returning the live session's
 // network mode ("open" or "host") when a session is running, or the configured
 // next-session mode (including project-file narrowing and SetNetworkMode) when
