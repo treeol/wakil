@@ -6,8 +6,12 @@
 
 Wakil is a terminal coding assistant. It reads and edits your code, runs your commands, and keeps memory between sessions — with the tool calls running in a sandbox and asks-first safeguards on the gates.
 
-[![License](https://img.shields.io/github/license/treeol/wakil)](LICENSE)
+[![CI](https://github.com/treeol/wakil/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/treeol/wakil/actions/workflows/ci.yml)
+[![govulncheck](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml/badge.svg?branch=master)](https://github.com/treeol/wakil/actions/workflows/govulncheck.yml)
 [![Release](https://img.shields.io/github/v/release/treeol/wakil)](https://github.com/treeol/wakil/releases)
+[![License](https://img.shields.io/github/license/treeol/wakil)](LICENSE)
+[![Go version](https://img.shields.io/github/go-mod/go-version/treeol/wakil)](go.mod)
+[![Signed releases](https://img.shields.io/github/actions/workflow/status/treeol/wakil/release.yml?label=signed%20releases)](https://github.com/treeol/wakil/actions/workflows/release.yml)
 
 ## Install
 
