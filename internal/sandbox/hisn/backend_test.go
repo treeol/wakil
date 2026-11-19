@@ -595,6 +595,32 @@ func TestNetworkModeGetterAndSetter(t *testing.T) {
 	if got := b.NetworkMode(); got != "host" {
 		t.Fatalf("after SetNetworkMode(host) = %q, want host", got)
 	}
+	// Network reset with no project value returns to the default (host).
+	b.SetNetworkMode("open")
+	b.SetNetworkMode("")
+	if got := b.NetworkMode(); got != "host" {
+		t.Fatalf("after SetNetworkMode(\"\") with no project value = %q, want host (reset to the default)", got)
+	}
+	// Reset with a project "open" returns to open (the project candidate is kept).
+	b2, err := New(func() Options {
+		o := fe.options()
+		o.Surface.Network = "open"
+		return o
+	}())
+	if err != nil {
+		t.Fatal(err)
+	}
+	b2.SetNetworkMode("host")
+	if got := b2.NetworkMode(); got != "host" {
+		t.Fatalf("project open + /network host = %q, want host", got)
+	}
+	b2.SetNetworkMode("")
+	if got := b2.NetworkMode(); got != "open" {
+		t.Fatalf("after /network reset with project open = %q, want open", got)
+	}
+	if got := b2.ProjectNetworkMode(); got != "open" {
+		t.Fatalf("ProjectNetworkMode = %q, want open", got)
+	}
 
 	// Project-surface narrowing to "open" is reported immediately by NetworkMode().
 	optsOpen := fe.options()

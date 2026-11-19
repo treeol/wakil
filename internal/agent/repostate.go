@@ -613,6 +613,12 @@ func (a *App) EffectiveNetwork() string {
 	if a.NetworkOverride != "" {
 		return a.NetworkOverride
 	}
+	// Once the user has not set an override, an approved project "open" (which
+	// narrows) is the effective mode until the next process start; an explicit
+	// /network host (the override) wins over it.
+	if a.projectNetworkOpen() {
+		return "open"
+	}
 	if a.Cfg.Sandbox.Hisn.NetworkMode == "open" {
 		return "open"
 	}

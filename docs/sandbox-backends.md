@@ -627,20 +627,20 @@ disagree (`internal/sandbox/hisn/backend.go` `Open` and `SetNetworkMode`;
   refused.
 * Any later `/network host`, `/network open` or `/network reset`, and the
   per-repo choice restored at start (`/network` is remembered per repo, in your
-  own state directory, never in the repository), calls `SetNetworkMode`, which
-  **replaces** that merged value for the next session start. So **your
-  `/network host` wins over the project's `"open"`**, and so does `/network
-  reset` (it pushes your own config value, `host` by default, not the project's).
-  A running session keeps its mode until the next start.
-* The `network:` line of `/network` shows your own setting only (override, config,
-  default). It does not include a project file's `"open"`; the bare `/network`
-  prints a one-line reminder of this. `/sandbox` and the system prompt show the
-  mode the backend will actually use or is running.
-
-Looks wrong, left unchanged: after `/network reset` a project that asked for
-`open` quietly runs on `host` (the reset is read as "back to my defaults"), and
-the `network:` line can say `host` while the next session starts on `open`
-(project file, no per-repo choice) — the reminder line is the only hint.
+  own state directory, never in the repository), calls `SetNetworkMode`:
+  * `/network host` and `/network open` are **your explicit override** and
+    **win over the project's `"open"`** for the next session start. An explicit
+    `host` over a project `open` prints one line saying it overrides the
+    project's setting.
+  * `/network reset` **clears your override** and returns to the project's
+    setting when `.wakil/sandbox.json` sets one (for example `"open"`),
+    otherwise to your configured `sandbox.hisn.network_mode` or the built-in
+    default (`host`). A running session keeps its mode until the next start.
+* The `network:` line of `/network` shows the **effective mode and its source**
+  (`user`, `project`, or `default`): `network: host (repo override)`,
+  `network: open (project)`, `network: open (config)`, or
+  `network: host (default)`. `/sandbox` and the system prompt show the mode the
+  backend will actually use or is running.
 
 ## Per-project overrides: `.wakil/sandbox.json`
 

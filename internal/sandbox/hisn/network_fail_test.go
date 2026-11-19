@@ -84,14 +84,14 @@ func TestStartHostFailureNotLabelledOpenRefusal(t *testing.T) {
 	}
 }
 
-// TestNetworkPrecedenceProjectOpenVersusUserHost pins what the code does today
+// TestNetworkPrecedenceProjectOpenVersusUserHost pins the precedence
 // (documented in docs/sandbox-backends.md): a project file's "open" and the
-// user's config "open" are merged by Open (open if either says so), but a later
-// SetNetworkMode — the user's /network, /network reset or the restored per-repo
-// choice — REPLACES the merged value for the next session start. So the user's
-// /network host wins over the project's "open"; a project can still never
-// widen, because "host" in the project file is refused and SetNetworkMode is
-// only reachable from the user's own commands.
+// user's config "open" are merged by Open (open if either says so). An explicit
+// SetNetworkMode ("host"/"open") is the user's override and wins. A reset
+// (SetNetworkMode("")) clears only the user override and restores the project
+// value; an approved project "open" is never widened back to "host" by a reset.
+// A project can still never widen, because "host" in the project file is refused
+// and SetNetworkMode is only reachable from the user's own commands.
 func TestNetworkPrecedenceProjectOpenVersusUserHost(t *testing.T) {
 	fe := newFakeEnv(t)
 	b, err := openWith(t, fe, func(o *Options) { o.Surface.Network = "open" }) // the project file's value
@@ -101,20 +101,21 @@ func TestNetworkPrecedenceProjectOpenVersusUserHost(t *testing.T) {
 	if got := b.NetworkMode(); got != "open" {
 		t.Fatalf("project open, no user choice: mode = %q, want open", got)
 	}
+	if got := b.ProjectNetworkMode(); got != "open" {
+		t.Fatalf("ProjectNetworkMode = %q, want open (so the app layer can name the source)", got)
+	}
 	b.SetNetworkMode("host") // /network host
 	if got := b.NetworkMode(); got != "host" {
-		t.Errorf("after /network host: mode = %q, want host (the user's choice replaces the project's open)", got)
+		t.Errorf("after /network host: mode = %q, want host (the user's choice overrides the project's open)", got)
+	}
+	// Reset restores the project's open.
+	b.SetNetworkMode("") // /network reset
+	if got := b.NetworkMode(); got != "open" {
+		t.Errorf("after /network reset with project open: mode = %q, want open (reset restores the project setting)", got)
 	}
 	b.SetNetworkMode("open") // /network open
 	if got := b.NetworkMode(); got != "open" {
 		t.Errorf("after /network open: mode = %q, want open", got)
-	}
-	// /network reset pushes the user's own effective value (config or "host"),
-	// which also replaces the project's open: the project file is not consulted
-	// again until the next process start.
-	b.SetNetworkMode("host")
-	if got := b.NetworkMode(); got != "host" {
-		t.Errorf("after /network reset to host: mode = %q, want host", got)
 	}
 }
 

@@ -82,12 +82,14 @@ func (n *networkSetter) SetNetworkMode(mode string) { n.last = mode }
 
 type networkGetterSetter struct {
 	*fakeExecutor
-	mode string
+	mode    string
+	project string
 }
 
 func (n *networkGetterSetter) SetNetworkMode(mode string)      { n.mode = mode }
 func (n *networkGetterSetter) NetworkMode() string             { return n.mode }
 func (n *networkGetterSetter) LiveNetworkMode() (string, bool) { return "", false }
+func (n *networkGetterSetter) ProjectNetworkMode() string      { return n.project }
 
 // TestNetworkResetReachesBackend: /network reset must push the effective mode
 // (override cleared → config/default) to the backend, so the next session
@@ -108,9 +110,13 @@ func TestNetworkResetReachesBackend(t *testing.T) {
 	if !handled || cmd == nil {
 		t.Fatal("/network reset must be handled")
 	}
-	cmd()
-	if got := app.Exec.(*networkSetter).last; got != "host" {
-		t.Errorf("/network reset: backend mode: want %q (effective after reset), got %q", "host", got)
+	msg := cmd().(SysNoteMsg).Text
+	_ = msg
+	// The fake networkSetter records "" (reset) — the real backend restores the
+	// project candidate on ""; with no backend the effective host is reported in
+	// the status line, not pushed as a stale "host" setter value.
+	if app.NetworkOverride != "" {
+		t.Errorf("NetworkOverride after reset: want %q, got %q", "", app.NetworkOverride)
 	}
 	// With config "open", reset must push "open" (not the stale "host").
 	app2 := &App{Cfg: config.Config{Sandbox: config.SandboxConfig{Hisn: config.HisnConfig{NetworkMode: "open"}}}}
@@ -128,8 +134,69 @@ func TestNetworkResetReachesBackend(t *testing.T) {
 		t.Fatal("/network reset must be handled")
 	}
 	cmd()
-	if got := app2.Exec.(*networkSetter).last; got != "open" {
-		t.Errorf("/network reset (config open): backend mode: want %q, got %q", "open", got)
+	if got := app2.Exec.(*networkSetter).last; got != "" {
+		t.Errorf("/network reset (config open): backend mode should receive reset (\"\"), got %q", got)
+	}
+	// The status line after reset reports the config open (no override).
+	if !strings.Contains(app2.networkStatus(), "network: open (config)") {
+		t.Errorf("reset with config open: status = %q", app2.networkStatus())
+	}
+}
+
+// TestNetworkResetWithProjectOpen: /network reset returns to the project's mode
+// when .wakil/sandbox.json sets one (the backend reports it as the project
+// candidate), otherwise to the configured default.
+func TestNetworkResetWithProjectOpen(t *testing.T) {
+	ex := &networkGetterSetter{fakeExecutor: newFakeExecutor(), mode: "open", project: "open"}
+	app := &App{Cfg: config.Config{}, Exec: ex}
+	// Current user override is host (explicit), then reset returns to the project.
+	_, _, cmd := handleNetworkCommand([]string{"/network", "host"}, app)
+	msg := cmd().(SysNoteMsg).Text
+	if !strings.Contains(msg, "this overrides the project's \"open\" setting") {
+		t.Errorf("/network host over project open must print the override line, got %q", msg)
+	}
+	if !strings.Contains(msg, "network: host (repo override)") {
+		t.Errorf("/network host status = %q", msg)
+	}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "reset"}, app)
+	msg = cmd().(SysNoteMsg).Text
+	if app.NetworkOverride != "" {
+		t.Errorf("reset must clear the override, got %q", app.NetworkOverride)
+	}
+	// The backend receives the reset ("") and restores the project value.
+	if got := ex.mode; got != "" {
+		t.Errorf("reset must push \"\" to the backend, got %q", got)
+	}
+	// The status line names the project as the source.
+	if !strings.Contains(msg, "network: open (project)") {
+		t.Errorf("reset with project open: status = %q", msg)
+	}
+	// Without a project setting, reset returns to the default.
+	app2 := &App{Cfg: config.Config{}}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "reset"}, app2)
+	if !strings.Contains(cmd().(SysNoteMsg).Text, "network: host (default)") {
+		t.Errorf("reset without project setting must give the default, got %q", cmd().(SysNoteMsg).Text)
+	}
+}
+
+// TestNetworkHostOverridesProjectOpen: an explicit /network host still wins over
+// a project's "open" and the status line says so with the override line.
+func TestNetworkHostOverridesProjectOpen(t *testing.T) {
+	ex := &networkGetterSetter{fakeExecutor: newFakeExecutor(), mode: "host", project: "open"}
+	app := &App{Cfg: config.Config{}, Exec: ex}
+	_, _, cmd := handleNetworkCommand([]string{"/network", "host"}, app)
+	msg := cmd().(SysNoteMsg).Text
+	if !strings.Contains(msg, "this overrides the project's \"open\" setting") {
+		t.Errorf("host over project open must print the override line, got %q", msg)
+	}
+	if !strings.Contains(msg, "network: host (repo override)") {
+		t.Errorf("host status = %q", msg)
+	}
+	// An explicit /network host with NO project setting prints no override line.
+	app2 := &App{Cfg: config.Config{}}
+	_, _, cmd = handleNetworkCommand([]string{"/network", "host"}, app2)
+	if strings.Contains(cmd().(SysNoteMsg).Text, "this overrides the project's") {
+		t.Errorf("host with no project setting must not print the override line, got %q", cmd().(SysNoteMsg).Text)
 	}
 }
 
@@ -553,11 +620,10 @@ func (u *unsupportedNetworkExec) SetNetworkMode(string)           {}
 func (u *unsupportedNetworkExec) NetworkMode() string             { return "" }
 func (u *unsupportedNetworkExec) LiveNetworkMode() (string, bool) { return "", false }
 
-// TestNetworkStatusIgnoresProjectOpen documents a known mismatch (see the
-// CHANGELOG and docs/sandbox-backends.md): /network's "network:" line comes
-// from the user's own settings only, so a .wakil/sandbox.json "open" that the
-// backend will apply at the next start is NOT in it. The precedence line the
-// bare /network prints says so.
+// TestNetworkStatusIgnoresProjectOpen documents the current behaviour after the
+// fix: /network's "network:" line names the effective source. With no project
+// setting and no user choice it is the built-in default; with a project "open"
+// it names the project.
 func TestNetworkStatusIgnoresProjectOpen(t *testing.T) {
 	app := &App{Cfg: config.Config{}}
 	handled, _, cmd := handleNetworkCommand([]string{"/network"}, app)

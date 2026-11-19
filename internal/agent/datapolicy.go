@@ -184,11 +184,12 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 		app.invalidatePreambleLocked()
 		app.stateMu.Unlock()
 		app.saveRepoState(func(s *RepoState) { s.Network = "" })
-		// Resetting must reach the backend too: without it the backend keeps
-		// the previous override for the next session start while the status
-		// line reports the config/default (same push as "host"|"open").
+		// Resetting must reach the backend too: clear the user override so the
+		// backend restores the per-project value (or the config/default). The
+		// backend keeps the approved project candidate separate, so passing ""
+		// (reset) re-asserts it instead of forcing the built-in default.
 		if ns, ok := app.Exec.(exec.NetworkSetter); ok {
-			ns.SetNetworkMode(app.EffectiveNetwork())
+			ns.SetNetworkMode("")
 		}
 		msg := app.networkStatus()
 		if line := app.networkApplyLine(app.EffectiveNetwork()); line != "" {
@@ -207,6 +208,9 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 			ns.SetNetworkMode(arg)
 		}
 		msg := app.networkStatus()
+		if arg == "host" && app.projectNetworkOpen() {
+			msg += "\nthis overrides the project's \"open\" setting"
+		}
 		if line := app.networkApplyLine(arg); line != "" {
 			msg += "\n" + line
 		}
@@ -244,13 +248,21 @@ func (a *App) networkApplyLine(newMode string) string {
 // the config, else the built-in default.
 func (a *App) networkStatus() string {
 	eff := a.EffectiveNetwork()
+	var project string
+	if ng, ok := a.Exec.(exec.ProjectNetworkGetter); ok && ng != nil {
+		project = ng.ProjectNetworkMode()
+	}
+	// When a project's approved "open" is in effect and the user has not set an
+	// explicit override, the source is the project file, not the built-in default.
 	src := "config default"
 	if a.NetworkOverride != "" {
 		src = "repo override"
+	} else if project == "open" {
+		src = "project"
 	} else if a.Cfg.Sandbox.Hisn.NetworkMode == "open" {
 		src = "config"
 	}
-	if a.NetworkOverride == "" && a.Cfg.Sandbox.Hisn.NetworkMode == "" {
+	if a.NetworkOverride == "" && project == "" && a.Cfg.Sandbox.Hisn.NetworkMode == "" {
 		src = "default"
 	}
 	line := fmt.Sprintf("network: %s (%s)", eff, src)
@@ -258,6 +270,15 @@ func (a *App) networkStatus() string {
 		line += "\n" + networkOpenNote
 	}
 	return line
+}
+
+// projectNetworkOpen reports whether the backend's approved per-project setting
+// is "open". It is false when the executor does not report a project candidate.
+func (a *App) projectNetworkOpen() bool {
+	if ng, ok := a.Exec.(exec.ProjectNetworkGetter); ok && ng != nil {
+		return ng.ProjectNetworkMode() == "open"
+	}
+	return false
 }
 
 // networkPrecedenceNote states, in one line, how the repo's .wakil/sandbox.json

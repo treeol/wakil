@@ -1064,6 +1064,15 @@ func (e *BackendExecutor) SetNetworkMode(mode string) {
 	}
 }
 
+// ProjectNetworkMode reports the backend's approved per-project network
+// candidate ("open" or "") when supported, else "".
+func (e *BackendExecutor) ProjectNetworkMode() string {
+	if ng, ok := e.b.(sandbox.ProjectNetworkGetter); ok {
+		return ng.ProjectNetworkMode()
+	}
+	return ""
+}
+
 // NetworkMode implements NetworkGetter: report the backend's effective network
 // mode ("open" or "host") when supported, else "".
 func (e *BackendExecutor) NetworkMode() string {

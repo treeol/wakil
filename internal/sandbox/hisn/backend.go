@@ -187,6 +187,10 @@ func (l *live) ctl() *ctl.Client {
 type Backend struct {
 	opts Options
 	pm   *sandbox.PathMap
+	// projectNetwork is the per-project candidate ("open" or ""), kept
+	// separate from the user override so SetNetworkMode("") resets to the
+	// project setting instead of the built-in default.
+	projectNetwork string
 	// ver is the hisn version seen by Preflight (zero until then).
 	ver [3]int
 	// planned is the plan-time risk evaluation (hisn profile explain).
@@ -311,6 +315,9 @@ func New(opts Options) (*Backend, error) {
 		return nil, fmt.Errorf("hisn backend: sandbox.hisn.network_mode %q: want \"host\" or \"open\"", opts.Network)
 	}
 	// Effective: "open" if either the user config or the project says so.
+	// Keep the separate candidate so a user's reset (SetNetworkMode("")) drops
+	// only the user choice and the approved narrowing still applies.
+	baseNetwork := surf.Network
 	if surf.Network == "open" || opts.Network == "open" {
 		surf.Network = "open"
 	} else {
@@ -335,10 +342,11 @@ func New(opts Options) (*Backend, error) {
 		}
 	}
 	return &Backend{
-		inst:         newToken()[:8],
-		opts:         opts,
-		readyTimeout: readyCap,
-		stopWait:     stopCap,
+		inst:           newToken()[:8],
+		opts:           opts,
+		projectNetwork: baseNetwork,
+		readyTimeout:   readyCap,
+		stopWait:       stopCap,
 		// hisn mounts cwd at the identical path and gives the sandbox a
 		// private /tmp: host /tmp is NOT the sandbox /tmp.
 		pm: sandbox.NewPathMap(opts.HostCwd, opts.HostCwd, "/tmp"),
@@ -676,8 +684,19 @@ func (b *Backend) SandboxRootfs() string { return b.opts.Surface.Rootfs }
 func (b *Backend) SetNetworkMode(mode string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	if mode != "open" {
-		mode = "" // "host" is the default; policyFor fills it in
+	if mode != "open" && mode != "host" && mode != "" {
+		return
+	}
+	// An explicit value (open or host) is the user's override and wins over
+	// the approved per-project value; "" (reset) clears the user override
+	// and restores the project value (projectNetwork) or the built-in
+	// default. An approved project "open" is never widened back to "host" by
+	// a reset; the user may still explicitly ask for /network host.
+	if mode == "" {
+		mode = b.projectNetwork
+	}
+	if mode == "host" {
+		mode = ""
 	}
 	b.opts.Network = mode
 	b.opts.Surface.Network = mode
@@ -696,6 +715,18 @@ func (b *Backend) LiveNetworkMode() (string, bool) {
 		return "host", true
 	}
 	return "", false
+}
+
+// ProjectNetworkMode reports the approved per-project network candidate
+// ("open" or ""). It lets the tool layer name the project as the source of the
+// effective mode and the decision that may be overridden by /network host.
+func (b *Backend) ProjectNetworkMode() string {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	if b.projectNetwork == "open" {
+		return "open"
+	}
+	return ""
 }
 
 // NetworkMode implements sandbox.NetworkGetter, returning the live session's

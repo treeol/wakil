@@ -155,3 +155,11 @@ type NetworkGetter interface {
 	NetworkMode() string
 	LiveNetworkMode() (mode string, running bool)
 }
+
+// ProjectNetworkGetter is an optional Backend capability: reports the approved
+// per-project network candidate ("open" or ""). The tool layer uses it to name
+// the project as the source and to print the override line for an explicit
+// choice that wins over it.
+type ProjectNetworkGetter interface {
+	ProjectNetworkMode() string
+}

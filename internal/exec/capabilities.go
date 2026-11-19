@@ -106,3 +106,9 @@ type NetworkGetter interface {
 	NetworkMode() string
 	LiveNetworkMode() (mode string, running bool)
 }
+
+// ProjectNetworkGetter is implemented by executors that can report the
+// approved per-project network candidate ("open" or "").
+type ProjectNetworkGetter interface {
+	ProjectNetworkMode() string
+}
