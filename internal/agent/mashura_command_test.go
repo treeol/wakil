@@ -708,3 +708,26 @@ func TestCounselBareNoEvaluationYetShowsWouldShow(t *testing.T) {
 		t.Errorf("expected the repeated-failures rule to be named:\n%s", text)
 	}
 }
+
+// TestMashuraStatusShowsMemberRoute: an "anthropic:" member is no longer a
+// direct Anthropic call; /mashura shows the OpenRouter slug it really uses,
+// and flags a member whose prefix no route exists for.
+func TestMashuraStatusShowsMemberRoute(t *testing.T) {
+	app, _ := mashuraTestApp(t, "", "", "")
+	app.Cfg.Mashura = &config.MashuraConfig{Level: "medium", Members: []string{
+		"anthropic:claude-opus-4-8", "openrouter:google/gemini-2.5-pro", "bogus:x"}}
+	app.Cfg.MashuraPanels = map[string]config.MashuraPanelConfig{
+		"p": {Models: []string{"anthropic:claude-sonnet-4-6"}, Mode: "panel"},
+	}
+	s := mashuraStatus(app)
+	for _, want := range []string{
+		"anthropic:claude-opus-4-8 [via OpenRouter as anthropic/claude-opus-4-8]",
+		"openrouter:google/gemini-2.5-pro [via OpenRouter as google/gemini-2.5-pro]",
+		"bogus:x [NOT USABLE: unknown provider prefix",
+		"anthropic:claude-sonnet-4-6 [via OpenRouter as anthropic/claude-sonnet-4-6]",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("status lacks %q:\n%s", want, s)
+		}
+	}
+}

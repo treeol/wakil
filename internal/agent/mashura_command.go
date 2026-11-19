@@ -173,7 +173,7 @@ func mashuraStatus(app *App) string {
 			if mode == "" {
 				mode = "panel"
 			}
-			line := fmt.Sprintf("  %-15s  [%s]  %s", name, mode, strings.Join(p.Models, ", "))
+			line := fmt.Sprintf("  %-15s  [%s]  %s", name, mode, describeMembers(p.Models))
 			if _, keyErr := app.mashuraPanelKeys(p); keyErr != nil {
 				line += fmt.Sprintf("\n                    ⚠ NOT USABLE: %v", keyErr)
 			}
@@ -195,6 +195,29 @@ func mashuraStatus(app *App) string {
 	}
 
 	return sb.String()
+}
+
+// memberRoute says how a panel member is actually called. Every member goes
+// through OpenRouter (the direct Anthropic path is gone): an "anthropic:<id>"
+// member is mapped mechanically to the slug "anthropic/<id>", an
+// "openrouter:<id>" member or a bare id is sent as is. A member the mapping
+// rejects (unknown prefix, empty id) fails at call time with "unknown
+// provider", so it is reported as unusable with that reason.
+func memberRoute(member string) string {
+	slug, ok := config.OpenRouterSlug(member)
+	if !ok {
+		return "NOT USABLE: unknown provider prefix (want anthropic: or openrouter:)"
+	}
+	return "via OpenRouter as " + slug
+}
+
+// describeMembers renders panel members with their real route.
+func describeMembers(members []string) string {
+	parts := make([]string, len(members))
+	for i, m := range members {
+		parts[i] = m + " [" + memberRoute(m) + "]"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // isProxyOpenRouterMainRoute reports whether the session's active main route
@@ -407,7 +430,7 @@ func mashuraLevelStatus(app *App) string {
 	level, members, source := app.effectiveMashura("review")
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("level:          %s (from %s)\n", level, source))
-	sb.WriteString(fmt.Sprintf("members (%d):   %s\n", len(members), strings.Join(members, ", ")))
+	sb.WriteString(fmt.Sprintf("members (%d):   %s\n", len(members), describeMembers(members)))
 	if app.MashuraLevelOverride != "" {
 		sb.WriteString(fmt.Sprintf("per-repo level: %s\n", app.MashuraLevelOverride))
 	}
