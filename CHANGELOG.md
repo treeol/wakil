@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.7] - 2026-11-19
+
 ### Security
 
 - **hisn 0.6.1 is now required (security fix for `network = "open"`).** In hisn 0.6.0 the open network mode did not fully enforce the network policy for a socket handed to a program before a connect that then failed; 0.6.1 enforces it. A narrower timing limitation remains and is documented by hisn — use `open` only for code you trust until hisn 0.6.2. Wakil, `wakil doctor`, the startup banner and `install.sh` now require 0.6.1 (the sandbox image pins the 0.6.1 release, checksums from its `SHA256SUMS`); an older hisn is refused with a message naming 0.6.1 and the reason, and with no explicit `sandbox.backend` the default falls back to Docker. `network = "host"` (still the default) and `none` behave as before.
