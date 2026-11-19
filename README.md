@@ -11,7 +11,7 @@ Wakil is a terminal coding assistant. It reads and edits your code, runs your co
 [![Release](https://img.shields.io/github/v/release/treeol/wakil)](https://github.com/treeol/wakil/releases)
 [![License](https://img.shields.io/github/license/treeol/wakil)](LICENSE)
 [![Go version](https://img.shields.io/github/go-mod/go-version/treeol/wakil)](go.mod)
-[![Signed releases](https://img.shields.io/github/actions/workflow/status/treeol/wakil/release.yml?label=signed%20releases)](https://github.com/treeol/wakil/actions/workflows/release.yml)
+[![Release](https://img.shields.io/github/actions/workflow/status/treeol/wakil/release.yml?label=release%20workflow)](https://github.com/treeol/wakil/actions/workflows/release.yml)
 
 ## Install
 
