@@ -20,6 +20,15 @@ it, the most recent earlier CSV whose model matches, plus the total cost
 of both runs. Exit status is 0 when the harness itself worked, whatever
 the task results were; non-zero only on harness errors.
 
+Before each run the script prints one line with the task index, task
+name, run number, and log path. After each run it prints one line with
+the result (`pass` / `fail` / `timeout` / `error`), elapsed seconds,
+tokens in/out, cost, and — for non-pass results — the exit reason from
+`--result-json` when available. When stdout is a terminal, it also
+prints one short heartbeat line every 30 seconds with the elapsed time
+while a run is in progress, so a long task does not look hung; nothing
+extra is printed when output is piped or redirected.
+
 ## How a run works
 
 For each task and run number:
@@ -53,9 +62,12 @@ used here.
 
 Each run's CSV row carries the *resolved* model from the run's
 `--result-json` when the binary reports one, so the CSV names the model
-that actually ran, not the one requested. Values a binary does not
-report are `n/a`: the harness also works with a binary that lacks
-`--result-json` (pass/fail and seconds only).
+that actually ran, not the one requested. The `exit_reason` column
+carries the reason string from `--result-json` (`pass`, `declined`,
+`backend_failure`, `gaps`, `error`) when the binary reports one, or
+`n/a` otherwise. Values a binary does not report are `n/a`: the harness
+also works with a binary that lacks `--result-json` (pass/fail and
+seconds only).
 
 ## Self-test
 

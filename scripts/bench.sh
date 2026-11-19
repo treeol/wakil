@@ -17,6 +17,14 @@ set -eu
 
 prog="${0##*/}"
 
+# Detect whether stdout is a terminal (heartbeat progress lines are
+# terminal-only; nothing extra when output is piped or redirected).
+if [ -t 1 ]; then
+    is_tty=1
+else
+    is_tty=0
+fi
+
 usage() {
     cat <<USAGE
 usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
@@ -84,7 +92,7 @@ if ! command -v jq >/dev/null 2>&1; then
     echo "$prog: warning: jq not found — metric columns (tokens, cost, counts) will be n/a" >&2
 fi
 
-csv_header='date,wakil_version,model,task,run,result,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds'
+csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds'
 csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
 printf '%s\n' "$csv_header" > "$csv_file"
 
@@ -118,12 +126,32 @@ else
 fi
 [ -n "$tasks" ] || { echo "$prog: no tasks found in $tasks_dir" >&2; exit 1; }
 
+# Total task count for progress lines ([i/N]).
+set -- $tasks
+total_tasks=$#
+task_idx=0
+
 # na <value>: the CSV cell for a value a binary did not report.
 na() {
     case "$1" in
         '') echo 'n/a' ;;
         null) echo 'n/a' ;;
         *) echo "$1" ;;
+    esac
+}
+
+# fmt_k <n>: "18k" for 18000, "500" for 500. Non-numeric passes through.
+fmt_k() {
+    case "$1" in
+        ''|n/a) echo 'n/a' ;;
+        *[!0-9]*) echo "$1" ;;
+        *)
+            if [ "$1" -ge 1000 ]; then
+                printf '%dk' "$(( $1 / 1000 ))"
+            else
+                printf '%d' "$1"
+            fi
+            ;;
     esac
 }
 
@@ -138,21 +166,13 @@ json_field() {
     fi
 }
 
-# csv_row <task> <run> <wakil-rc> <check-rc> <seconds> <result-json>
-# Appends one row to the CSV. <check-rc> is only read when <wakil-rc> is 0.
+# csv_row <task> <run> <result> <exit_reason> <seconds> <result-json>
+# Appends one row to the CSV.
 csv_row() {
-    task=$1; run=$2; wak_rc=$3; chk_rc=$4; secs=$5; rj=$6
-    if [ "$wak_rc" -eq 124 ]; then
-        result="timeout"
-    elif [ "$wak_rc" -ne 0 ]; then
-        result="error"
-    elif [ "$chk_rc" -eq 0 ]; then
-        result="pass"
-    else
-        result="fail"
-    fi
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$(date +%Y-%m-%d)" "$wakil_version" "$resolved_model" "$task" "$run" "$result" "$secs" \
+    task=$1; run=$2; result=$3; exit_reason=$4; secs=$5; rj=$6
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+        "$(date +%Y-%m-%d)" "$wakil_version" "$resolved_model" "$task" "$run" "$result" \
+        "$(na "$exit_reason")" "$secs" \
         "$(na "$(json_field "$rj" "tokens_in")")" "$(na "$(json_field "$rj" "tokens_out")")" \
         "$(na "$(json_field "$rj" "cost_usd")")" "$(na "$(json_field "$rj" "tool_calls")")" \
         "$(na "$(json_field "$rj" "collapses")")" "$(na "$(json_field "$rj" "mashura_rounds")")" >> "$csv_file"
@@ -183,15 +203,37 @@ run_one() {
     result_json="$workdir/.bench-result.json"
     log_file="$results_dir/${task}-${run}-$(date +%H%M%S).log"
 
+    # Progress: one line before each run so a long session is not silent.
+    printf '[%d/%d] %s (run %s/%d) … running, log: %s\n' \
+        "$task_idx" "$total_tasks" "$task" "$run" "$runs" "$log_file"
+
     start_epoch=$(date +%s)
     set +e
     if [ -n "$model_name" ]; then
         WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1
+            --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
     else
         timeout -k 10 "$timeout_sec" "$bin" run --auto $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1
+            --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
     fi
+    run_pid=$!
+
+    # Heartbeat: while the run is in progress, print one short line with the
+    # elapsed time every 30s (only when stdout is a terminal), so a long
+    # task does not look hung. Nothing extra when output is piped or
+    # redirected. Skipped when the timeout is too short for a heartbeat.
+    if [ "$is_tty" -eq 1 ] && [ "$timeout_sec" -gt 30 ]; then
+        while :; do
+            sleep 30
+            kill -0 "$run_pid" 2>/dev/null || break
+            now=$(date +%s)
+            elapsed=$((now - start_epoch))
+            printf '[%d/%d] %s (run %s/%d) … %ds elapsed\n' \
+                "$task_idx" "$total_tasks" "$task" "$run" "$runs" "$elapsed"
+        done
+    fi
+
+    wait "$run_pid"
     wak_rc=$?
     set -e
     end_epoch=$(date +%s)
@@ -216,7 +258,37 @@ run_one() {
         set -e
     fi
 
-    csv_row "$task" "$run" "$wak_rc" "$chk_rc" "$secs" "$result_json"
+    # Result and exit_reason for the CSV row and the summary line.
+    if [ "$wak_rc" -eq 124 ]; then
+        result="timeout"
+    elif [ "$wak_rc" -ne 0 ]; then
+        result="error"
+    elif [ "$chk_rc" -eq 0 ]; then
+        result="pass"
+    else
+        result="fail"
+    fi
+    exit_reason=$(json_field "$result_json" "exit_reason")
+
+    csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+
+    # Progress: one line after each run with the result, elapsed time,
+    # tokens, cost, and exit reason (for non-pass results, from
+    # --result-json when available).
+    _tok_in=$(json_field "$result_json" "tokens_in")
+    _tok_out=$(json_field "$result_json" "tokens_out")
+    _cost=$(json_field "$result_json" "cost_usd")
+    _summary="${result} ${secs}s"
+    if [ -n "$_tok_in" ] && [ -n "$_tok_out" ]; then
+        _summary="$_summary · $(fmt_k "$_tok_in") in / $(fmt_k "$_tok_out") out"
+    fi
+    if [ -n "$_cost" ]; then
+        _summary="$_summary · \$$_cost"
+    fi
+    if [ "$result" != "pass" ] && [ -n "$exit_reason" ]; then
+        _summary="$_summary · exit $exit_reason"
+    fi
+    printf '%s\n' "$_summary"
 
     # The agent under test must never see the check, its hidden files, or
     # the reference solution: nothing but repo/ was copied in. A stub that
@@ -243,17 +315,18 @@ find_prev_csv() {
 print_table() {
     f=$1
     printf '  %-12s %-8s %-8s %s\n' "task" "result" "seconds" "tokens in/out  tool_calls collapses mashura"
-    awk -F, 'NR>1 { printf "  %-12s %-8s %-8s %s/%s  %s %s %s\n", $4, $6, $7, $8, $9, $11, $12, $13 }' "$f"
+    awk -F, 'NR>1 { printf "  %-12s %-8s %-8s %s/%s  %s %s %s\n", $4, $6, $8, $9, $10, $12, $13, $14 }' "$f"
 }
 
 # sum_cost <csv>: total cost_usd (n/a and empty cells contribute 0).
 sum_cost() {
-    awk -F, 'NR>1 && $10 != "n/a" && $10 != "" { s += $10 } END { printf "%.6f", s }' "$1"
+    awk -F, 'NR>1 && $11 != "n/a" && $11 != "" { s += $11 } END { printf "%.6f", s }' "$1"
 }
 
 # run_all <wakil-bin>: run every task `runs` times.
 run_all() {
     for task in $tasks; do
+        task_idx=$((task_idx + 1))
         i=1
         while [ "$i" -le "$runs" ]; do
             run_one "$task" "$i" "$1"
@@ -318,11 +391,15 @@ EOF
     chmod +x "$stub_slow"
 
     echo "== self-test: stub that changes nothing (expect fail on every task) =="
+    task_idx=0
     for task in $tasks; do
+        task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="" run_one "$task" "self-noop" "$stub_noop"
     done
     echo "== self-test: stub that applies the solution (expect pass on every task) =="
+    task_idx=0
     for task in $tasks; do
+        task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="$tasks_dir/$task" run_one "$task" "self-solve" "$stub_solve"
     done
     echo "== self-test: stub that sleeps past the timeout (expect timeout) =="
@@ -330,6 +407,7 @@ EOF
     # the whole self-test stays fast: the slow stub is killed at 2s.
     _saved_timeout="$timeout_sec"
     timeout_sec=2
+    task_idx=1
     BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-slow" "$stub_slow"
     timeout_sec="$_saved_timeout"
 
