@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`wakil run --result-json <file>` writes one JSON object at exit** with `wakil_version`, `model`, `exit_reason`, `seconds`, `tokens_in`, `tokens_out`, `cost_usd`, `tool_calls`, `collapses` and `mashura_rounds` (unknown values are null). For a bench harness that needs per-run numbers without parsing the JSONL transcript.
+
 ## [0.8.7] - 2026-11-19
 
 ### Security
