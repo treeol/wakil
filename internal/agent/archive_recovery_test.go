@@ -20,6 +20,15 @@ import (
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
+// isolateToolCache points the toolcache at a private directory: WAKIL_SESSIONS_DIR
+// (set by the package's test isolation) wins over XDG_DATA_HOME, so it must be
+// cleared, or the test would write into a directory shared with other runs.
+func isolateToolCache(t *testing.T) {
+	t.Helper()
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+}
+
 // archiveApp is an App whose chat is chatID, on an executor that rejects every
 // path the way a sandboxed ConfinePath rejects host-side files, and whose
 // shell cannot see the toolcache (RunShell would fail the test: the host-side
@@ -44,7 +53,7 @@ func archiveSearchCall(args map[string]string) proxy.ToolCall {
 
 // A case-insensitive search (a bool argument, so built apart from the string map).
 func TestSearchFilesOwnArchiveCaseInsensitive(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	app, _ := archiveApp(t, "chat-ci")
 	archive := wtools.SpillToCache("chat-ci", "turn-1", "Mixed CASE line\n")
 	args := fmt.Sprintf(`{"pattern":"mixed case","path":%q,"case_insensitive":true}`, archive)
@@ -60,7 +69,7 @@ func TestSearchFilesOwnArchiveCaseInsensitive(t *testing.T) {
 }
 
 func TestSearchFilesWorksOnOwnArchive(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	app, exec := archiveApp(t, "chat-own")
 	archive := wtools.SpillToCache("chat-own", "turn-3", "alpha\nthe NEEDLE is here\nomega\n")
 	other := wtools.SpillToCache("chat-own", "turn-4", "nothing to see\n")
@@ -94,7 +103,7 @@ func TestSearchFilesWorksOnOwnArchive(t *testing.T) {
 }
 
 func TestSearchFilesRefusesOtherSessionsArchive(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	app, exec := archiveApp(t, "chat-own")
 	foreign := wtools.SpillToCache("chat-foreign", "turn-1", "SECRET-OF-ANOTHER-SESSION\n")
 	if foreign == "" {
@@ -121,7 +130,7 @@ func TestSearchFilesRefusesOtherSessionsArchive(t *testing.T) {
 // A symlink inside the own directory that points at another session's file is
 // not followed.
 func TestSearchFilesDoesNotFollowSymlinkOutOfOwnArchive(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	app, _ := archiveApp(t, "chat-own")
 	own := wtools.SpillToCache("chat-own", "turn-1", "mine\n")
 	foreign := wtools.SpillToCache("chat-foreign", "turn-1", "SECRET-OF-ANOTHER-SESSION\n")
@@ -142,7 +151,7 @@ func TestSearchFilesDoesNotFollowSymlinkOutOfOwnArchive(t *testing.T) {
 // A chat ID that is not one directory name never matches (no chat-id based
 // traversal), and an empty chat ID has no own archive.
 func TestOwnToolCachePathRejectsBadChatIDs(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	root := wtools.ToolCacheRoot()
 	for _, id := range []string{"", ".", "..", "a/b", `a\b`, "../x"} {
 		if wtools.OwnToolCachePath(id, filepath.Join(root, id, "f.txt")) || wtools.OwnToolCachePath(id, root) {
@@ -160,7 +169,7 @@ func TestOwnToolCachePathRejectsBadChatIDs(t *testing.T) {
 // The breaker: refusals on the own archive never count; the same two refusals
 // on any other unreachable path still trip it.
 func TestConfinementBreakerIgnoresOwnArchiveRefusals(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	archive := wtools.SpillToCache("chat-brk", "turn-9", "archived\n")
 	if archive == "" {
 		t.Fatal("setup: spill failed")
@@ -233,7 +242,7 @@ func TestConfinementBreakerIgnoresOwnArchiveRefusals(t *testing.T) {
 // are covered above and in toolcache_intercept_test.go. This pins that the
 // prompt does not promise a tool the code does not serve.
 func TestPromptArchiveRecoveryToolsAreServed(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	app, _ := archiveApp(t, "chat-p")
 	archive := wtools.SpillToCache("chat-p", "turn-1", "line one\nline two\n")
 	for name, args := range map[string]map[string]string{

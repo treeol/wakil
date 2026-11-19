@@ -9,6 +9,7 @@ import (
 )
 
 func TestSearchHostCacheOwnDirOnly(t *testing.T) {
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	a := SpillToCache("c1", "turn-1", "one\ntwo NEEDLE\nthree\n")
 	b := SpillToCache("c1", "turn-2", "NEEDLE again\n")
@@ -36,6 +37,7 @@ func TestSearchHostCacheOwnDirOnly(t *testing.T) {
 }
 
 func TestSearchHostCacheBinaryCapAndPattern(t *testing.T) {
+	t.Setenv("WAKIL_SESSIONS_DIR", "")
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	dir := filepath.Join(ToolCacheRoot(), "c1")
 	if err := os.MkdirAll(dir, 0o700); err != nil {
