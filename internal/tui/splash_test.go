@@ -7,11 +7,11 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// The logo has ONE size: 40 columns x 20 rows, whatever the pane offers.
+// The logo has ONE size: 44 columns x 20 rows, whatever the pane offers.
 func TestPickSplashLogo(t *testing.T) {
-	const wantCols, wantRows = 40, 20
-	if got := logoSprite.brailleRows(splashCols); splashCols != wantCols || got != wantRows {
-		t.Fatalf("logo size = %dx%d, want %dx%d", splashCols, got, wantCols, wantRows)
+	const wantCols, wantRows = 44, 20
+	if splashCols != wantCols || splashRows != wantRows {
+		t.Fatalf("logo size = %dx%d, want %dx%d", splashCols, splashRows, wantCols, wantRows)
 	}
 	cases := []struct {
 		name      string
@@ -20,8 +20,8 @@ func TestPickSplashLogo(t *testing.T) {
 		want      bool // logo drawn (else fallback)
 	}{
 		{"large pane", 200, 80, true, true},
-		{"exact fit", 40, 20, true, true},
-		{"too narrow by one", 39, 50, true, false},
+		{"exact fit", 44, 20, true, true},
+		{"too narrow by one", 43, 50, true, false},
 		{"too short by one", 120, 19, true, false},
 		{"no truecolor", 120, 50, false, false},
 	}

@@ -247,10 +247,15 @@ type tuiModel struct {
 	facade    sessionclient.Facade
 	manager   sessionclient.ConversationManager
 	principal core.Principal
-	// bootStatus is the one-line "what is still starting" text shown in the
-	// status zone while the real conversation is being built. Only the
-	// start-up model (see loading.go, facade == nil) sets it.
+	// bootStatus is the one-line "what is still starting" text overlaid on the
+	// last row of the conversation pane while the real conversation is being
+	// built. Only the start-up model (see loading.go, facade == nil) sets it.
 	bootStatus string
+	// splashGone is set by the first keystroke in the input (or at once for a
+	// resumed conversation) and ends the splash. Nothing else dismisses it: not
+	// the swap from the start-up model, not the session becoming ready, not a
+	// start-up note, a status change or a resize.
+	splashGone bool
 	// sessionID is the CURRENT facade's session ID, cached at attach and
 	// rotation time. It guards the event switch against stale pump deliveries
 	// from a prior conversation (never re-fetched per event — a Snapshot call
@@ -799,6 +804,7 @@ func NewTUIModelWithFacade(f sessionclient.Facade, mgr sessionclient.Conversatio
 		m.clipboardMode = config.ClipboardModeAuto
 	}
 	if len(snap.Conv) > 0 {
+		m.splashGone = true
 		items := convItemsFrom(snap.Conv)
 		resumeNote := sprint("· resumed session %s — %d messages", formatShortID(snap.ChatID), len(snap.Conv))
 		if snap.Workflow != nil {
@@ -945,6 +951,14 @@ func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Any keystroke dismisses an active selection and its highlight.
 		before := m.effectiveStatusRows()
+		if !m.splashGone {
+			// The first keystroke removes the splash. Items that arrived while
+			// it was up (a start-up note) become visible, which can add the
+			// status row; the reflow below keeps the layout in step.
+			m.splashGone = true
+			m = m.reflowIfStatusHeightChanged(before)
+			before = m.effectiveStatusRows()
+		}
 		m.flash = ""
 		m.clearPendingEscape()
 		if m.sel.active || m.sel.pressed {
@@ -2733,6 +2747,7 @@ type convPaneKey struct {
 	ver, yOff, w, h, nItems, tabBufLen int
 	tabBuf                             *strings.Builder
 	splash                             bool
+	boot                               string // start-up status drawn on the splash's last row
 }
 
 // convPaneCache is the heap-shared pane render cache (see view()).

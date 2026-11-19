@@ -33,11 +33,12 @@ func renderBootStatus(text string) string {
 
 // loadingModel is the program's first model. There is no separate loading
 // screen: it renders the normal view (splash logo and input box) from the
-// first frame, with a one-line status in the status zone naming what is still
-// starting. It carries no conversation, so nothing is sent from it: Enter is
-// ignored, typed text is kept and moved into the real input at the swap, and
-// ctrl+c quits. It never runs tuiModel.Update, so the real model alone
-// reports "prompt ready".
+// first frame, with a one-line status overlaid on the last row of the
+// conversation pane naming what is still starting (taking zero layout rows so
+// the swap to the real model never shifts the logo or input box). It carries
+// no conversation, so nothing is sent from it: Enter is ignored, typed text is
+// kept and moved into the real input at the swap, and ctrl+c quits. It never
+// runs tuiModel.Update, so the real model alone reports "prompt ready".
 type loadingModel struct {
 	view tuiModel
 
@@ -83,6 +84,7 @@ func (m *loadingModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter", "alt+enter", "shift+enter":
 			return m, nil
 		}
+		m.view.splashGone = true
 		var cmd tea.Cmd
 		m.view.ta, cmd = m.view.ta.Update(msg)
 		return m, cmd
@@ -104,11 +106,12 @@ func (m *loadingModel) swap(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if newModel == nil {
 		return m, tea.Quit
 	}
-	if typed := m.view.ta.Value(); typed != "" {
-		if tm, ok := newModel.(tuiModel); ok {
+	if tm, ok := newModel.(tuiModel); ok {
+		if typed := m.view.ta.Value(); typed != "" {
 			tm.ta.SetValue(typed)
-			newModel = tm
 		}
+		tm.splashGone = tm.splashGone || m.view.splashGone
+		newModel = tm
 	}
 	if m.view.ready {
 		nm, _ := newModel.Update(tea.WindowSizeMsg{Width: m.view.width, Height: m.view.height})

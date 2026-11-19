@@ -11,6 +11,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/exec"
 	"github.com/treeol/wakil/internal/sandbox/hisn"
 	"github.com/treeol/wakil/internal/timeline"
@@ -110,7 +111,7 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	hisn.SetDiagnostics(os.Stderr)
+	hisn.SetDiagnostics(diagWriter{})
 	// Reconcile is deferred: Open skips it, and the returned closure runs it
 	// after the first prompt (the ~608ms `hisn ls --prune` round trip is off
 	// the start path). Preflight, plan and the risk check still run here.
@@ -130,14 +131,14 @@ func newHisnExecutor(cfg config.Config) (exec.Executor, error) {
 		AllowedSignersPath: allowedSignersPath,
 	})
 	// Stash the deferred reconcile on the executor so the caller can run it
-	// after the first prompt. Best-effort; errors go to stderr (the wiring
-	// layer's errWriter is the hisn package's, not reachable here).
+	// after the first prompt. Best-effort; errors go through diag so a
+	// background reconcile cannot write raw os.Stderr into the alt-screen.
 	be.SetDeferredReconcile(func(rctx context.Context) {
 		end := timeline.Begin("hisn reconcile (ls --prune, orphans)")
 		err := b.Reconcile(rctx)
 		end()
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "hisn: orphan reconcile: %v\n", err)
+			diag.Printf("hisn: orphan reconcile: %v\n", err)
 		}
 	})
 	return be, nil

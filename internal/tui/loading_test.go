@@ -47,10 +47,11 @@ func TestStartupViewIsTheNormalView(t *testing.T) {
 	if n := strings.Count(m.View(), "\n") + 1; n != 40 {
 		t.Errorf("start-up view is %d rows, want 40", n)
 	}
-	// The status line is one row: the same layout the real model has once a
-	// turn exists, so the swap does not move the input box by more than it.
-	if m.view.effectiveStatusRows() != 1 {
-		t.Errorf("status rows = %d, want 1", m.view.effectiveStatusRows())
+	// The status is drawn inside the conversation pane, so the start-up view
+	// has the layout of the real model on a fresh start (no status row) and the
+	// swap does not move the input box.
+	if m.view.effectiveStatusRows() != 0 {
+		t.Errorf("status rows = %d, want 0", m.view.effectiveStatusRows())
 	}
 }
 

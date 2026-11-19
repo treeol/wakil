@@ -240,13 +240,14 @@ func (m tuiModel) view() string {
 	if m.items != nil {
 		nItems = len(*m.items)
 	}
-	splash := m.subCur < 0 && m.items != nil && len(*m.items) == 0 && !m.hadTurn &&
-		m.state == stateIdle &&
-		(m.reasoning == nil || m.reasoning.Len() == 0) &&
-		(m.streaming == nil || m.streaming.Len() == 0)
+	splash := m.splashShowing()
+	boot := ""
+	if m.booting() {
+		boot = m.bootStatus
+	}
 	key := convPaneKey{
 		ver: m.vpContentVer, yOff: m.vp.YOffset, w: vpW, h: vpH,
-		tabBuf: tabBuf, tabBufLen: tabBufLen, nItems: nItems, splash: splash,
+		tabBuf: tabBuf, tabBufLen: tabBufLen, nItems: nItems, splash: splash, boot: boot,
 	}
 	var conv string
 	if m.convCacheBox != nil && m.convCacheBox.key == key {
@@ -256,9 +257,9 @@ func (m tuiModel) view() string {
 		if m.subCur >= 0 && m.subCur < len(m.subTabs) {
 			convContent = m.renderSubTabContent(m.subTabs[m.subCur], vpW, vpH)
 		} else if splash {
-			convContent = renderSplash(vpW, vpH)
+			convContent = overlayBootStatus(renderSplash(vpW, vpH), m.bootStatus, vpW)
 		} else {
-			convContent = bottomAlignViewport(m.vp.View(), vpH)
+			convContent = overlayBootStatus(bottomAlignViewport(m.vp.View(), vpH), m.bootStatus, vpW)
 		}
 		conv = styleConvBorder.
 			Width(vpW).
@@ -399,16 +400,43 @@ func (m tuiModel) booting() bool {
 // hidden on a fresh start before the user sends their first message (clean
 // splash look); once a turn has been sent or is streaming, it stays visible.
 func (m tuiModel) statusVisible() bool {
-	if m.booting() {
-		return true
-	}
 	if m.compact() {
 		// Compact mode drops the status line, except for the two things that
 		// live only there and would otherwise break: reverse search (ctrl+r)
 		// and the rotation indicator (/new, /resume, /handoff block input).
 		return m.searchActive || m.rotating
 	}
+	if m.splashShowing() {
+		// Items that arrive while the splash is up stay hidden behind it, so
+		// they cannot add a row and move the input box.
+		return m.rotating
+	}
 	return m.hadTurn || m.state == stateStreaming || m.rotating || (m.items != nil && len(*m.items) > 0)
+}
+
+// splashShowing reports whether the conversation pane shows the splash: until
+// the first keystroke, with no turn under way. The conversation items are not
+// consulted, so a note that lands during start-up does not remove the logo.
+func (m tuiModel) splashShowing() bool {
+	return !m.splashGone && m.subCur < 0 && !m.hadTurn && m.state == stateIdle &&
+		(m.reasoning == nil || m.reasoning.Len() == 0) &&
+		(m.streaming == nil || m.streaming.Len() == 0)
+}
+
+// overlayBootStatus draws the start-up status on the last row of the splash
+// pane when that row is blank, so the status takes no layout row of its own
+// and the splash and the input box stay where the real model puts them.
+func overlayBootStatus(pane, status string, w int) string {
+	if status == "" {
+		return pane
+	}
+	lines := strings.Split(pane, "\n")
+	last := len(lines) - 1
+	if last < 0 || strings.TrimSpace(ansi.Strip(lines[last])) != "" {
+		return pane
+	}
+	lines[last] = ansi.Truncate(renderBootStatus(status), w, "")
+	return strings.Join(lines, "\n")
 }
 
 // Compact mode: on small or heavily zoomed-in windows (zooming shrinks the
@@ -519,9 +547,6 @@ func (m tuiModel) statusLines() []string {
 	w := m.width - borderW
 	if w < 1 {
 		w = 1
-	}
-	if m.booting() {
-		return []string{ansi.Truncate(renderBootStatus(m.bootStatus), w, "")}
 	}
 	if sp := m.searchPrompt(); sp != "" {
 		l := renderStatusDot(m.state, m.dotPhase, m.rotating) + " " + sp
@@ -1319,7 +1344,7 @@ var splashArt = []string{
 
 // renderSplash produces the centered start-up splash for the conversation pane
 // when no conversation has started yet: the embedded logo (see splash.go) at
-// its fixed 40 x 20 size on truecolor terminals with room for it; narrower
+// its fixed 44 x 20 size on truecolor terminals with room for it; narrower
 // than that, the name "wakīl" as plain text; otherwise (no truecolor, or too
 // short) the figlet "wakil" wordmark. There is no tagline.
 func renderSplash(vpW, vpH int) string {

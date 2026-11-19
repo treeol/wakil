@@ -7,7 +7,6 @@ import (
 	"image"
 	"image/draw"
 	"image/png"
-	"math"
 	"strings"
 	"sync"
 
@@ -28,10 +27,15 @@ var (
 	logoSprite = &splashSprite{data: splashLogoPNG} // start-up splash
 )
 
-// The logo has one fixed size: splashCols cells wide, splashRows() tall (40 x
-// 20 for the embedded 384x392 image). It does not scale with the terminal; a
+// The logo has one fixed size: splashCols cells wide, splashRows cells tall
+// (44 x 20 for the embedded 384x392 image — wider than 2:1 to compensate for
+// typical monospace cell aspect ratios of ~2.1–2.2:1 so the circle reads round
+// instead of vertically stretched). It does not scale with the terminal; a
 // pane too small for it gets the wordmark instead (see renderSplash).
-const splashCols = 40
+const (
+	splashCols = 44
+	splashRows = 20
+)
 
 // splashSprite is one embedded image plus a cache of its renders.
 type splashSprite struct {
@@ -57,18 +61,6 @@ func (s *splashSprite) image() *image.RGBA {
 	return s.img
 }
 
-// brailleRows is the height in cells of the sprite drawn cols cells wide as
-// braille (each cell is 2x4 dots, so a cell is about as tall as two wide).
-// 0 if undecodable.
-func (s *splashSprite) brailleRows(cols int) int {
-	img := s.image()
-	if img == nil || cols < 1 {
-		return 0
-	}
-	b := img.Bounds()
-	return max(1, int(math.Round(float64(cols*b.Dy())/float64(b.Dx())/2)))
-}
-
 // pickSplashLogo returns the logo at its fixed size when it fits a vpW x vpH
 // pane, or "" when the terminal lacks truecolor or the pane is narrower or
 // shorter than the logo — the caller then falls back to the wordmark.
@@ -76,11 +68,10 @@ func pickSplashLogo(vpW, vpH int, truecolor bool) string {
 	if !truecolor || logoSprite.image() == nil {
 		return ""
 	}
-	rows := logoSprite.brailleRows(splashCols)
-	if vpW < splashCols || vpH < rows {
+	if vpW < splashCols || vpH < splashRows {
 		return ""
 	}
-	return logoSprite.renderBraille(splashCols, rows)
+	return logoSprite.renderBraille(splashCols, splashRows)
 }
 
 // renderBraille returns the sprite as braille art cols x cellRows cells, each

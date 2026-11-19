@@ -47,14 +47,16 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 	case deferredStartupDoneMsg:
 		// The post-prompt provider probes / hisn reconcile finished. Force a
 		// repaint so the status line shows the resolved model/context info, and
-		// render any startup note the deferred work composed (it could not go
+		// record any startup note the deferred work composed (it could not go
 		// through ConsumeStartupNote — the TUI consumed that at Init, before
-		// this work ran).
+		// this work ran). While the splash is still up, the note stays queued
+		// behind it until the user's first keystroke.
 		m.deferredPending = false
 		if lm.note != "" {
 			m.addItem(iSys, dim2(lm.note))
 		}
 		m = m.reflow()
+		return m, cmds, true
 
 	case startupNoteMsg:
 		// While the splash is showing (no conversation yet), suppress

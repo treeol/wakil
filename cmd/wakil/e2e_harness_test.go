@@ -83,17 +83,29 @@ type e2eOpts struct {
 	Reuse *e2e
 	// ResumeID is passed to runTUI as the resume id argument.
 	ResumeID string
+	// tee, when set, receives every renderer flush as its own Write.
+	tee io.Writer
+	// bootDelay makes the async bootstrap start this much later, so the
+	// start-up view is on screen for a while. earlySize sends WindowSizeMsg
+	// immediately instead of waiting 100ms.
+	bootDelay   time.Duration
+	earlySize   bool
+	onProgramFn func(*tea.Program)
 }
 
 // e2eBuffer is a mutex-protected byte buffer used as a writer and reader.
 type e2eBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
+	tee io.Writer // optional: every Write is also passed here (one renderer flush each)
 }
 
 func (b *e2eBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if b.tee != nil {
+		_, _ = b.tee.Write(p)
+	}
 	return b.buf.Write(p)
 }
 
@@ -369,7 +381,7 @@ func startE2E(t *testing.T, opts e2eOpts) *e2e {
 		cfgPath:  cfgPath,
 		server:   srv,
 		exited:   make(chan struct{}),
-		out:      &e2eBuffer{},
+		out:      &e2eBuffer{tee: opts.tee},
 		stdoutLa: &e2eBuffer{},
 		stderrLa: &e2eBuffer{},
 	}
@@ -398,8 +410,16 @@ func startE2E(t *testing.T, opts e2eOpts) *e2e {
 			tea.WithInput(inR),
 			tea.WithOutput(e.out),
 		},
+		beforeBootstrap: func() { time.Sleep(opts.bootDelay) },
 		onProgram: func(prog *tea.Program) {
 			e.prog = prog
+			if opts.onProgramFn != nil {
+				opts.onProgramFn(prog)
+			}
+			if opts.earlySize {
+				go prog.Send(tea.WindowSizeMsg{Width: opts.width, Height: opts.height})
+				return
+			}
 			// A non-TTY output gets no WindowSizeMsg from Bubble Tea,
 			// so send one explicitly. The loading model stores it and
 			// forwards it to the real model at swap

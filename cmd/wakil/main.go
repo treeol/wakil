@@ -256,6 +256,9 @@ func main() {
 type tuiHooks struct {
 	programOptions []tea.ProgramOption
 	onProgram      func(*tea.Program)
+	// beforeBootstrap, when set, runs at the start of the async bootstrap.
+	// Tests use it to make start-up slow; production leaves it nil.
+	beforeBootstrap func()
 }
 
 // runTUI runs the interactive TUI for a loaded, sandbox-resolved config and
@@ -274,11 +277,19 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		fmt.Fprintln(os.Stderr, "startup error: cannot create stderr redirect:", err)
 		return 1
 	}
+	var sessionLogActive bool
 	origStderr := os.Stderr
 	os.Stderr = stderrFile
+	diag.Redirect(stderrFile)
+	var restoreOnce sync.Once
 	restoreStderr := func() {
-		os.Stderr = origStderr
-		_ = stderrFile.Close()
+		restoreOnce.Do(func() {
+			if !sessionLogActive {
+				diag.Redirect(nil)
+			}
+			os.Stderr = origStderr
+			_ = stderrFile.Close()
+		})
 	}
 
 	// Build the bootstrap tea.Cmd: runs NewExecutor + attach-image + BootstrapTUI
@@ -312,6 +323,9 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 	var swapHandled bool
 
 	bootstrapCmd := func() tea.Msg {
+		if hooks.beforeBootstrap != nil {
+			hooks.beforeBootstrap()
+		}
 		// NewExecutor (container startup — the biggest cost).
 		if cfg.ExecMode == "direct" {
 			tui.SendLoadingProgress("starting executor…")
@@ -395,15 +409,11 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 	swapFn := func(msg tea.Msg) (tea.Model, tea.Cmd) {
 		done := msg.(bootstrapDoneMsg)
 
-		// Restore os.Stderr so post-bootstrap output is visible.
-		restoreStderr()
-
 		if done.err != nil {
 			// Don't os.Exit — let tea.Quit unwind so the terminal is restored.
 			// The error is stored in bsResult for main() to print after
-			// prog.Run() returns.
+			// prog.Run() returns. Keep stderrFile intact until main() reads it.
 			swapHandled = true
-			_ = os.Remove(stderrFile.Name())
 			if done.exe != nil {
 				done.exe.Close()
 			}
@@ -453,6 +463,7 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		var sessionLogClose func()
 		if snap := done.rt.Facade.Snapshot(); snap.ChatID != "" {
 			if f := diag.OpenSessionLog(wiring.ShortID(snap.ChatID)); f != nil {
+				sessionLogActive = true
 				sessionLogClose = func() {
 					diag.Redirect(nil)
 					f.Close()
@@ -461,11 +472,30 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		}
 
 		// Copy early diagnostics (from the stderr temp file) into the
-		// session log before removing the temp file.
-		if data, err := os.ReadFile(stderrFile.Name()); err == nil && len(data) > 0 {
-			_, _ = diag.Write(data)
+		// session log. Keep os.Stderr redirected away from the terminal
+		// until prog.Run() returns so late background writes cannot scroll
+		// and corrupt the alt-screen.
+		if sessionLogClose != nil {
+			if data, err := os.ReadFile(stderrFile.Name()); err == nil && len(data) > 0 {
+				_, _ = diag.Write(data)
+			}
 		}
-		_ = os.Remove(stderrFile.Name())
+		if devNull, err := os.OpenFile(os.DevNull, os.O_WRONLY, 0); err == nil {
+			if sessionLogClose == nil {
+				diag.Redirect(devNull)
+			}
+			os.Stderr = devNull
+			_ = stderrFile.Close()
+			_ = os.Remove(stderrFile.Name())
+			prevRestore := restoreStderr
+			var devNullOnce sync.Once
+			restoreStderr = func() {
+				devNullOnce.Do(func() {
+					prevRestore()
+					_ = devNull.Close()
+				})
+			}
+		}
 
 		// Capture the session-log path now: after sessionLogClose
 		// the diag sink is restored and CurrentPath is gone.
@@ -576,8 +606,10 @@ func runTUI(cfg config.Config, resumeID string, hooks tuiHooks) int {
 		return 1
 	}
 
-	// Normal teardown: close the facade (host session, pump, detached jobs)
-	// then the executor-owned resources.
+	// Normal teardown: restore os.Stderr now that Bubble Tea has left
+	// alt-screen, then close the facade and executor resources.
+	restoreStderr()
+	_ = os.Remove(stderrFile.Name())
 	timeline.EnterOnce("exit")
 	timeline.Event("tui program returned (terminal restored)")
 	if postRunCleanup != nil {

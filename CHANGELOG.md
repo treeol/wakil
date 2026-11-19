@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Open mode needs kernel 5.14 or newer** (was 5.9). On an older kernel hisn refuses to start an open session. `/network`, `/help`, the docs and the network line of the system prompt now say that open is meant for code you trust and needs kernel 5.14+.
 
 - **No separate loading screen at start-up.** The normal view (logo, input box) is drawn at once, with a one-line status inside it (for example `· starting container…`) until the session is ready. Text typed while starting is kept and moves into the input when the session is ready; Enter does nothing until then and Ctrl+C quits. Time to the prompt is unchanged (median 37.0 ms before, 38.0 ms after, 13 runs each on the perf harness's stub provider with the direct backend).
-- **The start-up logo has one fixed size** (40 columns x 20 rows) instead of scaling with the terminal. In a pane narrower than 40 columns the name is shown as plain text.
+- **The start-up logo has one fixed size** (44 columns x 20 rows) instead of scaling with the terminal. In a pane narrower than 44 columns the name is shown as plain text.
 
 ### Fixed
 

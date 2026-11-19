@@ -251,7 +251,9 @@ func (m tuiModel) applyRotation(rm rotationMsg, cmds []tea.Cmd) (tuiModel, []tea
 	// item (it would make items non-empty and hide the splash).
 	if rm.kind == rotateNew {
 		m.hadTurn = false
+		m.splashGone = false
 	} else {
+		m.splashGone = true
 		m.addItem(iSys, dim2("· new conversation: "+formatShortID(snap.ChatID)))
 		if rm.note != "" {
 			m.addItem(iSys, dim2(rm.note))
