@@ -1027,6 +1027,9 @@ func (a *App) handleListDir(ctx context.Context, tc proxy.ToolCall) string {
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
 	}
+	if msg := a.ownArchiveListRefusal("list_dir", args.Path); msg != "" {
+		return msg
+	}
 	canonical, err := a.Exec.ConfinePath(ctx, args.Path)
 	if err != nil {
 		return "ERROR: " + err.Error()
@@ -1053,6 +1056,9 @@ func (a *App) handleFindFiles(ctx context.Context, tc proxy.ToolCall) string {
 	findPath := args.Path
 	if findPath == "" {
 		findPath = "."
+	}
+	if msg := a.ownArchiveListRefusal("find_files", findPath); msg != "" {
+		return msg
 	}
 	// Confine the path to the workspace (P0-3: path confinement).
 	canonical, err := a.Exec.ConfinePath(ctx, findPath)
@@ -1092,6 +1098,20 @@ func (a *App) handleSearchFiles(ctx context.Context, tc proxy.ToolCall) string {
 	searchPath := args.Path
 	if searchPath == "" {
 		searchPath = "."
+	}
+	// This session's own spill and archive files live HOST-SIDE, where the
+	// sandbox (and so grep) cannot see them: search them on the host. Only the
+	// session's own toolcache/<chat>/ directory; any other path, including
+	// another session's archive, goes through ConfinePath below as before.
+	if cid := a.chatID(); wtools.OwnToolCachePath(cid, searchPath) {
+		out, err := wtools.SearchHostCache(cid, searchPath, args.Pattern, args.FilePattern, args.CaseInsensitive)
+		if err != nil {
+			return formatResult("", err)
+		}
+		if out == "" {
+			return "(no matches)"
+		}
+		return formatResult(out, nil)
 	}
 	// Confine the path to the workspace (P0-3: path confinement).
 	canonical, err := a.Exec.ConfinePath(ctx, searchPath)
@@ -2055,4 +2075,18 @@ func (a *App) handleMCPTool(ctx context.Context, tc proxy.ToolCall) string {
 		return result
 	}
 	return fmt.Sprintf("ERROR: unknown tool %q", name)
+}
+
+// ownArchiveListRefusal is the answer of list_dir and find_files for a path in
+// this session's own toolcache directory (spill and collapse-archive files).
+// Those files are host-side and the sandbox cannot list them, so the call is
+// refused — but with a message that names the tools that DO work, not the
+// path-confinement error, which would read as "unreachable, stop" and feed the
+// confinement breaker. Returns "" for any other path.
+func (a *App) ownArchiveListRefusal(tool, path string) string {
+	if !wtools.OwnToolCachePath(a.chatID(), path) {
+		return ""
+	}
+	return "ERROR: " + tool + " cannot list this session's archive directory (host-side files the sandbox cannot see). " +
+		"Use read_file on the exact archive path from the note (with offset/limit), or search_files with a pattern on it."
 }

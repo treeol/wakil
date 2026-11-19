@@ -17,7 +17,7 @@ By default every tool call runs in the sandbox. The exceptions are the things th
 | `delete_file` | yes | Delete a file or empty directory |
 | `move_file` | yes | Rename or move a file within the workspace |
 | `list_dir` | no | List directory entries |
-| `search_files` | no | Grep file contents for a pattern |
+| `search_files` | no | Grep file contents for a pattern; also searches this session's own collapse archive and spill files (host-side, `~/.local/share/wakil/toolcache/<chat>/`), never another session's |
 | `find_files` | no | Find files by name glob recursively |
 | `math_eval` | no | Evaluate a mathematical expression (+ - * / % ^, sqrt, pow, …) |
 | `git_status` | no | Structured git working-tree status (porcelain-v1) |

@@ -437,6 +437,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				return
 			}
 			p := confinementPathQuoted(result.text)
+			// A refusal on this session's OWN archive or spill directory is
+			// not an unreachable path: the files exist and read_file and
+			// search_files serve them. It must never end the turn as "stop
+			// retrying" — the model is told which tool to use instead.
+			if wtools.OwnToolCachePath(a.chatID(), p) {
+				return
+			}
 			if confinementFailures[p] == 0 {
 				confinementPaths = append(confinementPaths, p)
 			}

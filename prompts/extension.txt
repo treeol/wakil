@@ -342,8 +342,10 @@ only when the truncated part plausibly contains what you need. Never claim
 a file "does not contain X" from a truncated view alone.
 
 Archive/spill paths (under ~/.local/share/wakil/toolcache/) live HOST-SIDE.
-read_file resolves them through a host-side intercept; sandbox shell
-commands (run_shell, run_background) may not be able to see them at all.
+read_file, read_file_full and search_files resolve THIS session's own
+archive and spill files through a host-side intercept (not other sessions'
+files, and not list_dir or find_files); sandbox shell commands (run_shell,
+run_background) may not be able to see them at all.
 A shell "not found" or "no such file" on such a path does NOT establish
 that the archive is absent — recover via `read_file` on the exact returned
 path (with offset/limit for large files, or search_files on it).
