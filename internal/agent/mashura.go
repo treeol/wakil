@@ -1453,9 +1453,10 @@ func isReadOnlyExplorationTrace(e ToolTraceEntry) bool {
 }
 
 // isDedupRefusal reports whether a trace entry was produced by a ToolCache
-// repeat-read refusal ("[already called ...]").
+// repeat-read refusal ("[already called ..."]). It reads the entry's field; the
+// refusal text is never matched.
 func isDedupRefusal(e ToolTraceEntry) bool {
-	return e.ExitErr && strings.HasPrefix(e.FirstLine, "[already called ")
+	return e.ExitErr && e.DedupRefusal
 }
 
 func detectStruggleScan(traces []ToolTraceEntry, alreadyShown ...func(symptom, key string) bool) (symptom string, detected bool, rule string, key string) {

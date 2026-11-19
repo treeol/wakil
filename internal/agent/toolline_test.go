@@ -183,3 +183,86 @@ func TestMakeTraceEntryReadFileSliceAndReadOnlyFlag(t *testing.T) {
 		t.Errorf("edit_file must not be tagged ReadOnly")
 	}
 }
+
+// lsp_* trace entries: identity is path:line plus the symbol, so two lookups of
+// different symbols on one line are distinct work and an identical re-run
+// matches. All four are read-only exploration tools.
+func TestMakeTraceEntryLSP(t *testing.T) {
+	cases := []struct {
+		name, args, wantCmd, wantAbbrev string
+	}{
+		{"lsp_definition", `{"path":"a.go","line":12,"symbol":"Foo"}`, "a.go:12 Foo", "lsp_defi"},
+		{"lsp_references", `{"path":"a.go","line":12,"symbol":"Foo"}`, "a.go:12 Foo", "lsp_refe"},
+		{"lsp_hover", `{"path":"pkg/b.go","line":3,"symbol":"Bar"}`, "pkg/b.go:3 Bar", "lsp_hove"},
+		{"lsp_definition", `{"path":"a.go","symbol":"Foo"}`, "a.go Foo", "lsp_defi"}, // no line
+		{"lsp_definition", `{"path":"a.go","line":7}`, "a.go:7", "lsp_defi"},         // no symbol
+		{"lsp_symbols", `{"query":"Handler"}`, "", "lsp_symb"},                       // default branch: no path/pattern
+	}
+	for _, c := range cases {
+		e := MakeTraceEntry(tcall(c.name, c.args), okResult("x"))
+		if e.Command != c.wantCmd || e.Abbrev != c.wantAbbrev {
+			t.Errorf("%s %s: (Abbrev, Command) = (%q, %q), want (%q, %q)", c.name, c.args, e.Abbrev, e.Command, c.wantAbbrev, c.wantCmd)
+		}
+		if !e.ReadOnly || e.DedupRefusal || e.ExitErr {
+			t.Errorf("%s: ReadOnly=%v DedupRefusal=%v ExitErr=%v, want true/false/false", c.name, e.ReadOnly, e.DedupRefusal, e.ExitErr)
+		}
+	}
+	a := MakeTraceEntry(tcall("lsp_references", `{"path":"a.go","line":12,"symbol":"Foo"}`), okResult("x"))
+	b := MakeTraceEntry(tcall("lsp_references", `{"path":"a.go","line":12,"symbol":"Bar"}`), okResult("x"))
+	c := MakeTraceEntry(tcall("lsp_references", `{"path":"a.go","line":12,"symbol":"Foo"}`), okResult("y"))
+	if a.Command == b.Command {
+		t.Errorf("different symbols on one line must differ; both = %q", a.Command)
+	}
+	if a.Command != c.Command {
+		t.Errorf("identical re-run must match: %q vs %q", a.Command, c.Command)
+	}
+}
+
+// git_* trace entries: identity is "<rev> <path>" (either part optional).
+func TestMakeTraceEntryGit(t *testing.T) {
+	cases := []struct {
+		name, args, wantCmd, wantAbbrev string
+	}{
+		{"git_diff", `{"rev":"HEAD~1","path":"a.go"}`, "HEAD~1 a.go", "git_diff"},
+		{"git_diff", `{"path":"a.go"}`, "a.go", "git_diff"},
+		{"git_diff", `{"rev":"main...feature"}`, "main...feature", "git_diff"},
+		{"git_diff", `{"staged":true}`, "", "git_diff"},
+		{"git_log", `{"rev":"A..B","path":"x/y.go","count":5}`, "A..B x/y.go", "git_log"},
+		{"git_show", `{"rev":"abc123"}`, "abc123", "git_show"},
+		{"git_blame", `{"path":"a.go","rev":"v1.0"}`, "v1.0 a.go", "git_blam"},
+		{"git_status", `{}`, "", "git_stat"}, // default branch
+	}
+	for _, c := range cases {
+		e := MakeTraceEntry(tcall(c.name, c.args), okResult("x"))
+		if e.Command != c.wantCmd || e.Abbrev != c.wantAbbrev {
+			t.Errorf("%s %s: (Abbrev, Command) = (%q, %q), want (%q, %q)", c.name, c.args, e.Abbrev, e.Command, c.wantAbbrev, c.wantCmd)
+		}
+		if !e.ReadOnly || e.DedupRefusal {
+			t.Errorf("%s: ReadOnly=%v DedupRefusal=%v, want true/false", c.name, e.ReadOnly, e.DedupRefusal)
+		}
+	}
+	// Same path at two revisions is different work.
+	a := MakeTraceEntry(tcall("git_show", `{"rev":"A"}`), okResult("x"))
+	b := MakeTraceEntry(tcall("git_show", `{"rev":"B"}`), okResult("x"))
+	if a.Command == b.Command {
+		t.Errorf("different revs must differ; both = %q", a.Command)
+	}
+}
+
+// The dedup refusal is carried by a field. Text that merely LOOKS like the
+// refusal (a file whose first line is "[already called ...") must not be read
+// as one, and a real refusal must be recognised whatever its wording.
+func TestMakeTraceEntryDedupRefusalIsAField(t *testing.T) {
+	real := toolResult{ok: false, text: "any wording at all", dedupRefusal: true}
+	if e := MakeTraceEntry(tcall("read_file", `{"path":"a.go"}`), real); !e.DedupRefusal || !isDedupRefusal(e) {
+		t.Errorf("a refusal result must set DedupRefusal: %+v", e)
+	}
+	lookalike := errResult("[already called read_file with equivalent arguments — pretend]")
+	if e := MakeTraceEntry(tcall("read_file", `{"path":"a.go"}`), lookalike); e.DedupRefusal || isDedupRefusal(e) {
+		t.Errorf("matching text alone must not make a dedup refusal: %+v", e)
+	}
+	// The flag alone is not enough without the error status (defensive).
+	if isDedupRefusal(ToolTraceEntry{DedupRefusal: true, ExitErr: false}) {
+		t.Error("a non-error entry is never a refusal")
+	}
+}

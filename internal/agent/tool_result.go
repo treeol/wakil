@@ -33,6 +33,10 @@ type toolResult struct {
 	ok      bool
 	text    string
 	endTurn bool
+	// dedupRefusal marks the ToolCache repeat-read refusal ("[already called
+	// ...]"), so the trace entry built from it says so by a field rather than
+	// by matching the text.
+	dedupRefusal bool
 }
 
 // String renders the toolResult to its string form for the transcript, TUI,

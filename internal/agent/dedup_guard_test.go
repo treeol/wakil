@@ -83,6 +83,12 @@ func TestDedupHitRecordsTraceEntry(t *testing.T) {
 		t.Fatalf("recentTraces after dedup hit = %d, want 2 (repeat recorded)", len(app.recentTraces))
 	}
 	second := app.recentTraces[1]
+	if !second.DedupRefusal || !isDedupRefusal(second) {
+		t.Error("the repeat's trace entry must carry DedupRefusal")
+	}
+	if app.recentTraces[0].DedupRefusal {
+		t.Error("the first, executed read must not be marked as a refusal")
+	}
 	if second.Command != app.recentTraces[0].Command || second.Abbrev != app.recentTraces[0].Abbrev {
 		t.Errorf("dedup trace entry = (%q,%q), want repeat of (%q,%q)",
 			second.Abbrev, second.Command, app.recentTraces[0].Abbrev, app.recentTraces[0].Command)

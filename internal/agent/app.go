@@ -615,13 +615,16 @@ type App struct {
 
 // ToolTraceEntry is one tool call's compact evidence record for the step log.
 type ToolTraceEntry struct {
-	Abbrev    string // short name: "shell", "read", "write", "edit", etc.
-	Command   string // run_shell command or key arg (path, pattern)
-	ExitErr   bool   // true when the tool returned an error
-	ReadOnly  bool   // true for built-in read-only exploration tools (read_file, search_files, list_dir, git_*, lsp_*, ...)
-	OutputLen int    // raw output length in bytes
-	FirstLine string // first non-empty output line, truncated to 80 chars
-	LastLine  string // last non-empty output line if different, truncated
+	Abbrev   string // short name: "shell", "read", "write", "edit", etc.
+	Command  string // run_shell command or key arg (path, pattern)
+	ExitErr  bool   // true when the tool returned an error
+	ReadOnly bool   // true for built-in read-only exploration tools (read_file, search_files, list_dir, git_*, lsp_*, ...)
+	// DedupRefusal is true when the entry records a ToolCache repeat-read
+	// refusal ("[already called ...]"), not a real execution.
+	DedupRefusal bool
+	OutputLen    int    // raw output length in bytes
+	FirstLine    string // first non-empty output line, truncated to 80 chars
+	LastLine     string // last non-empty output line if different, truncated
 	// errorTail holds a generous tail (last ~15 non-empty lines) of the output,
 	// populated only when exitErr is true. The step log ignores it; mashura__debug
 	// uses it to give the diagnosis a fuller view of failing output than the normal
@@ -2695,6 +2698,7 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 				msg = fmt.Sprintf("[already called %s with equivalent arguments — do not repeat it. The original result was spilled to: %s — use read_file to recover it if needed, otherwise use what you have.]", name, entry.spillPath)
 			}
 			result := errResult(msg)
+			result.dedupRefusal = true
 			// Record a trace entry for the repeat so the struggle detector
 			// can see the identical read run twice with no progress.
 			a.captureToolTrace(tc, result)
@@ -2824,6 +2828,8 @@ func MakeTraceEntry(tc proxy.ToolCall, result toolResult) ToolTraceEntry {
 		OutputLen: len(result.text),
 		ExitErr:   !result.ok,
 		ReadOnly:  isReadOnlyExplorationTool(tc.Function.Name),
+
+		DedupRefusal: result.dedupRefusal,
 	}
 	// Extract the primary identifier (command or path).
 	switch tc.Function.Name {
