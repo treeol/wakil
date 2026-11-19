@@ -391,10 +391,21 @@ func (a *App) handleMemoryForget(ctx context.Context, tc proxy.ToolCall) string 
 		return "ERROR: key is required"
 	}
 
-	if err := s.Forget(ctx, args.Key); err != nil {
+	// Like memory_reject and memory_promote, this tool has no confirmation
+	// prompt of its own (see tools.IsGatedTool); it is main-agent-only. It
+	// also removes quarantined (proposed) entries for the key.
+	active, proposed, err := s.ForgetKey(ctx, args.Key)
+	if err != nil {
 		return fmt.Sprintf("ERROR: memory forget: %v", err)
 	}
-	return "forgotten: " + args.Key
+	var what []string
+	if active {
+		what = append(what, "active entry")
+	}
+	if proposed > 0 {
+		what = append(what, fmt.Sprintf("%d proposed/quarantined", proposed))
+	}
+	return "forgotten: " + args.Key + " (" + strings.Join(what, ", ") + ")"
 }
 
 // handleMemoryPromoteFromStaging handles memory_promote_from_staging: main-agent-only.

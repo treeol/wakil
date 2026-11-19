@@ -78,7 +78,7 @@ func MemoryTools() []proxy.Tool {
 		}},
 		{Type: "function", Function: proxy.ToolFunction{
 			Name:        "memory_forget",
-			Description: "Forget (supersede with a tombstone) the active entry for a key. MAIN AGENT ONLY. Nothing is ever hard-deleted by agents.",
+			Description: "Forget a key: supersede its active entry with a tombstone and reject any proposed or quarantined entries for it. MAIN AGENT ONLY. Nothing is ever hard-deleted by agents.",
 			Parameters: SchemaObj(map[string]interface{}{
 				"key": StrProp("Key to forget."),
 			}, "key"),

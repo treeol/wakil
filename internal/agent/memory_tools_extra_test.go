@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -315,3 +316,81 @@ func TestSearchIncludeProposedBoolean(t *testing.T) {
 		t.Fatalf("search with include_proposed=true should find proposed, got: %s", result.text)
 	}
 }
+
+// ─── memory_forget and quarantined entries ─────────────────────────────────
+
+// A quarantined entry (a subagent's or tainted session's mid-tier write,
+// stored as proposed) is removed by memory_forget on the main agent, and it
+// stays removed: it can no longer be promoted. Nothing is hard-deleted.
+func TestMemoryForgetRemovesQuarantinedEntry(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+
+	// A tainted main session's mid-tier write is quarantined.
+	if _, err := app.MemoryStore.PutProposedMid(ctx, "notes/q", "suspicious", "note", "sub-abc12345", "s1",
+		memory.TaintTrue, ptrInt64(time.Now().Add(time.Hour).UnixMilli()), nil, "quarantined: subagent write"); err != nil {
+		t.Fatal(err)
+	}
+	if got := app.ExecuteToolCall(ctx, memToolCall("memory_list", `{"status":"proposed"}`)).text; !strings.Contains(got, "notes/q") {
+		t.Fatalf("setup: quarantined entry not listed: %s", got)
+	}
+
+	res := app.ExecuteToolCall(ctx, memToolCall("memory_forget", `{"key":"notes/q"}`)).text
+	if strings.Contains(res, "ERROR") || !strings.Contains(res, "1 proposed/quarantined") {
+		t.Fatalf("forget of a quarantined entry: %s", res)
+	}
+	// Gone from the proposed list…
+	if got := app.ExecuteToolCall(ctx, memToolCall("memory_list", `{"status":"proposed"}`)).text; strings.Contains(got, "notes/q") {
+		t.Errorf("entry still proposed after forget: %s", got)
+	}
+	// …kept as rejected with the tombstone note (not hard-deleted)…
+	rej, err := app.MemoryStore.List(ctx, "notes/q", "", memory.StatusRejected)
+	if err != nil || len(rej) != 1 || !strings.HasPrefix(rej[0].Note, "forgotten: notes/q") {
+		t.Fatalf("rejected = %v, err = %v", rej, err)
+	}
+	// …and it can no longer be promoted.
+	if res := app.ExecuteToolCall(ctx, memToolCall("memory_promote", fmt.Sprintf(`{"id":%d}`, rej[0].ID))).text; !strings.Contains(res, "ERROR") {
+		t.Errorf("promoting a forgotten entry must fail: %s", res)
+	}
+	// A second forget finds nothing.
+	if res := app.ExecuteToolCall(ctx, memToolCall("memory_forget", `{"key":"notes/q"}`)).text; !strings.Contains(res, "ERROR") {
+		t.Errorf("second forget should report not found: %s", res)
+	}
+}
+
+// Forgetting a key that has both an active entry and a quarantined one
+// removes both and says so.
+func TestMemoryForgetActiveAndQuarantined(t *testing.T) {
+	app, _ := memoryTestApp(t, false)
+	ctx := memCtx(t)
+	app.ExecuteToolCall(ctx, memToolCall("memory_put", `{"key":"k/both","value":"a","kind":"note","ttl_seconds":3600}`))
+	if _, err := app.MemoryStore.PutProposedMid(ctx, "k/both", "b", "note", "sub-abc12345", "s1",
+		memory.TaintTrue, ptrInt64(time.Now().Add(time.Hour).UnixMilli()), nil, "quarantined"); err != nil {
+		t.Fatal(err)
+	}
+	res := app.ExecuteToolCall(ctx, memToolCall("memory_forget", `{"key":"k/both"}`)).text
+	if !strings.Contains(res, "active entry") || !strings.Contains(res, "1 proposed/quarantined") {
+		t.Fatalf("forget result: %s", res)
+	}
+	if got := app.ExecuteToolCall(ctx, memToolCall("memory_get", `{"key":"k/both"}`)).text; !strings.Contains(got, "not found") {
+		t.Errorf("active entry survived: %s", got)
+	}
+}
+
+// A subagent still cannot forget, quarantined or not.
+func TestSubagentCannotForgetQuarantined(t *testing.T) {
+	app, _ := memoryTestApp(t, true)
+	ctx := memCtx(t)
+	if _, err := app.MemoryStore.PutProposedMid(ctx, "k/sub", "v", "note", "sub-abc12345", "s1",
+		memory.TaintTrue, ptrInt64(time.Now().Add(time.Hour).UnixMilli()), nil, "q"); err != nil {
+		t.Fatal(err)
+	}
+	if res := app.ExecuteToolCall(ctx, memToolCall("memory_forget", `{"key":"k/sub"}`)).text; res != memoryMainOnlyDenied {
+		t.Fatalf("subagent forget = %q, want the main-only denial", res)
+	}
+	if got, _ := app.MemoryStore.List(ctx, "k/sub", "", memory.StatusProposed); len(got) != 1 {
+		t.Errorf("the quarantined entry must be untouched: %v", got)
+	}
+}
+
+func ptrInt64(v int64) *int64 { return &v }

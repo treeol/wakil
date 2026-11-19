@@ -959,6 +959,54 @@ func (s *Store) Forget(ctx context.Context, key string) error {
 	return err
 }
 
+// ForgetKey is Forget for the memory_forget tool: it also removes the
+// proposed (quarantined) entries for key, which Forget leaves alone. The
+// active entry, if any, is superseded with a tombstone exactly as in Forget;
+// each proposed entry is marked rejected with a "forgotten" note, as Reject
+// does. It returns what it removed and ErrNotFound when there was nothing.
+// Nothing is hard-deleted.
+func (s *Store) ForgetKey(ctx context.Context, key string) (active bool, proposed int, err error) {
+	if err := validateKey(key); err != nil {
+		return false, 0, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, 0, fmt.Errorf("memory: begin tx: %w", err)
+	}
+	defer tx.Rollback()
+
+	stamp := time.UnixMilli(s.now()).UTC().Format(time.RFC3339)
+	note := fmt.Sprintf("forgotten: %s at %s", key, stamp)
+
+	res, err := tx.ExecContext(ctx,
+		"UPDATE entries SET status = 'superseded', note = ? WHERE key = ? AND status = 'active'", note, key)
+	if err != nil {
+		return false, 0, err
+	}
+	n, _ := res.RowsAffected()
+	active = n > 0
+
+	res, err = tx.ExecContext(ctx,
+		"UPDATE entries SET status = 'rejected', note = ? WHERE key = ? AND status = 'proposed'", note, key)
+	if err != nil {
+		return false, 0, err
+	}
+	pn, _ := res.RowsAffected()
+	proposed = int(pn)
+
+	if !active && proposed == 0 {
+		return false, 0, ErrNotFound
+	}
+	if err := tx.Commit(); err != nil {
+		return false, 0, err
+	}
+	return active, proposed, nil
+}
+
 // ─── Read operations ───────────────────────────────────────────────────────
 
 // Get returns the active entry for key, with anchor staleness checked.

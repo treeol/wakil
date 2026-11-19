@@ -41,7 +41,7 @@ By default every tool call runs in the sandbox. The exceptions are the things th
 | `memory_list` | no | List entries by prefix, tier, or status |
 | `memory_promote` | no | Promote a proposed durable entry to active *(main agent only)* |
 | `memory_reject` | no | Reject a proposed durable entry *(main agent only)* |
-| `memory_forget` | no | Supersede an active entry with a tombstone *(main agent only)* |
+| `memory_forget` | no | Supersede an active entry with a tombstone and reject proposed/quarantined entries for the key *(main agent only)* |
 | `memory_promote_from_staging` | no | Bridge a staging value into durable memory as proposed *(main agent only)* |
 | `list_skills` / `skill_search` / `skill_history` | no | Browse the global skill store (reference docs shared across all projects) |
 | `load_skill` | no | Load a skill; for [template skills](#skill-templates) file bodies are replaced by a params/files summary unless `include_files=true` |

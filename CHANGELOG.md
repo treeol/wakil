@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **`/mashura` shows how each panel member is really called.** Direct Anthropic access is gone: an `anthropic:<id>` member is sent through OpenRouter as `anthropic/<id>`. The status now prints that route next to every member (`anthropic:claude-opus-4-8 [via OpenRouter as anthropic/claude-opus-4-8]`) and marks a member with an unknown provider prefix as `NOT USABLE`.
+- **`memory_forget` also removes quarantined entries.** Writes from subagents and tainted sessions are stored as proposed (quarantined) entries; forgetting their key used to answer "not found" and left them in the proposed list. `memory_forget` (main agent only, as before) now rejects them with a `forgotten:` note — nothing is hard-deleted, and a forgotten entry can no longer be promoted — and says what it removed.
 - **A refused open session shows hisn's own error.** When hisn refuses to start a session in open mode (kernel, Yama `ptrace_scope`, DNS upstream), the error now leads with hisn's own line and how to switch back with `/network host`, instead of only a generic "exited before the session was ready".
 
 ## [0.8.6] - 2026-11-19

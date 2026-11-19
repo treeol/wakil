@@ -103,7 +103,7 @@ tiers. Main-only tools are rejected at dispatch time for subagents.
 | `memory_get` | All tiers | Get active entry for key |
 | `memory_search` | All tiers | FTS5 search (active only by default) |
 | `memory_list` | All tiers | List by prefix/tier/status |
-| `memory_forget` | Main only | Supersede active with tombstone (nothing hard-deleted) |
+| `memory_forget` | Main only | Supersede the active entry with a tombstone and reject proposed/quarantined entries for the key (nothing hard-deleted) |
 | `memory_promote_from_staging` | Main only | Bridge staging → durable proposed |
 
 ### memory_put semantics
