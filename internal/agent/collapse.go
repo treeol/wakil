@@ -2017,6 +2017,15 @@ func (a *App) collapsedRecords() []CollapseRecord {
 	return out
 }
 
+// CollapsedRecords is the exported form of collapsedRecords for
+// cross-package callers (the bench --result-json summary needs the count).
+func (a *App) CollapsedRecords() []CollapseRecord { return a.collapsedRecords() }
+
+// AutoRoundsInConv counts automatic Mashura rounds in a conversation
+// (same rule as countAutoRounds): a user-role message carrying the
+// auto-counsel header, or a legacy auto-counsel tool call id.
+func AutoRoundsInConv(conv []proxy.Message) int { return countAutoRounds(conv) }
+
 // keepSlice returns the keep set as a slice for session persistence.
 func (a *App) keepSlice() []int {
 	a.stateMu.RLock()

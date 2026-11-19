@@ -177,6 +177,26 @@ func TestParseRunArgs_MaxCounsel(t *testing.T) {
 	}
 }
 
+func TestParseRunArgs_ResultJSON(t *testing.T) {
+	task, _, flags, err := parseRunArgs([]string{"--result-json", "/tmp/r.json", "do task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if task != "do task" {
+		t.Errorf("task = %q", task)
+	}
+	if flags.ResultJSONFile != "/tmp/r.json" {
+		t.Errorf("ResultJSONFile = %q, want /tmp/r.json", flags.ResultJSONFile)
+	}
+}
+
+func TestParseRunArgs_ResultJSONNoValue(t *testing.T) {
+	_, _, _, err := parseRunArgs([]string{"--result-json"})
+	if err == nil {
+		t.Fatal("expected error for missing result-json value")
+	}
+}
+
 func TestParseRunArgs_MaxCounselInvalid(t *testing.T) {
 	_, _, _, err := parseRunArgs([]string{"--max-counsel", "abc", "task"})
 	if err == nil {

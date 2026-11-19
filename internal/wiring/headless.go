@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/charmbracelet/x/ansi"
 
@@ -69,6 +70,11 @@ type HeadlessOptions struct {
 	// This is a SOFT cutoff (checked after the call), and in continuous mode it
 	// is not a hard total-cost guarantee.
 	BudgetUSD float64
+	// ResultJSON is the path of the machine-readable summary file written at
+	// exit (see ResultJSON struct). Empty = no summary file. The bench
+	// harness passes this so a run's tokens/cost/counts are captured without
+	// parsing the JSONL transcript.
+	ResultJSON string
 	// Continuous turns on the experimental bounded continuous coordinator. CLI
 	// opt-in only; never enabled by a config file.
 	Continuous *ContinuousOptions
@@ -227,6 +233,17 @@ func headlessDecision(app *agent.App, opts HeadlessOptions, req ApprovalRequest)
 // HeadlessOptions carries the flag-derived policy. Returns the process exit code.
 func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	ctx := context.Background()
+	started := time.Now()
+	ran := false
+
+	// Bootstrap failures must still leave a result file (bench harness).
+	defer func() {
+		if opts.ResultJSON != "" && !ran {
+			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, started); werr != nil {
+				fmt.Fprintln(os.Stderr, "result-json:", werr)
+			}
+		}
+	}()
 
 	exe, err := NewExecutor(cfg)
 	if err != nil {
@@ -327,19 +344,30 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 		out = f
 	}
 
-	code, err := dispatchHeadlessMode(ctx, app, task, opts.PlanMode, opts, out)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return ExitError
-	}
-	return code
+	ran = true
+	return RunHeadlessApp(ctx, app, task, opts.PlanMode, opts, out)
 }
 
 // RunHeadlessApp drives a pre-built *agent.App. Mode selection and continuous
 // validation are shared with RunHeadless so a direct caller cannot request
 // continuous execution and silently get the ordinary single-turn driver.
+//
+// RunHeadlessApp also owns the --result-json summary write (RunHeadless
+// delegates here for the drive+dispatch part): the summary is written at
+// dispatch return for every path, including the error return, so a run
+// that fails partway still leaves a result file for the bench harness.
 func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) int {
+	started := time.Now()
 	code, err := dispatchHeadlessMode(ctx, app, task, planMode, opts, out)
+	if opts.ResultJSON != "" {
+		resCode := code
+		if err != nil {
+			resCode = ExitError
+		}
+		if werr := writeResultJSON(opts.ResultJSON, app, resCode, started); werr != nil {
+			fmt.Fprintln(os.Stderr, "result-json:", werr)
+		}
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return ExitError

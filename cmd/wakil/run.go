@@ -34,6 +34,7 @@ type RunFlags struct {
 	AllowDestructive bool
 	NoOracle         bool
 	TranscriptFile   string
+	ResultJSONFile   string
 	AllowExternal    bool
 	AutoCounsel      bool
 	MaxCounsel       int
@@ -96,6 +97,12 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 				return "", false, flags, fmt.Errorf("--transcript requires a file path")
 			}
 			flags.TranscriptFile = args[i]
+		case "--result-json":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--result-json requires a file path")
+			}
+			flags.ResultJSONFile = args[i]
 		case "--attach-image":
 			i++
 			if i >= len(args) {
@@ -172,7 +179,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--result-json <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
 				"[--continue --max-turns N --max-time D [--verify-cmd CMD]] \"<task>\"")
 	}
 	// No default cap is baked in here: --max-counsel 0 means "not set" and
@@ -217,6 +224,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		ProfileName:      flags.ProfileName,
 		Verify:           flags.Verify,
 		TranscriptFile:   flags.TranscriptFile,
+		ResultJSON:       flags.ResultJSONFile,
 		BudgetUSD:        flags.BudgetUSD,
 		Continuous:       flags.Continuous,
 	})
