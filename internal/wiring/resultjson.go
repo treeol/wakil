@@ -24,17 +24,19 @@ import (
 // when the run did not observe the value (e.g. a binary built without
 // cost tracking, or counts unavailable).
 type ResultJSON struct {
-	Version       string   `json:"wakil_version"`
-	Model         string   `json:"model"`
-	ExitReason    string   `json:"exit_reason"`
-	Workdir       string   `json:"workdir,omitempty"`
-	Seconds       float64  `json:"seconds"`
-	TokensIn      *int64   `json:"tokens_in"`
-	TokensOut     *int64   `json:"tokens_out"`
-	CostUSD       *float64 `json:"cost_usd"`
-	ToolCalls     *int     `json:"tool_calls"`
-	Collapses     *int     `json:"collapses"`
-	MashuraRounds *int     `json:"mashura_rounds"`
+	Version          string   `json:"wakil_version"`
+	Model            string   `json:"model"`
+	ExitReason       string   `json:"exit_reason"`
+	Workdir          string   `json:"workdir,omitempty"`
+	Seconds          float64  `json:"seconds"`
+	TokensIn         *int64   `json:"tokens_in"`
+	TokensOut        *int64   `json:"tokens_out"`
+	TokensCached     *int64   `json:"tokens_cached,omitempty"`
+	CostUSD          *float64 `json:"cost_usd"`
+	ToolCalls        *int     `json:"tool_calls"`
+	Collapses        *int     `json:"collapses"`
+	CollapsesTurnEnd *int     `json:"collapses_turn_end"`
+	MashuraRounds    *int     `json:"mashura_rounds"`
 }
 
 // exitReasonName maps a headless exit code to the bench-facing reason
@@ -81,13 +83,17 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 		if app.Costs != nil {
 			total, rows := app.Costs.Snapshot()
 			if len(rows) > 0 {
-				var inTok, outTok int64
+				var inTok, outTok, cachedTok int64
 				for _, r := range rows {
 					inTok += r.InputTok
 					outTok += r.OutputTok
+					cachedTok += r.CachedTok
 				}
 				res.TokensIn = &inTok
 				res.TokensOut = &outTok
+				if cachedTok > 0 {
+					res.TokensCached = &cachedTok
+				}
 				res.CostUSD = &total
 			}
 		}
@@ -102,8 +108,9 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 			}
 		}
 		res.ToolCalls = &toolCalls
-		collapses := len(app.CollapsedRecords())
-		res.Collapses = &collapses
+		midTurn, turnEnd := app.CollapseCounts()
+		res.Collapses = &midTurn
+		res.CollapsesTurnEnd = &turnEnd
 		// Mashura rounds = explicit mashura__* tool calls in the conversation
 		// plus automatic rounds fired by Wakil itself (countAutoRounds rule).
 		rounds := mashuraTools + agent.AutoRoundsInConv(app.Conv)

@@ -1650,6 +1650,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		a.collapsed = map[int]CollapseRecord{}
 	}
 	a.collapsed[a.curTurn] = rec
+	a.midTurnCollapses++
 	a.stateMu.Unlock()
 
 	fmt.Fprintln(a.Out, Dim(formatCollapseNotice(a.curTurn, wSize, cpLen, w, s.first+1, archive)))
@@ -1865,6 +1866,7 @@ func (a *App) collapseMidTurnPrefix() {
 		a.collapsed = map[int]CollapseRecord{}
 	}
 	a.collapsed[a.curTurn] = rec
+	a.midTurnCollapses++
 	a.stateMu.Unlock()
 
 	// The notice reports the actual archived size and the actual
@@ -2021,6 +2023,30 @@ func (a *App) collapsedRecords() []CollapseRecord {
 // cross-package callers (the bench --result-json summary needs the count).
 func (a *App) CollapsedRecords() []CollapseRecord { return a.collapsedRecords() }
 
+// CollapseCounts returns (midTurn, turnEnd):
+//   - midTurn: count of mid-turn collapses (automatic ceiling collapses and
+//     model-invoked collapse_context), preserved even when a turn later
+//     upgrades to a full turn-end collapse. Falls back to counting Partial
+//     records in a.collapsed if a caller populated records directly.
+//   - turnEnd: count of full turn-end collapses (!rec.Partial) in a.collapsed.
+func (a *App) CollapseCounts() (midTurn, turnEnd int) {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	partialCount := 0
+	for _, rec := range a.collapsed {
+		if rec.Partial {
+			partialCount++
+		} else {
+			turnEnd++
+		}
+	}
+	midTurn = a.midTurnCollapses
+	if partialCount > midTurn {
+		midTurn = partialCount
+	}
+	return midTurn, turnEnd
+}
+
 // AutoRoundsInConv counts automatic Mashura rounds in a conversation
 // (same rule as countAutoRounds): a user-role message carrying the
 // auto-counsel header, or a legacy auto-counsel tool call id.
@@ -2084,6 +2110,7 @@ func (a *App) RestoreTurnState(s *Session) {
 func (a *App) restoreTurnStateLocked(s *Session) {
 	// Always reset: an empty/legacy session should clear any prior state.
 	a.collapsed = map[int]CollapseRecord{}
+	a.midTurnCollapses = 0
 	for _, rec := range s.Collapsed {
 		a.collapsed[rec.Turn] = rec
 	}

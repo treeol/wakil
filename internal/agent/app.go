@@ -282,7 +282,11 @@ type App struct {
 	// Long-session collapse state. Turn goroutine writes; projection reads
 	// under stateMu.RLock. collapsed maps turn numbers to their archive
 	// records; keep is the set of turns exempted from collapse by /keep.
+	// midTurnCollapses counts every mid-turn collapse event (automatic
+	// maybeAutoMidTurnCollapse and model-called collapse_context) even if
+	// the turn later upgrades to a full turn-end collapse.
 	collapsed             map[int]CollapseRecord
+	midTurnCollapses      int
 	keep                  map[int]bool
 	collapseArchiveFailed bool
 	collapseMemoryFailed  bool

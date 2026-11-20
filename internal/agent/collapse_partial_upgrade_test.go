@@ -167,3 +167,30 @@ func TestPartialUpgradeRefusedWhenItWouldInflateVisibleForm(t *testing.T) {
 		t.Fatalf("the upgrade inflated the request: visible %d -> %d bytes", visibleBefore, after)
 	}
 }
+
+func TestCollapseCounts_MidTurnPreservedAfterTurnEndUpgrade(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.stateMu.Lock()
+	app.collapsed = map[int]CollapseRecord{
+		1: {Turn: 1, Partial: false, Note: "turn 1 finished"},
+	}
+	app.midTurnCollapses = 2
+	app.stateMu.Unlock()
+
+	mid, end := app.CollapseCounts()
+	if mid != 2 || end != 1 {
+		t.Fatalf("CollapseCounts() = (%d, %d), want (2, 1)", mid, end)
+	}
+
+	// Turn-end collapse only (no mid-turn collapses): mid=0, end=1.
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app2.stateMu.Lock()
+	app2.collapsed = map[int]CollapseRecord{
+		1: {Turn: 1, Partial: false, Note: "turn 1 finished"},
+	}
+	app2.stateMu.Unlock()
+	mid2, end2 := app2.CollapseCounts()
+	if mid2 != 0 || end2 != 1 {
+		t.Fatalf("CollapseCounts() turn-end only = (%d, %d), want (0, 1)", mid2, end2)
+	}
+}

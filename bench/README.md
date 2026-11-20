@@ -123,6 +123,11 @@ Each run's CSV row carries the *resolved* model from the run's
 `--result-json` when the binary reports one, so the CSV names the model
 that actually ran, not the one requested. When `--model` is not given
 and no run has reported yet, the column is `unknown` (never `config`).
+`tokens_cached` is the input-token count the provider served from its
+prompt cache (empty/`n/a` when the provider reports none); the table
+shows it as a `cached-%` column and prints cost with 4 decimals.
+`collapses` counts mid-turn collapses only; `collapses_turn_end` counts
+full turn-end collapses.
 `exit_reason` column carries the reason string from `--result-json`
 (`pass`, `declined`, `backend_failure`, `gaps`, `error`) when the
 binary reports one, or `n/a` otherwise. Values a binary does not report

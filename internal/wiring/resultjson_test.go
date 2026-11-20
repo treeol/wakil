@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
+	"github.com/treeol/wakil/internal/config"
 	"github.com/treeol/wakil/internal/proxy"
 )
 
@@ -64,6 +65,9 @@ func TestResultJSON_SingleTask(t *testing.T) {
 	}
 	if res.Collapses == nil {
 		t.Error("collapses nil, want a count (0 when none)")
+	}
+	if res.CollapsesTurnEnd == nil {
+		t.Error("collapses_turn_end nil, want a count (0 when none)")
 	}
 	if res.MashuraRounds == nil {
 		t.Error("mashura_rounds nil, want a count (0 when none)")
@@ -121,5 +125,59 @@ func TestResultJSON_CountAutoRoundsFromConv(t *testing.T) {
 	}
 	if got := agent.AutoRoundsInConv(conv); got != 2 {
 		t.Errorf("AutoRoundsInConv = %d, want 2 (header + legacy auto-counsel id)", got)
+	}
+}
+
+func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
+	app := fakeApp("http://unused.invalid")
+	app.Client.Model = "openrouter/test"
+	app.Costs = &proxy.CostTracker{}
+	// Record cost with cached input tokens.
+	app.Costs.Record("inference·openrouter/test", 100000, 2000, 0.01234, true, proxy.ConfExact, config.TokenDetail{CachedTok: 75000})
+	// Simulate 1 turn-end collapse (Partial: false) and 1 mid-turn collapse (Partial: true).
+	app.RestoreTurnState(&agent.Session{
+		Collapsed: []agent.CollapseRecord{
+			{Turn: 1, Partial: false, Note: "turn 1 done"},
+			{Turn: 2, Partial: true, Note: "turn 2 mid-turn"},
+		},
+	})
+
+	p := filepath.Join(t.TempDir(), "r.json")
+	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+		t.Fatalf("writeResultJSON: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res ResultJSON
+	if err := json.Unmarshal(data, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.Collapses == nil || *res.Collapses != 1 {
+		t.Errorf("collapses (mid-turn) = %v, want 1", res.Collapses)
+	}
+	if res.CollapsesTurnEnd == nil || *res.CollapsesTurnEnd != 1 {
+		t.Errorf("collapses_turn_end = %v, want 1", res.CollapsesTurnEnd)
+	}
+	if res.TokensCached == nil || *res.TokensCached != 75000 {
+		t.Errorf("tokens_cached = %v, want 75000", res.TokensCached)
+	}
+
+	// Without cached tokens reported, tokens_cached must be omitted / nil.
+	app2 := fakeApp("http://unused.invalid")
+	app2.Client.Model = "openrouter/test"
+	app2.Costs = &proxy.CostTracker{}
+	app2.Costs.Record("inference·openrouter/test", 1000, 100, 0.001, true, proxy.ConfExact)
+	p2 := filepath.Join(t.TempDir(), "r2.json")
+	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+		t.Fatal(err)
+	}
+	data2, err := os.ReadFile(p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data2), `"tokens_cached"`) {
+		t.Errorf("tokens_cached must be omitted when provider reported none; got %s", string(data2))
 	}
 }

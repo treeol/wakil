@@ -105,7 +105,7 @@ if ! command -v jq >/dev/null 2>&1; then
     echo "$prog: warning: jq not found — metric columns (tokens, cost, counts) will be n/a" >&2
 fi
 
-csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds'
+csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds'
 # CSV is created lazily: --setup and --self-test do not write a real-run
 # CSV (a header-only file would be picked up by find_prev_csv as the
 # "earlier run"). main() creates it before run_all only.
@@ -189,16 +189,26 @@ json_field() {
     fi
 }
 
+# fmt_cost <n>: format USD cost with 4 decimals ("0.0038"). Non-numeric passes through.
+fmt_cost() {
+    case "$1" in
+        ''|n/a) echo 'n/a' ;;
+        *) awk -v v="$1" 'BEGIN { if (v+0 == v) printf "%.4f", v; else printf "%s", v }' ;;
+    esac
+}
+
 # csv_row <task> <run> <result> <exit_reason> <seconds> <result-json>
 # Appends one row to the CSV.
 csv_row() {
     task=$1; run=$2; result=$3; exit_reason=$4; secs=$5; rj=$6
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
         "$(date +%Y-%m-%d)" "$wakil_version" "$resolved_model" "$task" "$run" "$result" \
         "$(na "$exit_reason")" "$secs" \
         "$(na "$(json_field "$rj" "tokens_in")")" "$(na "$(json_field "$rj" "tokens_out")")" \
+        "$(na "$(json_field "$rj" "tokens_cached")")" \
         "$(na "$(json_field "$rj" "cost_usd")")" "$(na "$(json_field "$rj" "tool_calls")")" \
-        "$(na "$(json_field "$rj" "collapses")")" "$(na "$(json_field "$rj" "mashura_rounds")")" >> "$csv_file"
+        "$(na "$(json_field "$rj" "collapses")")" "$(na "$(json_field "$rj" "collapses_turn_end")")" \
+        "$(na "$(json_field "$rj" "mashura_rounds")")" >> "$csv_file"
 }
 
 # prep_workdir <task>: empty and refill the fixed work folder from the
@@ -415,7 +425,7 @@ run_one() {
         _summary="$_summary · $(fmt_k "$_tok_in") in / $(fmt_k "$_tok_out") out"
     fi
     if [ -n "$_cost" ]; then
-        _summary="$_summary · \$$_cost"
+        _summary="$_summary · \$$(fmt_cost "$_cost")"
     fi
     if [ "$result" != "pass" ] && [ -n "$exit_reason" ]; then
         _summary="$_summary · exit $exit_reason"
@@ -450,19 +460,58 @@ find_prev_csv() {
 }
 
 # print_table <csv> [model]: per-task summary of a CSV, with the model
-# in the header line when it is known.
+# in the header line when it is known. Reads columns by header name so
+# both the current 16-column CSV (with tokens_cached and
+# collapses_turn_end) and older CSVs render accurately.
 print_table() {
     f=$1; _model="$2"
     if [ -n "$_model" ]; then
         printf '  model: %s\n' "$_model"
     fi
-    printf '  %-12s %-8s %-12s %-8s %s\n' "task" "result" "exit_reason" "seconds" "tokens in/out  tool_calls collapses mashura"
-    awk -F, 'NR>1 { printf "  %-12s %-8s %-12s %-8s %s/%s  %s %s %s\n", $4, $6, $7, $8, $9, $10, $12, $13, $14 }' "$f"
+    printf '  %-12s %-8s %-12s %-7s %-16s %-8s %-9s %s\n' "task" "result" "exit_reason" "seconds" "tokens in/out" "cached-%" "cost" "tools collapses mashura"
+    awk -F, '
+        NR == 1 {
+            for (i = 1; i <= NF; i++) col[$i] = i
+            next
+        }
+        {
+            task  = col["task"]        ? $(col["task"])        : "n/a"
+            res   = col["result"]      ? $(col["result"])      : "n/a"
+            ereas = col["exit_reason"] ? $(col["exit_reason"]) : "n/a"
+            secs  = col["seconds"]     ? $(col["seconds"])     : "n/a"
+            tin   = col["tokens_in"]   ? $(col["tokens_in"])   : "n/a"
+            tout  = col["tokens_out"]  ? $(col["tokens_out"])  : "n/a"
+            tcach = col["tokens_cached"] ? $(col["tokens_cached"]) : "n/a"
+            cost  = col["cost_usd"]    ? $(col["cost_usd"])    : "n/a"
+            tools = col["tool_calls"]  ? $(col["tool_calls"])  : "n/a"
+            coll  = col["collapses"]   ? $(col["collapses"])   : "n/a"
+            mash  = col["mashura_rounds"] ? $(col["mashura_rounds"]) : "n/a"
+
+            cpct = "n/a"
+            if (tin != "" && tin != "n/a" && tcach != "" && tcach != "n/a" && (tin + 0) > 0) {
+                cpct = sprintf("%.0f%%", (tcach + 0) * 100.0 / (tin + 0))
+            }
+            cstr = "n/a"
+            if (cost != "" && cost != "n/a") {
+                cstr = sprintf("$%.4f", cost + 0)
+            }
+            printf "  %-12s %-8s %-12s %-7s %-16s %-8s %-9s %s %s %s\n", \
+                task, res, ereas, secs, tin "/" tout, cpct, cstr, tools, coll, mash
+        }
+    ' "$f"
 }
 
-# sum_cost <csv>: total cost_usd (n/a and empty cells contribute 0).
+# sum_cost <csv>: total cost_usd formatted to 4 decimals (n/a and empty
+# cells contribute 0). Reads cost_usd by header name.
 sum_cost() {
-    awk -F, 'NR>1 && $11 != "n/a" && $11 != "" { s += $11 } END { printf "%.6f", s }' "$1"
+    awk -F, '
+        NR == 1 {
+            for (i = 1; i <= NF; i++) if ($i == "cost_usd") c = i
+            next
+        }
+        c > 0 && $c != "n/a" && $c != "" { s += $c }
+        END { printf "%.4f", s }
+    ' "$1"
 }
 
 # run_all <wakil-bin>: run every task `runs` times.
@@ -560,7 +609,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$workdir/.bench-result.json" <<JSON
-{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0}
 JSON
     exit 0 ;;
 esac
@@ -898,6 +947,22 @@ EOF
         exit 1
     fi
     echo "  path stability OK ($_stab_path1)"
+
+    echo "== self-test: cached-% and 4-decimal cost formatting =="
+    _tbl_out=$(print_table "$csv_file" "$resolved_model")
+    if ! printf '%s\n' "$_tbl_out" | grep -q '75%'; then
+        echo "self-test FAILED: print_table missing cached-% (75%) column" >&2
+        printf '%s\n' "$_tbl_out" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    if ! printf '%s\n' "$_tbl_out" | grep -q '\$0\.0012'; then
+        echo "self-test FAILED: print_table cost not formatted with 4 decimals (\$0.0012)" >&2
+        printf '%s\n' "$_tbl_out" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    echo "  cached-% (75%) and 4-decimal cost (\$0.0012) OK"
 
     echo
     echo "== self-test summary =="
