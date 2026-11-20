@@ -378,3 +378,38 @@ func TestMaybeActivateExtension_NotBetweenToolCallAndResult(t *testing.T) {
 }
 
 // --- helper ---
+
+// --- Custom prompt in core mode (P1) ---
+
+// TestBuildPreamble_CoreMode_CustomPrompt verifies that when a custom
+// agent_prompt_path is used (AgentCorePrompt is empty), core mode falls
+// back to AgentPrompt (the custom file) rather than the embedded core.
+func TestBuildPreamble_CoreMode_CustomPrompt(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetPromptMode("core")
+	app.AgentPrompt = "custom full prompt from file"
+	app.AgentCorePrompt = ""      // custom file: no embedded core
+	app.AgentExtensionPrompt = "" // custom file: no embedded extension
+	app.InjectDate = true
+	preamble := app.buildPreamble("Monday, 15 October 2026")
+	if !strings.Contains(preamble, "custom full prompt from file") {
+		t.Error("preamble should contain the custom full prompt in core mode when AgentCorePrompt is empty")
+	}
+}
+
+// TestMaybeActivateExtension_NoCorePrompt verifies that when a custom
+// prompt is loaded (AgentCorePrompt is empty, AgentExtensionPrompt is
+// empty), the extension is never activated in core mode.
+func TestMaybeActivateExtension_NoCorePrompt(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetPromptMode("core")
+	app.AgentPrompt = "custom prompt"
+	app.AgentCorePrompt = ""
+	app.AgentExtensionPrompt = ""
+	app.InjectDate = false
+	app.Conv = []proxy.Message{{Role: "system", Content: StrPtr("custom prompt"), Pinned: true, Turn: 0}}
+	app.maybeActivateExtension("fix the bug in auth.go")
+	if app.extensionActivated {
+		t.Error("extensionActivated = true with empty AgentExtensionPrompt, want false")
+	}
+}

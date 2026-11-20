@@ -240,10 +240,10 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 
 	// Load the agent prompt. The full prompt is used as AgentPrompt (the
 	// preamble in full mode, or as the fallback when split prompts aren't
-	// available). Split prompts (core + extension) are always loaded from the
-	// binary embed below — they don't depend on whether the full prompt came
-	// from a custom file or the embed.
-	promptForApp, _ := loadAgentPrompt(cfg)
+	// available). Split prompts (core + extension) are loaded from the
+	// binary embed only when no custom file is used — a custom
+	// agent_prompt_path replaces the whole prompt, including in core mode.
+	promptForApp, usingEmbedded := loadAgentPrompt(cfg)
 
 	app := &agent.App{
 		Cfg:                          cfg,
@@ -328,12 +328,15 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		fmt.Fprintf(os.Stderr, "warning: invalid context_mode %q: %v\n", cfg.ContextMode, err)
 	}
 
-	// Split-prompt support: load the core and extension prompts unconditionally
-	// so they're available when the mode changes at runtime (/prompt core) or
-	// via repo-state restore. Only the embedded split prompts participate — a
-	// custom agent_prompt_path file bypasses the feature (the full file is the
-	// core; no extension is loaded), preserving backward compatibility with
-	// user overrides.
+	// Split-prompt support: load the core and extension prompts from the
+	// binary embed only when no custom agent_prompt_path file is in use.
+	// When a custom file is loaded (usingEmbedded is false), the custom
+	// file replaces the whole prompt in both full and core mode — no
+	// embedded core or extension is loaded, so the user's custom prompt
+	// is the only system prompt. This preserves backward compatibility
+	// with user overrides: the custom file IS the full prompt, and core
+	// mode falls back to it (AgentCorePrompt is left empty, so the
+	// preamble builder uses AgentPrompt).
 	// RestoreRepoState may override the mode later (guarded by
 	// Cfg.PromptModeExplicit).
 	if err := app.SetPromptMode(cfg.PromptMode); err != nil {
@@ -341,15 +344,10 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		// means invalid config. Log and continue with the default (full).
 		fmt.Fprintf(os.Stderr, "warning: invalid prompt_mode %q: %v\n", cfg.PromptMode, err)
 	}
-	// Load the embedded core/extension split prompts unconditionally. They
-	// are embedded in the binary and always available, independent of
-	// whether the full AgentPrompt came from a custom file or the embed.
-	// In full mode (default) AgentPrompt is used; in core mode AgentCorePrompt
-	// is used as the lean preamble and AgentExtensionPrompt is lazy-loaded.
-	// A custom agent_prompt_path only affects the full prompt — the split
-	// prompts still come from the binary embed.
-	app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
-	app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
+	if usingEmbedded {
+		app.AgentCorePrompt = strings.TrimRight(prompts.EmbeddedCorePrompt, "\n")
+		app.AgentExtensionPrompt = strings.TrimRight(prompts.EmbeddedExtensionPrompt, "\n")
+	}
 
 	// The sandbox's own risk statement (hisn: label + capabilities) is the first
 	// thing the user sees in the session.

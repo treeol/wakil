@@ -351,6 +351,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				if arg == "full" {
 					return true, false, note("prompt mode: full (complete system prompt always loaded)")
 				}
+				if app.AgentCorePrompt == "" {
+					return true, false, note("prompt mode: core — custom prompt file used (no embedded split)")
+				}
 				return true, false, note("prompt mode: core — lean preamble, extension lazy-loaded on task detection")
 			case "status":
 				coreLen := len(app.AgentCorePrompt)

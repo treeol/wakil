@@ -14,9 +14,9 @@
 //     classifier detects a task that needs the full workflow guidance.
 //
 // Precedence at runtime (see wiring/bootstrap.go loadAgentPrompt):
-//  1. cfg.AgentPromptPath file (if readable) — user override wins. When a custom
-//     file is used, the split-prompt feature is bypassed (the full file is the
-//     core; no extension is loaded). This preserves backward compatibility.
+//  1. cfg.AgentPromptPath file (if readable) — user override wins. The custom
+//     file replaces the whole prompt in both full and core mode: no embedded
+//     core or extension is loaded, so the custom file is the only system prompt.
 //  2. Embedded prompts — the split prompts baked into the binary.
 //  3. (No further fallback needed — the embeds are always present at build time.)
 package prompts
