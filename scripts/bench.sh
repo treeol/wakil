@@ -234,19 +234,43 @@ prep_workdir() {
         mv "$workdir/.wakil" "$_wakil_saved"
     fi
 
-    # Delete everything in the folder (it is now empty of .wakil/).
+    # Delete everything in the folder (it is now empty of .wakil/). This
+    # function runs on the left of "||", where "set -e" does not apply, so
+    # every step is checked by hand: a failed wipe must never leave files of
+    # an earlier attempt in what is meant to be a fresh folder.
     if [ -d "$workdir" ]; then
-        rm -rf "$workdir"
+        rm -rf "$workdir" 2>/dev/null || true
     fi
-    mkdir -p "$workdir"
+    mkdir -p "$workdir" || { echo "$prog: prep_workdir: cannot create $workdir" >&2; return 1; }
 
     # Move .wakil/ back so the directory inode and content are untouched.
     if [ -n "$_wakil_saved" ]; then
-        mv "$_wakil_saved" "$workdir/.wakil"
+        mv "$_wakil_saved" "$workdir/.wakil" || { echo "$prog: prep_workdir: cannot restore .wakil in $workdir" >&2; return 1; }
     fi
 
-    # Fresh copy + git init + one commit with a repo-local identity.
-    cp -R "$tdir/repo/." "$workdir/"
+    # Nothing but .wakil/ may be left of the earlier run.
+    _stale=$(find "$workdir" -mindepth 1 -maxdepth 1 ! -name .wakil 2>/dev/null | head -n 1)
+    if [ -n "$_stale" ]; then
+        echo "$prog: prep_workdir: $workdir was not emptied (e.g. $_stale) — aborting" >&2
+        return 1
+    fi
+
+    # Fresh copy of the task's repo/, then the optional setup hook, then one
+    # commit with a repo-local identity. The hook runs BEFORE the commit so
+    # nothing it generates from (a generator, a seed) can end up in the
+    # folder's git history; a failing hook aborts the run (a half-built task
+    # must not be scored as a model failure). The hook's own location is the
+    # task dir (outside the work folder); it addresses the work copy as its
+    # working directory.
+    cp -R "$tdir/repo/." "$workdir/" || { echo "$prog: prep_workdir: cannot copy $tdir/repo into $workdir" >&2; return 1; }
+    if [ -x "$tdir/setup.sh" ]; then
+        if ! ( cd "$workdir" && "$tdir/setup.sh" ) >"$workdir/.bench-setup.log" 2>&1; then
+            echo "$prog: prep_workdir: setup.sh of $task failed — aborting:" >&2
+            cat "$workdir/.bench-setup.log" >&2
+            return 1
+        fi
+        rm -f "$workdir/.bench-setup.log"
+    fi
     (
         cd "$workdir"
         git init -q
@@ -264,12 +288,56 @@ prep_workdir() {
         return 1
     fi
 
-    # Optional setup hook (task-level setup.sh, runs in the work copy
-    # before the agent). The hook's own location is the task dir; it
-    # should address the work copy as the working directory.
-    if [ -x "$tdir/setup.sh" ]; then
-        ( cd "$workdir" && "$tdir/setup.sh" ) >/dev/null 2>&1 || true
+    # The agent under test must not be able to see the check, the hidden
+    # files, the solution, or what a task's fixture was generated from.
+    leak_check "$workdir" "$task" || return 1
+}
+
+# leak_check <workdir> <task>: fatal pre-agent guard. The work folder was
+# just built; nothing of the task's check, hidden files, solution or
+# generator may be in it, in its tree or in its git history. Runs BEFORE the
+# agent, so the git command reads a repository the harness itself created
+# (never run git in the work folder after the agent: its .git/config is
+# agent-controlled).
+leak_check() {
+    _lw=$1; _lt=$2
+    for _n in check.sh hidden solution gen setup.sh; do
+        if [ -e "$_lw/$_n" ]; then
+            echo "$prog: LEAK in $_lt — $_n is present in the work folder $_lw" >&2
+            return 1
+        fi
+    done
+    if [ -d "$_lw/cmd/gen" ]; then
+        echo "$prog: LEAK in $_lt — a generator (cmd/gen) is present in the work folder" >&2
+        return 1
     fi
+    if grep -rIl --exclude-dir=.git --exclude-dir=.wakil -e 'rand\.NewSource' -e 'rand\.Seed' "$_lw" >/dev/null 2>&1; then
+        echo "$prog: LEAK in $_lt — a seeded generator is present in the work folder" >&2
+        return 1
+    fi
+    _hist=$(git -C "$_lw" log --all --name-only --format= 2>/dev/null | sort -u)
+    for _n in check.sh setup.sh; do
+        case "
+$_hist
+" in
+            *"
+$_n
+"*) echo "$prog: LEAK in $_lt — $_n is in the work folder's git history" >&2; return 1 ;;
+        esac
+    done
+    case "$_hist" in
+        *hidden/*|*solution/*|*gen/*|*cmd/gen*) echo "$prog: LEAK in $_lt — hidden/solution/generator paths are in the work folder's git history" >&2; return 1 ;;
+    esac
+    return 0
+}
+
+# wakil_digest <workdir>: a digest of the files under <workdir>/.wakil, read
+# only. Empty when there is no such directory. The harness never writes into
+# .wakil/; it only notices when the agent did (a file left there survives the
+# refill and could carry state from one run to the next).
+wakil_digest() {
+    [ -d "$1/.wakil" ] || return 0
+    ( cd "$1/.wakil" && find . -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | awk '{ print $1 }' )
 }
 
 # run_one <task> <run> <wakil-bin>
@@ -292,6 +360,7 @@ run_one() {
     printf '[%d/%d] %s (run %s/%d) … running, log: %s\n' \
         "$task_idx" "$total_tasks" "$task" "$run" "$runs" "$log_file"
 
+    wakil_before=$(wakil_digest "$workdir")
     start_epoch=$(date +%s)
     set +e
     # WAKIL_HOST_WORKDIR points the sandbox at the fixed work folder so
@@ -339,6 +408,9 @@ run_one() {
     fi
     end_epoch=$(date +%s)
     secs=$((end_epoch - start_epoch))
+    if [ "$(wakil_digest "$workdir")" != "$wakil_before" ]; then
+        echo "$prog: warning: $task run $run changed files under $workdir/.wakil — it survives the refill and may carry state into the next run" >&2
+    fi
     cat "$log_file.out" >> "$log_file" 2>/dev/null || true
     rm -f "$log_file.out"
 
@@ -398,6 +470,20 @@ run_one() {
             return 1
         fi
 
+        # Post-run leak guard (file existence only; no git here, the work
+        # folder's .git is agent-controlled now): nothing but repo/ was
+        # copied in, so one of these names means the agent got hold of the
+        # check, hidden files or the solution. Never scored; stops the bench.
+        for _n in check.sh hidden solution; do
+            if [ -e "$workdir/$_n" ]; then
+                echo "$prog: LEAK in $task run $run — $_n is present in the work folder after the run" >&2
+                result="error"
+                exit_reason="leak-detected"
+                csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+                return 1
+            fi
+        done
+
         # Run check.sh after every completed run (pass, declined, or error).
         # Result is pass or fail from check.sh; exit_reason keeps whatever
         # the binary reported. check.sh lives in the task dir (never in the
@@ -432,12 +518,6 @@ run_one() {
     fi
     printf '%s\n' "$_summary"
 
-    # The agent under test must never see the check, its hidden files, or
-    # the reference solution: nothing but repo/ was copied in. A stub that
-    # creates them is a harness violation, surfaced in the self-test.
-    if [ -e "$workdir/check.sh" ] || [ -e "$workdir/hidden" ] || [ -d "$workdir/solution" ]; then
-        echo "$prog: LEAK in $task run $run — check/hidden/solution was present in the work folder" >&2
-    fi
 }
 
 # find_prev_csv: the most recent bench CSV whose model matches the
@@ -794,6 +874,91 @@ EOF
         done
     done
     echo "  TestMain-exit-0 and init()-prints-PASS cheats scored fail"
+
+    echo "== self-test: no generator, seed or check in the work folder or its history =="
+    # The real long-read folder, as built by prep_workdir: only docs/ and
+    # go.mod, nothing generated-from in the tree or in git history.
+    if [ -d "$tasks_dir/long-read" ]; then
+        prep_workdir long-read || { echo "self-test FAILED: prep_workdir long-read" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        _lr="$work_root/long-read"
+        for _bad in cmd gen main.go setup.sh check.sh solution hidden; do
+            if [ -e "$_lr/$_bad" ]; then
+                echo "self-test FAILED: long-read work folder contains $_bad" >&2
+                rm -rf "$tmpdir" "$_self_work_root"; exit 1
+            fi
+        done
+        if git -C "$_lr" log --all --name-only --format= | grep -E 'cmd/gen|main\.go|check\.sh|setup\.sh|solution|hidden'; then
+            echo "self-test FAILED: long-read git history names a generator or check file" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        if [ "$(find "$_lr/docs" -type f | wc -l)" -ne 60 ]; then
+            echo "self-test FAILED: long-read docs/ does not hold 60 files" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+    fi
+    # leak_check itself: each kind of leak must be refused (and a clean folder
+    # accepted), tree and history.
+    _lk="$tmpdir/leakcase"
+    for _case in clean check hidden solution gen seed history; do
+        rm -rf "$_lk"; mkdir -p "$_lk"
+        ( cd "$_lk" && git init -q && git config user.name t && git config user.email t@localhost && echo x > ok.txt )
+        case "$_case" in
+            check) echo x > "$_lk/check.sh" ;;
+            hidden) mkdir "$_lk/hidden" ;;
+            solution) mkdir "$_lk/solution" ;;
+            gen) mkdir -p "$_lk/cmd/gen" ;;
+            seed) printf 'package main\nvar _ = rand.NewSource(42)\n' > "$_lk/g.go" ;;
+            history) mkdir -p "$_lk/cmd/gen"; echo x > "$_lk/cmd/gen/main.go" ;;
+        esac
+        ( cd "$_lk" && git add -A && git commit -qm c )
+        [ "$_case" = history ] && ( cd "$_lk" && git rm -rq cmd && git commit -qm drop )
+        if leak_check "$_lk" leakcase 2>/dev/null; then _lrc=0; else _lrc=1; fi
+        if [ "$_case" = clean ] && [ "$_lrc" -ne 0 ]; then
+            echo "self-test FAILED: leak_check refused a clean folder" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        if [ "$_case" != clean ] && [ "$_lrc" -ne 1 ]; then
+            echo "self-test FAILED: leak_check accepted a folder with a $_case leak" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+    done
+    echo "  no generator/seed/check in tree or history; leak_check refuses all six leak kinds"
+
+    echo "== self-test: an agent that plants the solution dir after prep (expect error, check.sh not run) =="
+    stub_plant="$tmpdir/wakil-plant"
+    cat > "$stub_plant" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-plant/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    mkdir -p "$workdir/solution" "$workdir/.wakil"
+    echo planted > "$workdir/.wakil/state"
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-plant/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+JSON
+    exit 0 ;;
+esac
+EOF
+    chmod +x "$stub_plant"
+    task_idx=1
+    _rc=0
+    _plant_err="$tmpdir/plant.err"
+    ( set +e; BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-plant" "$stub_plant" ) 2>"$_plant_err" || _rc=$?
+    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    if [ "$_rc" -ne 1 ] || [ "$_row_result" != "error" ] || [ "$_row_reason" != "leak-detected" ]; then
+        echo "self-test FAILED: planted solution dir: rc=$_rc result=$_row_result reason=$_row_reason, want 1/error/leak-detected" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    grep -q 'changed files under .*/.wakil' "$_plant_err" || { echo "self-test FAILED: a change under .wakil/ was not reported" >&2; cat "$_plant_err" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  planted solution/ -> error leak-detected; .wakil/ change reported"
 
     echo "== self-test: stub that sleeps past the timeout (expect timeout) =="
     # Use the harness's own timeout path with a short per-run timeout so

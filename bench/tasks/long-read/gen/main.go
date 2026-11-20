@@ -1,6 +1,8 @@
 // Command gen generates the long-read fixture: about 60 prose files of
-// about 8 KB each under docs/, each stating one number in words and one
-// category. The seed is fixed, so the fixture is reproducible.
+// about 8 KB each, each stating one number in words and one category. The
+// seed is fixed, so the fixture is reproducible. It lives outside the task's
+// repo/ so neither the generator nor the seed ever reaches the work folder or
+// its git history; setup.sh runs it with the output directory as argument.
 package main
 
 import (
@@ -39,8 +41,12 @@ var fillers = []string{
 }
 
 func main() {
+	if len(os.Args) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: gen <output-dir>")
+		os.Exit(2)
+	}
 	rng := rand.New(rand.NewSource(42))
-	out := "docs"
+	out := os.Args[1]
 	if err := os.MkdirAll(out, 0o755); err != nil {
 		panic(err)
 	}
@@ -67,5 +73,5 @@ func main() {
 			panic(err)
 		}
 	}
-	fmt.Println("generated 60 files under docs/")
+	fmt.Println("generated 60 files under", out)
 }
