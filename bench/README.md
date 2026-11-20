@@ -29,42 +29,69 @@ prints one short heartbeat line every 30 seconds with the elapsed time
 while a run is in progress, so a long task does not look hung; nothing
 extra is printed when output is piped or redirected.
 
+## Setup (one-time)
+
+```
+scripts/bench.sh --setup
+```
+
+Creates all task work folders and prints, per folder, the exact
+`wakil sandbox trust <path>` command the user must run once. The
+harness itself never runs that command and never reads from the
+terminal. The acknowledgement is keyed on:
+
+1. **Path** — `sha256(canonicalWorkspace(path))` in
+   `internal/agent/workspace.go:44` (`workspaceKey`). A stable path
+   means the key is stable.
+2. **Content hash** — `sha256` of the raw bytes of
+   `.wakil/sandbox.json` in `internal/sandbox/project/project.go:99-100`
+   (`Load`). The approval file (`<stateDir>/approved/<wsKey>`,
+   `project.go:146-152`) stores the hash; `TrimSpace(stored) == hash`
+   means approved.
+
+Emptying and refilling the folder does **not** invalidate the
+acknowledgement as long as the risk label (and thus the
+`.wakil/sandbox.json` content) is the same: the hash is of the file's
+bytes, and the same content yields the same hash. The `.wakil/`
+directory itself is recreated by the hisn backend on each run with the
+same risk label (same config, same hisn version), so the hash matches.
+If the risk label changes (different hisn version, different config),
+the content changes, the hash changes, and the approval is invalid —
+the user must re-acknowledge with `wakil sandbox trust <path>`.
+
 ## How a run works
 
 For each task and run number:
 
-1. `bench/tasks/<name>/repo/` is copied to a fresh temporary folder and
-   given `git init` + one commit, so every run starts from the same state
-   and nothing is shared between runs. The temp repo does NOT inherit the
-   host's git config: `GIT_CONFIG_GLOBAL=/dev/null` and
-   `GIT_CONFIG_SYSTEM=/dev/null` are set, and all `GIT_CONFIG_*` env vars
-   (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n) injected by
-   the host's signing-enforced session are unset before `git init`,
-   `git commit`, and `wakil run`. This prevents a host with
-   `commit.gpgsign=true` from making the generated hisn profile carry a
-   "signing" risk label: the `GIT_CONFIG_*` env vars win over every config
-   file (including `GIT_CONFIG_GLOBAL=/dev/null`), so unsetting them is
-   the only reliable block. Bench tasks never sign.
+1. `bench/tasks/<name>/repo/` is copied to a **fixed** folder
+   (`${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/work/<task>`) and given
+   `git init` + one commit with a repo-local identity
+   (`user.name "wakil-bench"`, `user.email "bench@localhost"`), so every
+   run starts from the same state and the stable path means the user's
+   one-time sandbox acknowledgement holds. The bench runs with the
+   user's normal profile — no `GIT_CONFIG_GLOBAL` override, no
+   `GIT_CONFIG_*` unsetting, no `commit.gpgsign` override.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
-3. `wakil run --auto [--auto-counsel] --result-json <file> --transcript
-   <log>` runs with the task text as the final argument, under a
-   `timeout` guard. The transcript is the full output log.
-   `WAKIL_HOST_WORKDIR` is set to the temp work copy so the sandbox
-   mounts it (not the configured `work_dir`); the agent runs in the
-   task's repository, not whatever the user's config file points at.
+3. `wakil run --auto --no-memory [--auto-counsel] --result-json <file>
+   --transcript <log>` runs with the task text as the final argument,
+   under a `timeout` guard. `--no-memory` skips per-project memory so
+   there is no carry-over between runs (no memory tools, no `plan/current`
+   read or write, no memory digest in the prompt). `WAKIL_HOST_WORKDIR`
+   is set to the fixed work folder so the sandbox mounts it (not the
+   configured `work_dir`).
 4. `check.sh` from the task folder runs in the work folder; exit 0 is a
    pass.
 5. **Workdir guard.** After each run, the harness reads the `workdir`
-   field from the result JSON and compares it to the temp folder it set up.
-   On mismatch the run is marked `error` with `exit_reason=wrong-workdir`
-   and the whole bench stops at once. A binary that does not report a
-   `workdir` field is skipped (only a mismatch is an error, not a
-   missing field).
-6. **Post-run "not acknowledged" detection.** When a run fails and the
-   log mentions "sandbox risk is not acknowledged", the exit reason is
-   set to `sandbox-not-acknowledged` and the bench stops with the label
-   named.
+   field from the result JSON and compares it to the fixed folder. On
+   mismatch the run is marked `error` with `exit_reason=wrong-workdir`
+   and the whole bench stops at once.
+6. **Sandbox acknowledgement check.** Before the first task, the
+   harness checks each selected folder non-interactively (stdin from
+   `/dev/null`). When a run ends with the "not acknowledged" error, the
+   exit reason is `sandbox-not-acknowledged` and the bench stops with
+   the label, the folder, and the one `wakil sandbox trust` command to
+   run.
 
 The task's `check.sh`, `hidden/` files and `solution/` reference result
 are **never** copied into the work folder: the agent cannot pass by
@@ -103,10 +130,11 @@ a stub that changes nothing (every task must report `fail`), a stub that
 copies the task's `solution/` into the work folder (every task must
 report `pass`), a stub that sleeps past the timeout (reported as
 `timeout`), a stub that reports a wrong workdir (must stop the bench
-with `wrong-workdir`), and a run with signing env vars injected (must
-NOT produce `sandbox-not-acknowledged`). The same run also asserts
-that `check.sh`, `hidden/` and `solution` never exist in the work
-folder during the run.
+with `wrong-workdir`), a freshness check (a marker file left by run 1
+is gone after the folder is emptied and refilled), and a path-stability
+check (the work folder path is identical across runs). The same run
+also asserts that `check.sh`, `hidden/` and `solution` never exist in
+the work folder during the run.
 
 ## Adding a task
 

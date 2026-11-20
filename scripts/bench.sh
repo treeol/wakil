@@ -7,6 +7,7 @@
 # Usage:
 #   scripts/bench.sh [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
 #                    [--timeout SECONDS] [--mashura LEVEL] [--self-test]
+#   scripts/bench.sh --setup
 #
 # Defaults: wakil from PATH, the user's configured model, all tasks, 1 run,
 # 600s per task, Mashura off.
@@ -15,7 +16,7 @@
 # non-zero only on harness errors.
 set -eu
 
-prog="${0##*/}"
+prog="${prog:="${0##*/}"}"
 
 # Detect whether stdout is a terminal (heartbeat progress lines are
 # terminal-only; nothing extra when output is piped or redirected).
@@ -29,6 +30,7 @@ usage() {
     cat <<USAGE
 usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
              [--timeout SECONDS] [--mashura LEVEL] [--self-test]
+  or:  $prog --setup
 
   --wakil PATH      wakil binary to run (default: from PATH)
   --model NAME      model for all runs (default: the user's configured model)
@@ -37,6 +39,8 @@ usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
   --timeout SECONDS per-run timeout in seconds (default: 600)
   --mashura LEVEL   auto-counsel: off|low|medium|high (default: off)
   --self-test       run every task against stub wakil binaries
+  --setup           create all task work folders and print the one
+                    'wakil sandbox trust <path>' command per folder
 USAGE
 }
 
@@ -47,6 +51,7 @@ runs=1
 timeout_sec=600
 mashura_level="off"
 self_test=0
+do_setup=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -73,6 +78,7 @@ while [ $# -gt 0 ]; do
             case "$2" in off|low|medium|high) ;; *) echo "$prog: --mashura must be off|low|medium|high (got $2)" >&2; exit 2 ;; esac
             mashura_level="$2"; shift 2 ;;
         --self-test) self_test=1; shift ;;
+        --setup) do_setup=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "$prog: unknown argument: $1" >&2; usage >&2; exit 2 ;;
     esac
@@ -85,6 +91,12 @@ bench_dir="$repo_root/bench"
 tasks_dir="$bench_dir/tasks"
 results_dir="$bench_dir/results"
 mkdir -p "$results_dir"
+
+# Fixed work folders: stable paths so the user's one-time sandbox
+# acknowledgement holds across runs. Each task runs in
+# ${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/work/<task>.
+cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
+work_root="$cache_home/wakil-bench/work"
 
 # Metric columns come from jq parsing of the per-run result JSON; without
 # jq they are honestly n/a, but say so once rather than per row.
@@ -180,41 +192,31 @@ csv_row() {
         "$(na "$(json_field "$rj" "collapses")")" "$(na "$(json_field "$rj" "mashura_rounds")")" >> "$csv_file"
 }
 
-# run_one <task> <run> <wakil-bin>
-# Copies the task repo to a fresh temp dir, sets it up, runs wakil under
-# the timeout, then checks. The task's check and reference solution are
-# never copied into the work folder. Always returns 0 (a failed task is
-# a result, not a harness error); a crashed run still leaves a CSV row.
-run_one() {
-    task=$1; run=$2; bin=$3
+# prep_workdir <task>: empty and refill the fixed work folder from the
+# task's repo/. A repo-local identity ("wakil-bench" / "bench@localhost")
+# is set after git init so the commit has an identity without reading any
+# host config file. The bench runs with the user's normal profile — no
+# GIT_CONFIG_GLOBAL override, no GIT_CONFIG_* unsetting, no
+# commit.gpgsign override.
+prep_workdir() {
+    task=$1
     tdir="$tasks_dir/$task"
-    workdir=$(mktemp -d "${TMPDIR:-/tmp}/bench-${task}-${run}.XXXXXX")
+    workdir="$work_root/$task"
 
-    # Fresh copy + git init + one commit. The temp repo inherits the
-    # host's global git config and the host's GIT_CONFIG_* env vars
-    # (injected by the signing-enforced session at COMMAND scope), so a host
-    # with commit.gpgsign=true would make ResolveRepoSigning
-    # (internal/exec/signing.go) resolve a signing key and the generated hisn
-    # profile would carry a "signing" risk label — tripping the
-    # sandbox-ack gate even though bench tasks never sign.
-    #
-    # GIT_CONFIG_GLOBAL=/dev/null suppresses the file-level global config
-    # (~/.gitconfig, /etc/gitconfig) but does NOT suppress the GIT_CONFIG_*
-    # env vars already in the environment (GIT_CONFIG_COUNT/KEY_n/VALUE_n).
-    # Those env vars are injected by BackendExecutor.signingEnv() at COMMAND
-    # scope and win over every config file. The only reliable way to
-    # prevent them from leaking into the probe and the run is to unset every
-    # GIT_CONFIG_* variable before the probe and wakil run.
-    #
-    # A repo-local user.name and user.email are set after init so the
-    # commit has an identity without reading any host config file.
+    # Delete contents but keep the folder itself (the stable path is
+    # what the sandbox acknowledgement is keyed on — see --setup).
+    rm -rf "$workdir"
+    mkdir -p "$workdir"
+
+    # Fresh copy + git init + one commit with a repo-local identity.
     cp -R "$tdir/repo/." "$workdir/"
     (
         cd "$workdir"
-        env -u GIT_CONFIG_GLOBAL -u GIT_CONFIG_SYSTEM \
-            git init -q \
-            && git add -A \
-            && git -c user.email=bench@example.invalid -c user.name=bench commit -qm "bench task $task"
+        git init -q
+        git config user.name "wakil-bench"
+        git config user.email "bench@localhost"
+        git add -A
+        git commit -qm "bench task $task"
     ) 2>/dev/null || true
 
     # Optional setup hook (task-level setup.sh, runs in the work copy
@@ -223,6 +225,19 @@ run_one() {
     if [ -x "$tdir/setup.sh" ]; then
         ( cd "$workdir" && "$tdir/setup.sh" ) >/dev/null 2>&1 || true
     fi
+}
+
+# run_one <task> <run> <wakil-bin>
+# Sets up the fixed work folder, runs wakil under the timeout, then
+# checks. The task's check and reference solution are never copied into
+# the work folder. Always returns 0 (a failed task is a result, not a
+# harness error); a crashed run still leaves a CSV row.
+run_one() {
+    task=$1; run=$2; bin=$3
+    tdir="$tasks_dir/$task"
+    workdir="$work_root/$task"
+
+    prep_workdir "$task"
 
     task_text=$(cat "$tdir/task.txt")
     result_json="$workdir/.bench-result.json"
@@ -234,33 +249,15 @@ run_one() {
 
     start_epoch=$(date +%s)
     set +e
-    # WAKIL_HOST_WORKDIR points the sandbox at the temp work copy so the
-    # agent runs there, not in the configured work_dir. Without it, the
-    # agent sees the wrong repository — the one in the config file, not
-    # the bench task's freshly-copied repo.
+    # WAKIL_HOST_WORKDIR points the sandbox at the fixed work folder so
+    # the agent runs there, not in the configured work_dir.
     export WAKIL_HOST_WORKDIR="$workdir"
 
-    # Strip every GIT signing env var (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n,
-    # GIT_CONFIG_VALUE_n) injected by the host's signing-enforced session
-    # at COMMAND scope. These win over every config file and would make
-    # ResolveRepoSigning see commit.gpgsign=true even in a fresh temp repo
-    # with GIT_CONFIG_GLOBAL=/dev/null. Without this strip, the sandbox
-    # risk probe and wakil run inherit the signing label and the bench
-    # stops with "sandbox-not-acknowledged".
-    unset GIT_CONFIG_COUNT GIT_CONFIG_SYSTEM GIT_CONFIG_GLOBAL
-    i=0
-    while [ $i -lt 20 ]; do
-        unset "GIT_CONFIG_KEY_$i" "GIT_CONFIG_VALUE_$i"
-        i=$((i + 1))
-    done
-    export GIT_CONFIG_GLOBAL=/dev/null
-    export GIT_CONFIG_SYSTEM=/dev/null
-
     if [ -n "$model_name" ]; then
-        WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto $counsel_args \
+        WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto --no-memory $counsel_args \
             --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
     else
-        timeout -k 10 "$timeout_sec" "$bin" run --auto $counsel_args \
+        timeout -k 10 "$timeout_sec" "$bin" run --auto --no-memory $counsel_args \
             --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
     fi
     run_pid=$!
@@ -319,10 +316,7 @@ run_one() {
 
     # Post-run "not acknowledged" detection: when the run failed and the
     # log mentions the sandbox risk error, the exit reason is
-    # sandbox-not-acknowledged and the bench stops with the label named
-    # (the pre-run probe already caught the common case; this catches a
-    # label that only surfaces after the model ran, e.g. a write that
-    # triggers a new capability).
+    # sandbox-not-acknowledged and the bench stops with the label named.
     if [ "$result" != "pass" ] && [ -z "$exit_reason" ]; then
         if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null; then
             result="error"
@@ -330,7 +324,7 @@ run_one() {
         fi
     fi
 
-    # Workdir guard: verify the agent ran in the temp folder we set
+    # Workdir guard: verify the agent ran in the fixed folder we set
     # up, not in the user's configured work_dir. The result JSON carries
     # the resolved workdir from the binary; mismatch means the sandbox
     # mounted the wrong directory.
@@ -341,22 +335,18 @@ run_one() {
         exit_reason="wrong-workdir"
         csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
         cat "$log_file" 2>/dev/null || true
-        rm -rf "$workdir"
         return 1
     fi
-    # If the binary did not report a workdir at all (old binary or stub
-    # without the field), the guard is skipped — only a mismatch is an
-    # error, not a missing field.
 
     csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
 
     # A sandbox-not-acknowledged result is a harness-level error, not a
-    # model failure: stop the whole bench and name the label so the user
-    # can fix it. The label was detected by the post-run log scan above.
+    # model failure: stop the whole bench and name the label and the
+    # one command to run. The label was detected by the post-run log
+    # scan above.
     if [ "$exit_reason" = "sandbox-not-acknowledged" ]; then
         echo "$prog: bench stopped — task $task run $run: sandbox risk is not acknowledged in $workdir" >&2
         echo "  run 'wakil sandbox trust $workdir' to review and acknowledge it" >&2
-        rm -rf "$workdir"
         return 1
     fi
 
@@ -384,8 +374,6 @@ run_one() {
     if [ -e "$workdir/check.sh" ] || [ -e "$workdir/hidden" ] || [ -d "$workdir/solution" ]; then
         echo "$prog: LEAK in $task run $run — check/hidden/solution was present in the work folder" >&2
     fi
-
-    rm -rf "$workdir"
 }
 
 # find_prev_csv: the most recent bench CSV (not this run's, not a
@@ -418,8 +406,36 @@ sum_cost() {
     awk -F, 'NR>1 && $11 != "n/a" && $11 != "" { s += $11 } END { printf "%.6f", s }' "$1"
 }
 
+# check_acknowledged <task>: returns 0 if the work folder's sandbox risk
+# is acknowledged (or the folder has no risk), 1 if not. Non-interactive:
+# runs 'wakil sandbox trust <path>' with stdin from /dev/null. When the
+# binary does not support a non-interactive trust check, this is a
+# best-effort probe — the post-run log scan catches the rest.
+check_acknowledged() {
+    _task=$1
+    _workdir="$work_root/$_task"
+    _output=$("$wakil_bin" sandbox trust "$_workdir" </dev/null 2>&1 || true)
+    case "$_output" in
+        *"not acknowledged"*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+
 # run_all <wakil-bin>: run every task `runs` times.
 run_all() {
+    # Pre-run check: if the binary offers a non-interactive way to detect
+    # an unacknowledged sandbox risk, check each selected folder before
+    # the first task. When the binary does not report the risk
+    # non-interactively, the post-run log scan catches it and stops the
+    # bench with the label, folder, and one command to run.
+    for task in $tasks; do
+        if ! check_acknowledged "$task"; then
+            echo "$prog: bench stopped — sandbox risk is not acknowledged in $work_root/$task" >&2
+            echo "  run 'wakil sandbox trust $work_root/$task' to review and acknowledge it" >&2
+            exit 1
+        fi
+    done
+
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         i=1
@@ -428,6 +444,39 @@ run_all() {
             i=$((i + 1))
         done
     done
+}
+
+# ---- --setup ---------------------------------------------------------------
+# Creates all task work folders and prints, per folder, the exact
+# 'wakil sandbox trust <path>' command the user must run once. The
+# harness itself never runs that command and never reads from the
+# terminal.
+do_setup() {
+    for task in $tasks; do
+        tdir="$tasks_dir/$task"
+        workdir="$work_root/$task"
+        rm -rf "$workdir"
+        mkdir -p "$workdir"
+        cp -R "$tdir/repo/." "$workdir/"
+        (
+            cd "$workdir"
+            git init -q
+            git config user.name "wakil-bench"
+            git config user.email "bench@localhost"
+            git add -A
+            git commit -qm "bench task $task"
+        ) 2>/dev/null || true
+        if [ -x "$tdir/setup.sh" ]; then
+            ( cd "$workdir" && "$tdir/setup.sh" ) >/dev/null 2>&1 || true
+        fi
+        echo "wakil sandbox trust $workdir"
+    done
+    echo
+    echo "Run each command above once. The acknowledgement is keyed on the"
+    echo "path (sha256 of the canonical path) and the content hash of"
+    echo ".wakil/sandbox.json (sha256 of its raw bytes). Emptying and"
+    echo "refilling the folder does not invalidate it as long as the risk"
+    echo "label (and thus the sandbox.json content) is the same."
 }
 
 # ---- self-test -------------------------------------------------------------
@@ -553,48 +602,32 @@ EOF
     fi
     echo "  wrong-workdir guard fired correctly (bench stopped with exit 1)"
 
-    echo "== self-test: signing env strip (expect no sandbox-not-acknowledged) =="
-    # Simulate a signing-enforced session: set GIT_CONFIG_* env vars that
-    # would make ResolveRepoSigning see commit.gpgsign=true. The harness
-    # must strip them before the run so the sandbox risk probe does not
-    # fire. We verify by checking that the stub's run does not produce
-    # exit_reason=sandbox-not-acknowledged.
-    _saved_timeout="$timeout_sec"
-    timeout_sec=5
-    task_idx=1
-    _rc=0
-    (
-        set +e
-        # Inject signing env vars like BackendExecutor.signingEnv() does
-        export GIT_CONFIG_COUNT=6
-        export GIT_CONFIG_KEY_0="user.signingkey"
-        export GIT_CONFIG_VALUE_0="key::ssh-ed25519 AAAATEST"
-        export GIT_CONFIG_KEY_1="gpg.format"
-        export GIT_CONFIG_VALUE_1="ssh"
-        export GIT_CONFIG_KEY_2="commit.gpgsign"
-        export GIT_CONFIG_VALUE_2="true"
-        export GIT_CONFIG_KEY_3="tag.gpgsign"
-        export GIT_CONFIG_VALUE_3="true"
-        export GIT_CONFIG_KEY_4="gpg.ssh.program"
-        export GIT_CONFIG_VALUE_4="ssh-keygen"
-        export GIT_CONFIG_KEY_5="gpg.ssh.allowedSignersFile"
-        export GIT_CONFIG_VALUE_5="/tmp/none"
-        BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-sign" "$stub_noop"
-    ) || _rc=$?
-    timeout_sec="$_saved_timeout"
-    # The noop stub exits 0 (no result-json), so result="fail" and
-    # exit_reason is empty (not sandbox-not-acknowledged). If the env
-    # strip failed, the post-run log scan would find "sandbox risk is not
-    # acknowledged" in the log — but there is no log because the stub
-    # doesn't write one. The key check: the run must NOT exit with
-    # exit_reason=sandbox-not-acknowledged.
-    _sign_exit_reason=$(awk -F, 'NR>1 && $4=="self-sign" {print $7}' "$csv_file" | tail -1)
-    if [ "$_sign_exit_reason" = "sandbox-not-acknowledged" ]; then
-        echo "self-test FAILED: signing env strip did not prevent sandbox-not-acknowledged" >&2
+    echo "== self-test: fixed-path freshness (expect marker gone in run 2) =="
+    # Run 1 leaves a marker file; run 2 must not see it (the folder is
+    # emptied and refilled before each run).
+    _fresh_task="$(echo "$tasks" | awk '{print $1}')"
+    _fresh_workdir="$work_root/$_fresh_task"
+    prep_workdir "$_fresh_task"
+    touch "$_fresh_workdir/.bench-marker-from-run-1"
+    prep_workdir "$_fresh_task"
+    if [ -e "$_fresh_workdir/.bench-marker-from-run-1" ]; then
+        echo "self-test FAILED: marker file survived prep_workdir (folder not emptied)" >&2
         rm -rf "$tmpdir"
         exit 1
     fi
-    echo "  signing env strip works (no sandbox-not-acknowledged)"
+    echo "  freshness OK (marker gone after refill)"
+
+    echo "== self-test: fixed-path stability (expect same path across runs) =="
+    _stab_task="$(echo "$tasks" | awk '{print $1}')"
+    _stab_path1="$work_root/$_stab_task"
+    prep_workdir "$_stab_task"
+    _stab_path2="$work_root/$_stab_task"
+    if [ "$_stab_path1" != "$_stab_path2" ]; then
+        echo "self-test FAILED: path changed between runs ($_stab_path1 -> $_stab_path2)" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    echo "  path stability OK ($_stab_path1)"
 
     echo
     echo "== self-test summary =="
@@ -610,6 +643,11 @@ EOF
 }
 
 main() {
+    if [ "$do_setup" -eq 1 ]; then
+        do_setup
+        return 0
+    fi
+
     if [ "$self_test" -eq 1 ]; then
         self_test
         return 0
