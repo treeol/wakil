@@ -369,10 +369,19 @@ run_one() {
 
     # Workdir guard: verify the agent ran in the fixed folder we set
     # up, not in the user's configured work_dir. The result JSON carries
-    # the resolved workdir from the binary; mismatch means the sandbox
-    # mounted the wrong directory.
+    # the resolved workdir from the binary; a missing value or mismatch
+    # means the sandbox mounted the wrong directory. A missing value is
+    # an error (the binary must report its workdir).
     _actual_workdir=$(json_field "$result_json" "workdir")
-    if [ -n "$_actual_workdir" ] && [ "$_actual_workdir" != "$workdir" ]; then
+    if [ -z "$_actual_workdir" ]; then
+        echo "$prog: MISSING WORKDIR in $task run $run: binary did not report workdir" >&2
+        result="error"
+        exit_reason="missing-workdir"
+        csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+        cat "$log_file" 2>/dev/null || true
+        return 1
+    fi
+    if [ "$_actual_workdir" != "$workdir" ]; then
         echo "$prog: WRONG WORKDIR in $task run $run: binary reports workdir=$_actual_workdir, expected $workdir — agent ran in the wrong folder" >&2
         result="error"
         exit_reason="wrong-workdir"
@@ -502,14 +511,27 @@ self_test() {
 
     tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/bench-selftest.XXXXXX")
 
-    # Stub that changes nothing (and writes no result-json, like a binary
-    # built before --result-json existed: tokens stay n/a).
+    # Stub that changes nothing (writes a result-json with the correct
+    # workdir so the guard passes, but no solution — check.sh fails).
     stub_noop="$tmpdir/wakil-noop"
     cat > "$stub_noop" <<'EOF'
 #!/bin/sh
 case "$1" in
   version) echo "stub-noop/0.0.0" ;;
-  run) exit 0 ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-noop/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0}
+JSON
+    exit 0 ;;
 esac
 EOF
     chmod +x "$stub_noop"
@@ -542,13 +564,27 @@ esac
 EOF
     chmod +x "$stub_solve"
 
-    # Stub that sleeps past any timeout.
+    # Stub that sleeps past any timeout (writes a result-json first so the
+    # workdir guard passes, then sleeps until the timeout kills it).
     stub_slow="$tmpdir/wakil-slow"
     cat > "$stub_slow" <<'EOF'
 #!/bin/sh
 case "$1" in
   version) echo "stub-slow/0.0.0" ;;
-  run) sleep 3600 ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-slow/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0}
+JSON
+    sleep 3600 ;;
 esac
 EOF
     chmod +x "$stub_slow"
@@ -624,6 +660,44 @@ EOF
         exit 1
     fi
     echo "  wrong-workdir guard fired correctly (bench stopped with exit 1)"
+
+    echo "== self-test: stub that reports a missing workdir (expect error + stop) =="
+    # Stub that writes a result-json without a workdir field — the guard
+    # must treat a missing workdir as an error.
+    stub_missing="$tmpdir/wakil-missing"
+    cat > "$stub_missing" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-missing/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-missing/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+JSON
+    exit 0 ;;
+esac
+EOF
+    chmod +x "$stub_missing"
+    _saved_timeout="$timeout_sec"
+    timeout_sec=5
+    task_idx=1
+    _rc=0
+    ( set +e; BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-missing" "$stub_missing" ) || _rc=$?
+    timeout_sec="$_saved_timeout"
+    if [ "$_rc" -ne 1 ]; then
+        echo "self-test FAILED: missing-workdir guard did not stop the bench (exit=$_rc)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    echo "  missing-workdir guard fired correctly (bench stopped with exit 1)"
 
     echo "== self-test: fixed-path freshness (expect marker gone in run 2) =="
     # Run 1 leaves a marker file; run 2 must not see it (the folder is

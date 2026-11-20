@@ -245,8 +245,11 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	// Stamp the resolved workspace folder onto opts so writeResultJSON
 	// can report it. cfg.HostWorkDir is the config-layer value after env
 	// and flag resolution (WAKIL_HOST_WORKDIR > ILM_HOST_WORKDIR > config
-	// file > cwd). Empty when the config did not resolve one (e.g. direct
-	// mode falls back to cwd inside NewDirectExecutor, not here).
+	// file > cwd). The executor's actual root (WorkspaceRoot) may differ
+	// from the config value in direct mode (cfg.HostWorkDir is empty, the
+	// executor uses cwd). After BuildApp we have the real executor, so
+	// stamp the real workspace root. Empty when the executor did not
+	// resolve one.
 	opts.Workdir = cfg.HostWorkDir
 
 	// Bootstrap failures must still leave a result file (bench harness).
@@ -278,6 +281,11 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 		fmt.Fprintln(os.Stderr, "bootstrap error:", err)
 		return ExitError
 	}
+	// Override the config-layer workdir with the executor's actual
+	// workspace root so the result JSON reports the real path the agent
+	// ran in, not the config/env value. In direct mode cfg.HostWorkDir
+	// is empty; the executor's WorkspaceRoot is cwd.
+	opts.Workdir = app.Exec.WorkspaceRoot()
 	// Set the session budget from the --budget flag. The App's BudgetUSD field
 	// is checked after each inference call in streamTurn.
 	app.BudgetUSD = opts.BudgetUSD
