@@ -361,8 +361,12 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				extLen := len(app.AgentExtensionPrompt)
 				fullLen := len(app.AgentPrompt)
 				status := fmt.Sprintf("prompt mode: %s · core=%d ext=%d full=%d", app.PromptMode(), coreLen, extLen, fullLen)
-				if app.PromptOverrideVersion > 0 && app.PromptOverrideVersion < prompts.PromptVersion {
-					status += fmt.Sprintf(" · override v%d (built-in v%d)", app.PromptOverrideVersion, prompts.PromptVersion)
+				if !app.PromptUsingEmbedded && app.PromptOverrideVersion < prompts.PromptVersion {
+					if app.PromptOverrideVersion == 0 {
+						status += fmt.Sprintf(" · override has no version (built-in v%d)", prompts.PromptVersion)
+					} else {
+						status += fmt.Sprintf(" · override v%d (built-in v%d)", app.PromptOverrideVersion, prompts.PromptVersion)
+					}
 				}
 				return true, false, note(status)
 			default:

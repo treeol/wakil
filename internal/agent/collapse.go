@@ -2082,9 +2082,7 @@ func (a *App) CollapseCounts() (midTurn, turnEnd int) {
 
 // DeclinedCallCount returns the session-cumulative count of tool calls whose
 // result was declined by the user or by policy (the "[declined by user]"
-// marker). Turn-goroutine only in practice, but the read here is safe from
-// any goroutine since declinedCalls is a plain int written on the turn
-// goroutine. Guarded by stateMu to match CollapseCounts' locking convention.
+// marker). Guarded by stateMu to match the increment in finalizeToolResult.
 func (a *App) DeclinedCallCount() int {
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()

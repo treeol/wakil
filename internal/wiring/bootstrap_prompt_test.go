@@ -98,6 +98,22 @@ func TestLoadAgentPromptVersionComparison(t *testing.T) {
 		t.Errorf("override version = %d, want %d (matching)", ver3, prompts.PromptVersion)
 	}
 
+	// Version-only file (no body after stripping) should fall back to embedded.
+	versionOnlyPath := filepath.Join(dir, "versiononly.txt")
+	if err := os.WriteFile(versionOnlyPath, []byte("# prompt-version: 3\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prompt5, usingEmb5, ver5 := loadAgentPrompt(config.Config{AgentPromptPath: versionOnlyPath})
+	if !usingEmb5 {
+		t.Error("usingEmbedded should be true for a version-only file (no prompt body)")
+	}
+	if ver5 != 0 {
+		t.Errorf("override version = %d, want 0 (embedded fallback)", ver5)
+	}
+	if prompt5 == "" {
+		t.Error("prompt should not be empty (embedded fallback expected)")
+	}
+
 	// Embedded prompt: version is 0 (not an override).
 	_, usingEmb4, ver4 := loadAgentPrompt(config.Config{AgentPromptPath: ""})
 	if !usingEmb4 {

@@ -666,6 +666,10 @@ func loadAgentPrompt(cfg config.Config) (prompt string, usingEmbedded bool, over
 		return embedded, true, 0
 	}
 	prompt, overrideVersion = stripPromptVersion(string(b))
+	if len(strings.TrimSpace(prompt)) == 0 {
+		fmt.Fprintf(os.Stderr, "agent prompt: warning: %s has no prompt body after stripping the version line — using embedded prompt\n", path)
+		return embedded, true, 0
+	}
 	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
 	return prompt, false, overrideVersion
 }

@@ -270,8 +270,7 @@ type App struct {
 	curTurn int
 	// declinedCalls counts tool calls whose result was declined by the user
 	// or by policy (the "[declined by user]" marker). Incremented in
-	// finalizeToolResult, the single bookkeeping path for tool results.
-	// Turn-goroutine only — no lock needed. Read by writeResultJSON for the
+	// finalizeToolResult under stateMu. Read by DeclinedCallCount for the
 	// --result-json summary.
 	declinedCalls int
 	// lastPanelVoid is set by a synchronous mashūra panel when any reply was
@@ -2286,7 +2285,7 @@ func (a *App) AgentPromptNote() string {
 		return "· agent prompt: built-in fallback (no path configured)"
 	}
 	if a.PromptUsingEmbedded {
-		return fmt.Sprintf("· agent prompt: built-in (file not found at %s)", path)
+		return fmt.Sprintf("· agent prompt: built-in (could not load %s — using embedded prompt)", path)
 	}
 	return fmt.Sprintf("· agent prompt: %s (%d bytes)", path, len(a.AgentPrompt))
 }

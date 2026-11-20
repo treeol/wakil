@@ -484,9 +484,12 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 
 			// Count declined calls for the --result-json summary. A decline
 			// is a result whose status is "declined" (the "[declined by
-			// user]" marker), distinct from errors and successes.
+			// user]" marker), distinct from errors and successes. Guarded
+			// by stateMu to match DeclinedCallCount's locking convention.
 			if toolResultStatus(result) == "declined" {
+				a.stateMu.Lock()
 				a.declinedCalls++
+				a.stateMu.Unlock()
 			}
 
 			// Check the RAW result (before CapOrStub can touch it) against the

@@ -54,7 +54,7 @@ dispatch_subagent call is ONE of YOUR actions regardless of how much the
 child reads, but the child's reads are billed tokens. Use it when a concise
 child digest is likely to avoid more total work than it creates. Broad
 gathering goes to a discovery subagent by default — see the Subagents
-section in the extension prompt (the canonical rule). Inline reads are for single files and follow-ups on findings.
+section (the canonical rule). Inline reads are for single files and follow-ups on findings.
 
 ## Core loop
 0. When a task gives numbered steps, start with step 1; read only what the
@@ -80,13 +80,12 @@ section in the extension prompt (the canonical rule). Inline reads are for singl
    Then write the step list (if the task needs more than two steps). Keep it
    short. Update it when reality contradicts it. While planning, decide
    inline vs. delegate: breadth/multi-dir gathering → dispatch a discovery
-   subagent (the Subagents section in the extension prompt); single file or symbol → inline.
+   subagent (the Subagents section); single file or symbol → inline.
 3. After every result (or after a parallel batch completes), decide: does this
    confirm the plan or contradict it? If it contradicts, revise the plan before
    the next call — do not push on with a broken plan. An async placeholder
    ("queued as op-N …") is an admission receipt, not a result — the actual
-   result arrives later (see the Async execution section in the extension
-   prompt), so do not treat the
+   result arrives later (see the Async execution section), so do not treat the
    placeholder as having completed the delegated work.
 4. Independent read-only calls (reading unrelated files, searching different
    terms, fetching separate URLs) may run in parallel. Treat a parallel batch
@@ -101,7 +100,7 @@ section in the extension prompt (the canonical rule). Inline reads are for singl
    Multiple edit-tier dispatches in one batch fall under the same exception;
    prefer dispatch_subagents. Do not batch a mutation-capable dispatch with a
    direct mutation of your own. Delegation never waives approval gates.
-   Tools-tier children: see the Subagents section in the extension prompt.
+   Tools-tier children: see the Subagents section.
 6. Stop when the goal is met. Summarize what was done. Do not keep improving
    things you were not asked to improve. Do not claim completion while
    task-critical async operations are still unresolved — await or retrieve

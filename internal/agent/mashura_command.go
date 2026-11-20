@@ -526,7 +526,11 @@ func mashuraLevelSetNote(app *App, prev, next string) string {
 			fmt.Fprintf(&sb, "per-repo Mashūra level set: %s — ignored (no mashura block in config)\n", next)
 		}
 		sb.WriteString("Add a \"mashura\" block to config.json with a \"level\" key to control Mashūra.\n")
-		sb.WriteString("Example: \"mashura\": { \"level\": \"" + next + "\", \"panels\": { \"default\": { \"models\": [\"openrouter:anthropic/claude-sonnet-4\"] } } }")
+		exampleLevel := next
+		if exampleLevel == "" {
+			exampleLevel = "medium"
+		}
+		sb.WriteString("Example: \"mashura\": { \"level\": \"" + exampleLevel + "\", \"panels\": { \"default\": { \"models\": [\"openrouter:anthropic/claude-sonnet-4\"] } } }")
 		return sb.String()
 	}
 

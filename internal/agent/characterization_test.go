@@ -170,6 +170,20 @@ func TestDeclinedCallCount(t *testing.T) {
 	}
 }
 
+// TestDeclinedCallCount_IncrementedOnDecline verifies that a declined tool
+// call increments the declinedCalls counter used by --result-json.
+func TestDeclinedCallCount_IncrementedOnDecline(t *testing.T) {
+	fe := newFakeExecutor()
+	app := newTestApp("", fe, func(_, _, _ string, _ bool) bool { return false })
+
+	app.ExecuteToolCall(context.Background(), proxy.ToolCall{Function: proxy.FunctionCall{
+		Name: "write_file", Arguments: `{"path":"out.txt","content":"hello"}`,
+	}})
+	if got := app.DeclinedCallCount(); got != 1 {
+		t.Errorf("after one declined call, DeclinedCallCount = %d, want 1", got)
+	}
+}
+
 // TestExecuteToolCall_InvalidArgs verifies that malformed JSON arguments
 // return an ERROR: string.
 func TestExecuteToolCall_InvalidArgs(t *testing.T) {
