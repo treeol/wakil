@@ -866,7 +866,12 @@ func sedScriptIsDestructive(script string) bool {
 			}
 			delim := s[i]
 			i++
-			if !skipDelimited(delim) || !skipDelimited(delim) {
+			// Pattern, then replacement: each call consumes through its
+			// closing delimiter.
+			if !skipDelimited(delim) {
+				return true
+			}
+			if !skipDelimited(delim) {
 				return true
 			}
 			for i < n && !isEnd(s[i]) {
