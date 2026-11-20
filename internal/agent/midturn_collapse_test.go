@@ -3,10 +3,13 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/treeol/wakil/internal/proxy"
+	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 )
 
@@ -89,6 +92,93 @@ func TestMidTurnCollapseFiresInsideLongTurn(t *testing.T) {
 	}
 	assertPairing(t, proj)
 	assertNoOrphanedToolCalls(t, proj)
+}
+
+// buildRepeatCollapseApp returns an app in a long turn with a large task
+// message and rounds small completed read rounds. The ceiling keeps the
+// projection over it, and the kept tail spans more than one round, which is
+// the case where the repeat guard used to compare the wrong index.
+func buildRepeatCollapseApp(t *testing.T, rounds int) (*App, *strings.Builder) {
+	t.Helper()
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.curTurn, app.turnSeq = 1, 1
+	app.Cfg.ContextCollapseCeilingTokens = 3000
+	app.Cfg.ContextCollapseMinBytes = 1
+	app.Cfg.HardMaxBytes = 400000
+	out := new(strings.Builder)
+	app.Out = out
+	app.appendConv(proxy.Message{Role: "user", Content: StrPtr(strings.Repeat("big task ", 3000))})
+	for i := 1; i <= rounds; i++ {
+		id := fmt.Sprintf("c%d", i)
+		app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: id, Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}})
+		app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("small\n", 50))})
+	}
+	return app, out
+}
+
+// countSpills counts the turn-1 partial spill files in the session's
+// toolcache directory. The directory is shared across runs, so callers take
+// a baseline with countSpills before the calls under test.
+func countSpills(t *testing.T, app *App) int {
+	t.Helper()
+	entries, err := os.ReadDir(filepath.Join(wtools.ToolCacheRoot(), app.chatID()))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), "turn-1-part") {
+			n++
+		}
+	}
+	return n
+}
+
+// TestMidTurnCollapseRepeatOnUnchangedConversation reproduces the repeated
+// "collapsed request" notice: four pass calls on an unchanged conversation
+// with a multi-round tail must give one collapse, one spill file and one
+// notice line.
+func TestMidTurnCollapseRepeatOnUnchangedConversation(t *testing.T) {
+	app, out := buildRepeatCollapseApp(t, 12)
+	before := countSpills(t, app)
+	for i := 0; i < 4; i++ {
+		app.collapseMidTurnPrefix()
+	}
+	if got := app.midTurnCollapses; got != 1 {
+		t.Errorf("midTurnCollapses = %d, want 1", got)
+	}
+	if got := strings.Count(out.String(), "collapsed request 1:"); got != 1 {
+		t.Errorf("collapse notices = %d, want 1; out=%q", got, out.String())
+	}
+	if got := countSpills(t, app) - before; got != 1 {
+		t.Errorf("spill files written = %d, want 1", got)
+	}
+}
+
+// TestMidTurnCollapseTwoRealAdvancesGiveTwo checks the guard does not
+// suppress a real advance: after one collapse, a new completed round moves
+// the boundary and a second collapse runs.
+func TestMidTurnCollapseTwoRealAdvancesGiveTwo(t *testing.T) {
+	app, out := buildRepeatCollapseApp(t, 12)
+	app.collapseMidTurnPrefix()
+	if got := app.midTurnCollapses; got != 1 {
+		t.Fatalf("first collapse: midTurnCollapses = %d, want 1", got)
+	}
+	// One new completed round moves the boundary once. Each further pass
+	// with no new round must add nothing.
+	id := "c7"
+	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: id, Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}})
+	app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("small\n", 50))})
+	app.collapseMidTurnPrefix()
+	app.collapseMidTurnPrefix()
+	if got := app.midTurnCollapses; got != 2 {
+		t.Errorf("after one new round: midTurnCollapses = %d, want 2", got)
+	}
+	if got := strings.Count(out.String(), "collapsed request 1:"); got != 2 {
+		t.Errorf("collapse notices = %d, want 2; out=%q", got, out.String())
+	}
 }
 
 // TestAutomaticCollapsePreservesExplicitCheckpoint covers an automatic

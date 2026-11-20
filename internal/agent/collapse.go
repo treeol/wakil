@@ -1775,19 +1775,23 @@ func (a *App) collapseMidTurnPrefix() {
 		a.convMu.RUnlock()
 		return
 	}
-	// Already collapsed at this boundary? (The previous record's
-	// BoundaryCallID resolves to this same batch.) Then this call would
-	// only re-archive, re-index and reprint — do nothing.
+	// Derive the kept tail of whole rounds before the boundary exactly as
+	// the model-initiated writer does, so both writers share one walk.
+	tailStart := a.collapseTailStart(s, taskIdx, boundaryIdx+1)
+	// Already collapsed up to this tail? The previous record anchors at
+	// the first kept batch (its BoundaryCallID). If that anchor is at or
+	// before the tail this pass would keep, the range [taskIdx+1,
+	// tailStart) is already elided: re-archiving, re-indexing or
+	// reprinting would repeat the same collapse. A boundary that has not
+	// advanced never moves backward either, so an explicit or earlier
+	// record is never shrunk.
 	if existing {
 		prevIdx := findBoundaryAssistantIdx(a.Conv, s, existingRec.BoundaryCallID)
-		if prevIdx == boundaryIdx {
+		if prevIdx >= 0 && prevIdx >= tailStart {
 			a.convMu.RUnlock()
 			return
 		}
 	}
-	// Derive the kept tail of whole rounds before the boundary exactly as
-	// the model-initiated writer does, so both writers share one walk.
-	tailStart := a.collapseTailStart(s, taskIdx, boundaryIdx+1)
 	// The range (taskIdx+1 .. tailStart-1) is what is archived; the tail
 	// is the retained latest whole rounds (see collapseTailStart). The
 	// immutable task/system messages can exceed the ceiling on their

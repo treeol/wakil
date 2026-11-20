@@ -615,13 +615,9 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// shows a struggle signal. In auto-counsel mode this fires the call
 		// directly (up to MaxCounsel times); otherwise it only prints a hint.
 		a.maybeSuggestDebug(ctx)
-		// Mid-turn collapse: if the projected request now exceeds the
-		// percentage hard max or the absolute ceiling, collapse this
-		// turn's completed prefix before the next model request is built.
-		// Sits here (after the tool round) in addition to the in-loop
-		// placement above — both are between tool calls, and both are
-		// before the next model request.
-		a.collapseMidTurnPrefix()
+		// Mid-turn collapse runs once per request, at the top of the loop
+		// (see the in-loop placement above). Running it here as well made
+		// every pass evaluate the same boundary twice.
 	}
 	return final, suspended, nil
 }
