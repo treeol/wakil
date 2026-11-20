@@ -1,18 +1,28 @@
 // Package agent — readonly.go: shell-command classification for the auto-mode gate.
 //
-// isDestructiveShell is friction against accidental destruction in auto mode,
-// NOT a security boundary. It is bypassable by construction: a model that wants
-// to run `rm -rf /` can wrap it in a variable, a here-doc, or any other shell
-// construct that defeats first-token analysis. The goal is to catch common
-// accidental cases, not adversarial ones.
+// What the classifier guarantees:
+//   - IsReadOnlyShell reports true only when it positively recognises every part
+//     of the command: each segment's command word is in readOnlyCmds, its
+//     arguments pass readFlagsOK, and every redirect, substitution and loop is
+//     one of the forms listed below. Anything it cannot parse, or is unsure
+//     about, is not read-only. It fails closed.
+//   - IsDestructiveShell reports true for commands that remove, overwrite,
+//     kill, escalate, wrap another command, or write through a redirect. It
+//     also reports true for a command word it cannot judge (a variable, a
+//     substitution, a quoted or escaped name, a shell keyword or a "(" group).
+//     A command that IsReadOnlyShell accepts is never reported destructive.
+//     A command that is neither is gated for confirmation, not auto-approved.
+//   - The intended read-only forms are: fd duplication (">&N", "N>&M", "N>&-"
+//     followed by a token boundary), redirects to exactly /dev/null, sed print
+//     and address forms without -i, -f, -e tricks or "--", a complete one-line
+//     for/while/until loop whose header and body are read-only, and "$(...)"
+//     whose inner and outer commands are read-only.
 //
-// Known limitations (inherent to first-token analysis, not fixable without a
-// real shell parser):
-//   - Env-var wrappers like `VAR=$(rm foo)` are caught by the $() check, but
-//     deeply nested constructs could still evade detection.
-//   - This is friction, not a security boundary. A model that wants to run
-//     `rm -rf /` can wrap it in constructs that defeat first-token analysis.
-//     The goal is to catch common accidental cases, not adversarial ones.
+// This is a classifier for an auto-approval gate. It is not a security
+// boundary: it reads the command text, not what the shell or a program will do
+// at run time. The sandbox (hisn, Docker or the direct backend) is the real
+// boundary. Use this classifier to avoid asking for routine reads and to stop
+// accidental destruction, and rely on the sandbox to contain anything else.
 package agent
 
 import "strings"
