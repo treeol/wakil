@@ -68,143 +68,130 @@ var destructiveCmds = map[string]bool{
 	"tee": true,
 }
 
-// extractDollarParenInners returns the content of every $(...) pair in s.
-// Returns nil when there is none. Unbalanced $( is ignored (returns what
-// was found so far).
-func extractDollarParenInners(s string) []string {
-	var result []string
+// substituteDollarParen replaces every balanced $(...) in s with the
+// variable-shaped placeholder $__SUBST and returns the inner command strings.
+// ok is false when a "$(" has no matching ")": callers must then fail closed
+// (treat the command as destructive / not read-only). The placeholder is
+// variable-shaped on purpose: a substituted word is as unknowable as a
+// variable, so it gets the same restrictions (see varSafeCmds).
+func substituteDollarParen(s string) (out string, inners []string, ok bool) {
+	var b strings.Builder
 	i := 0
-	for {
-		j := strings.Index(s[i:], "$(")
-		if j < 0 {
-			break
-		}
-		start := i + j + 2
-		depth := 1
-		k := start
-		for k < len(s) && depth > 0 {
-			switch s[k] {
-			case '(':
-				depth++
-			case ')':
-				depth--
+	for i < len(s) {
+		if s[i] == '$' && i+1 < len(s) && s[i+1] == '(' {
+			depth := 1
+			k := i + 2
+			for k < len(s) && depth > 0 {
+				switch s[k] {
+				case '(':
+					depth++
+				case ')':
+					depth--
+				}
+				k++
 			}
-			k++
+			if depth != 0 {
+				return "", nil, false
+			}
+			inners = append(inners, s[i+2:k-1])
+			b.WriteString("$__SUBST")
+			i = k
+			continue
 		}
-		if depth == 0 {
-			result = append(result, s[start:k-1])
-		}
-		i = k
+		b.WriteByte(s[i])
+		i++
 	}
-	return result
+	return b.String(), inners, true
 }
 
-// isLoopConstruct reports whether cmd begins with a for/while/until loop or
-// a case statement — control structures whose read-only/destructive
-// classification depends on every command in the header and body.
-func isLoopConstruct(cmd string) (kind string, ok bool) {
-	c := strings.TrimSpace(cmd)
-	if strings.HasPrefix(c, "for ") || strings.HasPrefix(c, "for\t") {
-		return "for", true
-	}
-	if strings.HasPrefix(c, "while ") || strings.HasPrefix(c, "while\t") {
-		return "while", true
-	}
-	if strings.HasPrefix(c, "until ") || strings.HasPrefix(c, "until\t") {
-		return "until", true
-	}
-	if strings.HasPrefix(c, "case ") || strings.HasPrefix(c, "case\t") {
-		return "case", true
-	}
-	return "", false
+// shellKeywords are shell reserved words and grouping tokens. A command
+// segment that starts with one is a compound construct this first-token
+// classifier does not model (case, if, a loop that did not parse as one
+// complete "for/while/until ...; do ...; done" line, a { } group), so it is
+// always gated: IsDestructiveShell reports true and IsReadOnlyShell false.
+var shellKeywords = map[string]bool{
+	"for": true, "while": true, "until": true, "case": true, "select": true,
+	"if": true, "then": true, "else": true, "elif": true, "fi": true,
+	"do": true, "done": true, "esac": true, "function": true,
+	"{": true, "}": true,
 }
 
-// loopBodyCommands extracts the body commands from a for/while/until loop
-// or case statement. For loops it returns everything after "do". For case
-// it returns every command after each ")". Conservative: on parse
-// failure returns nil (the caller treats the construct as destructive
-// / not read-only).
-func loopBodyCommands(cmd string) []string {
-	c := strings.TrimSpace(cmd)
-	// Find "do" keyword (for/while/until) or extract case branches.
-	if strings.HasPrefix(c, "case ") || strings.HasPrefix(c, "case\t") {
-		// case: extract commands after each ")". Conservative: return
-		// nil on unparseable.
-		var cmds []string
-		i := strings.Index(c, " in ")
-		if i < 0 {
-			return nil
-		}
-		rest := c[i+4:]
-		for {
-			j := strings.Index(rest, ")")
-			if j < 0 {
-				break
-			}
-			rest = rest[j+1:]
-			// Everything up to the next ";;" or "esac" is the command.
-			k := strings.Index(rest, ";;")
-			if k < 0 {
-				cmds = append(cmds, strings.TrimSpace(rest))
-				break
-			}
-			cmds = append(cmds, strings.TrimSpace(rest[:k]))
-			rest = rest[k+2:]
-		}
-		return cmds
-	}
-	// for/while/until: find "do" keyword, return everything after it.
-	j := strings.Index(c, " do")
-	if j < 0 {
-		j = strings.Index(c, "\tdo")
-	}
-	if j < 0 {
-		return nil
-	}
-	body := strings.TrimSpace(c[j+3:])
-	// Strip trailing "done".
-	if k := strings.LastIndex(body, "done"); k >= 0 {
-		body = strings.TrimSpace(body[:k])
-	}
-	// Split on ; and && to get individual commands.
-	var cmds []string
-	for _, p := range strings.Split(body, ";") {
-		for _, q := range strings.Split(p, "&&") {
-			if s := strings.TrimSpace(q); s != "" {
-				cmds = append(cmds, s)
-			}
-		}
-	}
-	return cmds
+// varSafeCmds are the read-only binaries that may receive $VAR (or a $(...)
+// result) as an argument. For every other allowlisted binary a variable could
+// expand to a write flag (find -delete, git diff --output=, date -s, sed -i),
+// so a variable argument keeps the command off the read-only path.
+var varSafeCmds = map[string]bool{
+	"echo": true, "printf": true, "cat": true, "tac": true, "nl": true,
+	"ls": true, "head": true, "tail": true, "wc": true, "pwd": true,
+	"grep": true, "egrep": true, "fgrep": true, "basename": true,
+	"dirname": true, "stat": true, "readlink": true,
+	"realpath": true, "cut": true, "seq": true,
 }
 
-// loopHeaderCommands extracts the header commands from a for/while/until
-// loop (everything between the keyword and "do"). For `for x in $(...)` the
-// inner $(...) is a header command. For `while cmd` / `until cmd` the cmd
-// itself is the header command. For `for x in list` the list is NOT a
-// command — it's a file list or literal — so it returns nil (the list is
-// checked separately by the destructive redirect / $() checks). Returns
-// nil on parse failure.
-func loopHeaderCommands(cmd string) []string {
-	c := strings.TrimSpace(cmd)
-	end := strings.Index(c, " do")
-	if end < 0 {
-		end = strings.Index(c, "\tdo")
+// loopKind returns "for", "while" or "until" when c starts with that keyword
+// followed by a space, else "". Other spellings (tab, newline) are not
+// parsed: they fall through to the generic path where the keyword gate
+// (shellKeywords) catches them.
+func loopKind(c string) string {
+	for _, k := range []string{"for", "while", "until"} {
+		if strings.HasPrefix(c, k+" ") {
+			return k
+		}
 	}
-	if end < 0 {
-		return nil
+	return ""
+}
+
+// splitLoop splits a single-line loop of the exact shape
+//
+//	KIND HEADER; do BODY; done
+//
+// into header and body. Anything else — a newline, ";do" without the space,
+// a redirect or a further command after "done", an empty header or body —
+// is not parsed (ok false) and the callers fail closed. Because the line must
+// END in "; done", nothing can follow the loop.
+func splitLoop(c, kind string) (header, body string, ok bool) {
+	if strings.ContainsAny(c, "\n\r") || !strings.HasSuffix(c, "; done") {
+		return "", "", false
 	}
-	header := strings.TrimSpace(c[:end])
-	// For "while cmd" / "until cmd": return cmd.
-	if strings.HasPrefix(header, "while ") || strings.HasPrefix(header, "until ") {
-		return []string{strings.TrimSpace(header[6:])}
+	idx := strings.Index(c, "; do ")
+	if idx < len(kind)+1 {
+		return "", "", false
 	}
-	// For "for x in list": the list is not a command unless it contains
-	// $(...) — a file glob or literal list is not a command. Return nil
-	// so the caller only checks the body. The $(...) check at the top of
-	// IsReadOnlyShell/IsDestructiveShell catches command substitution in
-	// the header.
-	return nil
+	start := idx + len("; do ")
+	end := len(c) - len("; done")
+	if start > end {
+		return "", "", false
+	}
+	header = strings.TrimSpace(c[len(kind)+1 : idx])
+	body = strings.TrimSpace(c[start:end])
+	if header == "" || body == "" {
+		return "", "", false
+	}
+	return header, body, true
+}
+
+// loopHeaderCommand returns the command whose classification stands for the
+// loop header. "while CMD" / "until CMD" use CMD itself. "for NAME in LIST"
+// uses "echo LIST": the list words are arguments, so command substitution,
+// backticks, redirects and expansions in it are judged by the ordinary
+// rules. Any other "for" shape (no "in", arithmetic form) is not parsed.
+func loopHeaderCommand(kind, header string) (string, bool) {
+	if kind != "for" {
+		return header, true
+	}
+	f := strings.Fields(header)
+	if len(f) < 2 || f[1] != "in" || f[0] == "" {
+		return "", false
+	}
+	for i := 0; i < len(f[0]); i++ {
+		ch := f[0][i]
+		isAlpha := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+		isDigit := ch >= '0' && ch <= '9'
+		if !isAlpha && !(isDigit && i > 0) {
+			return "", false
+		}
+	}
+	return "echo " + strings.Join(f[2:], " "), true
 }
 
 // isDestructiveShell reports whether cmd contains an operation that must always
@@ -217,45 +204,50 @@ func loopHeaderCommands(cmd string) []string {
 // while still catching `safe-cmd && rm -rf x` (second segment first token: rm).
 // Redirection (>, >>, 2>, &>) and command substitution ($(...), backticks) make
 // a segment destructive because they can hide writes or arbitrary commands.
+//
+// Fail closed: a segment whose first token is a variable or substitution
+// ("$X -rf /", "$(echo rm) x"), a shell keyword (case, if, a loop that is not
+// one complete "for/while/until ...; do ...; done" line) or a "(" group is
+// destructive. A complete one-line loop is destructive when its header or its
+// body is.
 func IsDestructiveShell(cmd string) bool {
 	c := strings.TrimSpace(cmd)
 	if c == "" {
 		return false
 	}
-	// for/while/until/case: destructive when any command in the header or
-	// body is destructive.
-	if _, ok := isLoopConstruct(c); ok {
-		for _, hc := range loopHeaderCommands(c) {
-			if IsDestructiveShell(hc) {
-				return true
-			}
+	if kind := loopKind(c); kind != "" {
+		header, body, ok := splitLoop(c, kind)
+		if !ok {
+			return true
 		}
-		for _, bc := range loopBodyCommands(c) {
-			if IsDestructiveShell(bc) {
-				return true
-			}
+		hc, ok := loopHeaderCommand(kind, header)
+		if !ok {
+			return true
 		}
-		return false
+		return IsDestructiveShell(hc) || IsDestructiveShell(body)
 	}
 	if strings.Contains(c, "`") {
 		return true // backtick substitution — always destructive (opaque inner)
 	}
-	if strings.Contains(c, "$(") || strings.Contains(c, "<(") {
-		// Process substitution <(...) always creates a temp fifo — destructive.
-		if strings.Contains(c, "<(") {
+	// Process substitution <(...) always creates a temp fifo — destructive.
+	if strings.Contains(c, "<(") {
+		return true
+	}
+	// $(...) is destructive when any inner command is destructive; an
+	// unbalanced "$(" is destructive (fail closed).
+	c2, inners, ok := substituteDollarParen(c)
+	if !ok {
+		return true
+	}
+	for _, inner := range inners {
+		if IsDestructiveShell(inner) {
 			return true
-		}
-		// $(...) is destructive when any inner command is destructive.
-		for _, inner := range extractDollarParenInners(c) {
-			if IsDestructiveShell(inner) {
-				return true
-			}
 		}
 	}
 	if hasDestructiveRedirect(c) {
 		return true
 	}
-	for _, seg := range splitShellSegments(c) {
+	for _, seg := range splitShellSegments(c2) {
 		fields := strings.Fields(seg)
 		if len(fields) == 0 {
 			continue
@@ -270,7 +262,13 @@ func IsDestructiveShell(cmd string) bool {
 		if i >= len(fields) {
 			continue
 		}
-		bin := unquoteShellArg(fields[i])
+		rawBin := unquoteShellArg(fields[i])
+		// The command word itself cannot be judged when it is a variable or
+		// a substitution, a keyword, or a "(" group.
+		if strings.ContainsAny(rawBin, "$`") || strings.HasPrefix(rawBin, "(") || shellKeywords[rawBin] {
+			return true
+		}
+		bin := rawBin
 		if j := strings.LastIndex(bin, "/"); j >= 0 {
 			bin = bin[j+1:]
 		}
@@ -328,29 +326,8 @@ func IsDestructiveShell(cmd string) bool {
 				}
 			}
 		case "sed":
-			hasScript := false
-			for _, a := range args {
-				// Shell treats \X as literal X — strip backslashes for matching.
-				aa := strings.ReplaceAll(a, "\\", "")
-				if aa == "-i" || strings.HasPrefix(aa, "-i") {
-					return true
-				}
-				// Check sed script for destructive commands (w, e, r, a, i, c,
-				// d, D, s///w). -e adds a script; non-flag arg is the script.
-				if aa == "-e" || strings.HasPrefix(aa, "-e") {
-					script := strings.TrimPrefix(aa, "-e")
-					script = strings.TrimPrefix(script, " ")
-					if sedScriptIsDestructive(script) {
-						return true
-					}
-					hasScript = true
-				} else if !strings.HasPrefix(aa, "-") {
-					// First non-flag arg is the script (or a file if -e was used).
-					if !hasScript && sedScriptIsDestructive(a) {
-						return true
-					}
-					hasScript = true
-				}
+			if sedArgsDestructive(args) {
+				return true
 			}
 		case "chmod":
 			for _, a := range args {
@@ -464,8 +441,11 @@ func unquoteShellArg(s string) string {
 
 // hasExpansionOrEscape reports whether a token contains shell constructs this
 // first-token classifier cannot model. A bare $ followed by a letter or
-// underscore is a variable reference (safe); $(, ${, backtick, and quote
-// characters are dangerous.
+// underscore is a variable reference (IsReadOnlyShell further restricts it to
+// varSafeCmds); $(, ${, backtick, quote characters, braces and a backslash are
+// dangerous. A backslash is rejected because the shell strips it before the
+// binary sees the argument ("--\output=x" reaches git as "--output=x"), which
+// would defeat every flag check in readFlagsOK.
 func hasExpansionOrEscape(tok string) bool {
 	for i := 0; i < len(tok); i++ {
 		switch tok[i] {
@@ -474,7 +454,7 @@ func hasExpansionOrEscape(tok string) bool {
 			if i+1 < len(tok) && (tok[i+1] == '(' || tok[i+1] == '{') {
 				return true
 			}
-			// $ followed by a letter or _ is a variable reference — safe.
+			// $ followed by a letter or _ is a variable reference.
 			// $ at end of string or followed by non-alnum is ambiguous — conservative.
 			if i+1 >= len(tok) {
 				return true
@@ -483,7 +463,7 @@ func hasExpansionOrEscape(tok string) bool {
 			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
 				return true
 			}
-		case '`', '\'', '"', '{', '}':
+		case '`', '\'', '"', '{', '}', '\\':
 			return true
 		}
 	}
@@ -518,53 +498,51 @@ func dangerousEnvPrefix(name string) bool {
 // then walks each segment (split by splitShellSegments) and verifies the
 // binary is in readOnlyCmds and its flags pass readFlagsOK. Env-var prefixes
 // are checked for dangerous overrides (PATH, LD_*, GIT_*, etc.) so a wrapper
-// like `GIT_CONFIG_COUNT=1 cat file` is not treated as read-only. Command
-// substitution ($(...), backticks) is read-only when the inner command is
-// read-only; a for/while loop is read-only when every command in the header
-// and body is read-only.
+// like `GIT_CONFIG_COUNT=1 cat file` is not treated as read-only.
+//
+// $(...) is read-only when every inner command is read-only AND the outer
+// command (with each substitution replaced by a variable-shaped placeholder)
+// is read-only too: "rm x $(cat f)" and "echo $(cat f) > out" stay gated.
+// A complete one-line "for/while/until ...; do ...; done" is read-only when
+// its header and body are. Anything that does not parse is NOT read-only.
+// A variable or substitution argument is accepted only for varSafeCmds.
 func IsReadOnlyShell(cmd string) bool {
 	c := strings.TrimSpace(cmd)
 	if c == "" {
 		return false
 	}
-	// for/while/until/case: read-only when every command in the header
-	// and body is read-only.
-	if _, ok := isLoopConstruct(c); ok {
-		for _, hc := range loopHeaderCommands(c) {
-			if !IsReadOnlyShell(hc) {
-				return false
-			}
+	if kind := loopKind(c); kind != "" {
+		header, body, ok := splitLoop(c, kind)
+		if !ok {
+			return false
 		}
-		for _, bc := range loopBodyCommands(c) {
-			if !IsReadOnlyShell(bc) {
-				return false
-			}
+		hc, ok := loopHeaderCommand(kind, header)
+		if !ok {
+			return false
 		}
-		return true
+		return IsReadOnlyShell(hc) && IsReadOnlyShell(body)
 	}
 	if strings.Contains(c, "`") {
 		// Backtick substitution — always non-read-only (opaque inner).
 		return false
 	}
-	if strings.Contains(c, "$(") || strings.Contains(c, "<(") {
-		// Command/process substitution: read-only when every inner command
-		// is read-only. Process substitution <(...) is always destructive
-		// (it creates a temp fifo).
-		if strings.Contains(c, "<(") {
+	// Process substitution <(...) creates a temp fifo — never read-only.
+	if strings.Contains(c, "<(") {
+		return false
+	}
+	c2, inners, ok := substituteDollarParen(c)
+	if !ok {
+		return false
+	}
+	for _, inner := range inners {
+		if !IsReadOnlyShell(inner) {
 			return false
 		}
-		for _, inner := range extractDollarParenInners(c) {
-			if !IsReadOnlyShell(inner) {
-				return false
-			}
-		}
-		// All inner commands are read-only → the substitution is read-only.
-		return true
 	}
 	if hasDestructiveRedirect(c) {
 		return false
 	}
-	segs := splitShellSegments(c)
+	segs := splitShellSegments(c2)
 	if len(segs) == 0 {
 		return false
 	}
@@ -578,6 +556,12 @@ func IsReadOnlyShell(cmd string) bool {
 			i++
 		}
 		if i >= len(fields) {
+			// A pure assignment is read-only only when its value is a
+			// substitution whose inner command was already vetted above
+			// ("result=$(grep x f)"); a bare "VAR=1" stays gated.
+			if len(fields) > 0 && strings.Contains(seg, "$__SUBST") {
+				continue
+			}
 			return false
 		}
 		bin := unquoteShellArg(fields[i])
@@ -597,6 +581,11 @@ func IsReadOnlyShell(cmd string) bool {
 		}
 		for _, a := range args {
 			if hasExpansionOrEscape(a) {
+				return false
+			}
+			// A variable (or substituted) argument can expand to a write flag
+			// for binaries that have one; only varSafeCmds accept it.
+			if strings.Contains(a, "$") && !varSafeCmds[bin] {
 				return false
 			}
 		}
@@ -664,139 +653,238 @@ func splitOnAmpersand(s string) []string {
 	return result
 }
 
-// sedScriptIsDestructive reports whether a sed script fragment contains a
-// command that writes, edits, or deletes — anything beyond print and address
-// forms. It scans for the destructive command letters: w (write), e (exec),
-// r (read file), a/i/c (append/insert/change), d/D (delete), and s with a
-// write flag (s///w). A bare address or print (p, P, =, n, l, q, b, N) is
-// read-only. Conservative: if the script is ambiguous or unparseable,
-// returns true (gate it).
-func sedScriptIsDestructive(script string) bool { // Strip leading address (digits, $, /regex/, \X, ,step). We only need
-	// to find the command letter after the address.
-	s := strings.TrimSpace(script)
-	if s == "" {
-		return false
-	}
-	// Skip a leading address: digits, $, /.../ or \c, optionally
-	// followed by a comma and another address.
-	i := 0
-	skipAddr := func() {
-		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
-			i++
-		}
-		if i < len(s) && s[i] == '$' {
-			i++
-		} else if i < len(s) && s[i] >= '0' && s[i] <= '9' {
-			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-				i++
-			}
-		} else if i < len(s) && s[i] == '/' {
-			i++
-			for i < len(s) && s[i] != '/' {
-				if s[i] == '\\' && i+1 < len(s) {
-					i++
+// sedArgsDestructive reports whether a sed invocation (the arguments after the
+// binary, each already unquoted) can write, execute or read through a
+// script: -i / --in-place, -f / --file, any unknown option, or a script
+// (positional, -e SCRIPT, -eSCRIPT, --expression[=]SCRIPT) that
+// sedScriptIsDestructive rejects. Every script is checked, including the one
+// that follows a separate "-e" argument. Backslashes are stripped first, as
+// the shell would, so "-\i" is "-i".
+func sedArgsDestructive(args []string) bool {
+	strip := func(s string) string { return strings.ReplaceAll(s, "\\", "") }
+	hasScript := false
+	endOpts := false
+	for k := 0; k < len(args); k++ {
+		a := strip(args[k])
+		switch {
+		case endOpts || a == "-" || !strings.HasPrefix(a, "-"):
+			// First non-option word is the script unless -e/--expression gave one.
+			if !hasScript {
+				if sedScriptIsDestructive(a) {
+					return true
 				}
-				i++
+				hasScript = true
 			}
-			if i < len(s) {
-				i++ // skip closing /
-			}
-		} else if i < len(s) && s[i] == '\\' {
-			i++
-			if i < len(s) {
-				i++
-			}
-		}
-		// Skip optional comma + second address.
-		if i < len(s) && s[i] == ',' {
-			i++
-			skipAddr2 := func() {
-				for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
-					i++
+		case a == "--":
+			endOpts = true
+		case strings.HasPrefix(a, "--"):
+			name, val, hasVal := strings.Cut(a, "=")
+			switch name {
+			case "--quiet", "--silent", "--regexp-extended", "--separate",
+				"--null-data", "--zero-terminated", "--unbuffered", "--posix",
+				"--debug", "--binary", "--follow-symlinks":
+			case "--line-length":
+				if !hasVal {
+					k++ // its value is the next word
 				}
-				if i < len(s) && s[i] == '$' {
-					i++
-				} else if i < len(s) && s[i] >= '0' && s[i] <= '9' {
-					for i < len(s) && s[i] >= '0' && s[i] <= '9' {
-						i++
+			case "--expression":
+				if !hasVal {
+					k++
+					if k >= len(args) {
+						return true
 					}
-				} else if i < len(s) && s[i] == '/' {
-					i++
-					for i < len(s) && s[i] != '/' {
-						if s[i] == '\\' && i+1 < len(s) {
-							i++
+					val = strip(args[k])
+				}
+				if sedScriptIsDestructive(val) {
+					return true
+				}
+				hasScript = true
+			default:
+				return true // --in-place, --file, anything unknown
+			}
+		default:
+			// Short option cluster, e.g. -n, -nE, -e'5p', -n -e.
+			cluster := a[1:]
+			for ci := 0; ci < len(cluster); ci++ {
+				switch cluster[ci] {
+				case 'n', 'E', 'r', 's', 'u', 'z', 'b':
+				case 'e':
+					script := cluster[ci+1:]
+					if script == "" {
+						k++
+						if k >= len(args) {
+							return true
 						}
-						i++
+						script = strip(args[k])
 					}
-					if i < len(s) {
-						i++
+					if sedScriptIsDestructive(script) {
+						return true
 					}
+					hasScript = true
+					ci = len(cluster) // the rest of the cluster was the script
+				default:
+					return true // i (in-place), f (script file), l, unknown
 				}
 			}
-			skipAddr2()
 		}
-		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+	}
+	return false
+}
+
+// sedScriptIsDestructive reports whether a sed script contains ANY command
+// other than print/address forms. It walks every command in the script (they
+// are separated by ';', newline, or grouped with { }), so "1p;w out" is
+// caught even though its first command is a print. Allowed: p P = n N l q Q
+// F h H g G x z b t T, grouping braces, comments, and s/RE/REPL/FLAGS with
+// flags limited to g p i I m M and digits (a w or e flag writes or executes).
+// Everything else — w W r R e a i c d D y and anything unrecognised — is
+// destructive (gated). Unparseable input is destructive.
+func sedScriptIsDestructive(script string) bool {
+	s := script
+	n := len(s)
+	i := 0
+	isSpace := func(ch byte) bool { return ch == ' ' || ch == '\t' }
+	isEnd := func(ch byte) bool {
+		return isSpace(ch) || ch == ';' || ch == '\n' || ch == '}' || ch == '#'
+	}
+	skipSpace := func() {
+		for i < n && isSpace(s[i]) {
 			i++
 		}
 	}
-	skipAddr()
-	if i >= len(s) {
-		// Address-only (no command) — read-only.
-		return false
+	skipDigits := func() {
+		for i < n && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
 	}
-	switch s[i] {
-	case 'p', 'P', '=', 'n', 'l', 'q', 'b', 'N', '#':
-		return false
-	case 'd', 'D':
-		return true
-	case 'a', 'i', 'c':
-		return true
-	case 'r':
-		return true
-	case 'w':
-		return true
-	case 'e':
-		return true
-	case 's':
-		// s is destructive when it has a write flag (w) in the flags
-		// after the delimiter. e.g. s/a/b/w or s|a|b|gw
-		// Find the delimiter, skip the pattern and replacement, check flags.
-		if i+1 >= len(s) {
-			return true // s with no delimiter — conservative
-		}
-		delim := s[i+1]
-		j := i + 2
-		for j < len(s) && s[j] != delim {
-			if s[j] == '\\' && j+1 < len(s) {
-				j++
+	// skipDelimited moves past the closing delim (i is just after the
+	// opening one); false when the delimiter is never closed.
+	skipDelimited := func(delim byte) bool {
+		for i < n && s[i] != delim {
+			if s[i] == '\\' {
+				i++
 			}
-			j++
+			i++
 		}
-		if j >= len(s) {
-			return true // no closing delimiter — conservative
+		if i >= n {
+			return false
 		}
-		j++ // skip closing delimiter (end of pattern)
-		for j < len(s) && s[j] != delim {
-			if s[j] == '\\' && j+1 < len(s) {
-				j++
+		i++
+		return true
+	}
+	skipRegexFlags := func() {
+		for i < n && (s[i] == 'I' || s[i] == 'M') {
+			i++
+		}
+	}
+	// skipAddr consumes one address if present; false when malformed.
+	skipAddr := func() bool {
+		skipSpace()
+		if i >= n {
+			return true
+		}
+		switch {
+		case s[i] == '$':
+			i++
+		case s[i] >= '0' && s[i] <= '9':
+			skipDigits()
+			if i < n && s[i] == '~' {
+				i++
+				skipDigits()
 			}
-			j++
+		case s[i] == '/':
+			i++
+			if !skipDelimited('/') {
+				return false
+			}
+			skipRegexFlags()
+		case s[i] == '\\':
+			i++
+			if i >= n {
+				return false
+			}
+			d := s[i]
+			i++
+			if !skipDelimited(d) {
+				return false
+			}
+			skipRegexFlags()
 		}
-		if j >= len(s) {
-			return true // no second closing delimiter — conservative
+		return true
+	}
+	for {
+		for i < n && (isSpace(s[i]) || s[i] == ';' || s[i] == '\n' || s[i] == '{' || s[i] == '}') {
+			i++
 		}
-		j++ // skip second closing delimiter (end of replacement)
-		// Check flags for w (write).
-		for j < len(s) && s[j] != ' ' && s[j] != '\t' && s[j] != ';' && s[j] != '\n' {
-			if s[j] == 'w' {
+		if i >= n {
+			return false
+		}
+		if s[i] == '#' {
+			for i < n && s[i] != '\n' {
+				i++
+			}
+			continue
+		}
+		if !skipAddr() {
+			return true
+		}
+		skipSpace()
+		if i < n && s[i] == ',' {
+			i++
+			skipSpace()
+			if i < n && (s[i] == '+' || s[i] == '~') {
+				i++
+				skipDigits()
+			} else if !skipAddr() {
 				return true
 			}
-			j++
 		}
-		return false
-	default:
-		// Unknown command letter — conservative: gate it.
-		return true
+		skipSpace()
+		for i < n && s[i] == '!' {
+			i++
+			skipSpace()
+		}
+		if i >= n {
+			return false // address only: no command, nothing to run
+		}
+		c := s[i]
+		i++
+		switch c {
+		case '{':
+			continue
+		case 'p', 'P', '=', 'n', 'N', 'F', 'h', 'H', 'g', 'G', 'x', 'z':
+		case 'l', 'q', 'Q':
+			skipSpace()
+			skipDigits()
+		case 'b', 't', 'T':
+			for i < n && s[i] != ';' && s[i] != '\n' && s[i] != '}' {
+				i++ // the label
+			}
+		case 's':
+			if i >= n || isSpace(s[i]) || s[i] == '\n' || s[i] == '\\' {
+				return true
+			}
+			delim := s[i]
+			i++
+			if !skipDelimited(delim) || !skipDelimited(delim) {
+				return true
+			}
+			for i < n && !isEnd(s[i]) {
+				switch ch := s[i]; {
+				case ch == 'g' || ch == 'p' || ch == 'i' || ch == 'I' || ch == 'm' || ch == 'M':
+				case ch >= '0' && ch <= '9':
+				default:
+					return true // w (write), e (execute), anything unknown
+				}
+				i++
+			}
+		default:
+			return true
+		}
+		// A command ends at a separator; anything glued on is unrecognised.
+		if i < n && !isEnd(s[i]) {
+			return true
+		}
 	}
 }
 
@@ -923,39 +1011,11 @@ func readFlagsOK(bin string, args []string) bool {
 			}
 		}
 	case "sed":
-		// sed is read-only only when its script consists solely of print
-		// and address forms (e.g. -n '5p', -n '1,10p', 5p, 1,10p). Any
-		// command that writes (w, a, i, c), edits (s///w, e), reads a
-		// file (r), or deletes (d, D) is destructive. -i is already
-		// caught by IsDestructiveShell.
-		hasScript := false
-		for _, a := range args {
-			// Shell treats \X as literal X — strip backslashes for matching.
-			aa := strings.ReplaceAll(a, "\\", "")
-			if strings.HasPrefix(aa, "-") {
-				if aa == "-i" || strings.HasPrefix(aa, "-i") {
-					return false // -i is destructive
-				}
-				// -n is fine (suppress auto-print). -e adds a script.
-				if aa == "-e" || strings.HasPrefix(aa, "-e") {
-					script := strings.TrimPrefix(aa, "-e")
-					script = strings.TrimPrefix(script, " ")
-					if sedScriptIsDestructive(script) {
-						return false
-					}
-					hasScript = true
-				}
-				continue
-			}
-			// Non-flag arg: this is the script (or a file when a script
-			// was already given via -e). If no -e was seen, the first
-			// non-flag arg is the script.
-			if !hasScript {
-				if sedScriptIsDestructive(a) {
-					return false
-				}
-				hasScript = true
-			}
+		// sed is read-only only when no option or script element can write,
+		// execute or read a script file (-i, -f, w/e/r commands, ...); see
+		// sedArgsDestructive.
+		if sedArgsDestructive(args) {
+			return false
 		}
 	case "date":
 		for _, a := range args {

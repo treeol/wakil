@@ -693,15 +693,13 @@ func TestIsReadOnlyShell_Adversarial(t *testing.T) {
 	// enabling form cannot smuggle a write/exec first, then move it to the
 	// appropriate table above with a justification.
 	//
-	// Variable references ($HOME, "$pat") are safe per the new hasExpansionOrEscape
-	// rule: $ followed by a letter/underscore is a variable reference, not
-	// command substitution. These moved from conservativeGated to
-	// mustBeRead.
-	//
-	// conservativeGated: commands the classifier used to reject but now
-	// accepts (the $variable rule loosened the gate). Kept for regression
-	// detection — if the classifier regresses, these will fail.
+	// Variable references ($HOME, "$pat") moved to mustBeRead above: $ followed
+	// by a letter/underscore is a variable reference, and echo/grep are in
+	// varSafeCmds. Every other entry below was gated before and must stay gated.
 	conservativeGated := []string{
+		`git branch --list 'pat*'`, `git branch --contains HEAD`,
+		`git branch -avv`, `git branch -av`, `git reflog -n 5`, `git reflog --all`,
+		`git diff --output-indicator-new=+`,
 		`LESSOPEN='|x %s' true`, // env prefix with pipe — still conservative
 	}
 	for _, cmd := range conservativeGated {

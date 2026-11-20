@@ -242,3 +242,118 @@ func TestIsDestructiveShell(t *testing.T) {
 		}
 	}
 }
+
+// TestShellClassifierBypasses pins the commands a review of the loop, $(...)
+// and sed handling found slipping through. Each row is one case and states the
+// verdict of BOTH classifiers: destructive means IsDestructiveShell is true and
+// IsReadOnlyShell is false; readOnly means the reverse. A row never leaves the
+// two classifiers contradicting each other.
+func TestShellClassifierBypasses(t *testing.T) {
+	destructive := []struct{ cmd, why string }{
+		// $(...) must not clear the outer command.
+		{"rm -rf /tmp/x $(cat file)", "destructive outer command with a read-only substitution"},
+		{"echo $(cat file) > /tmp/pwn", "redirect next to a substitution"},
+		{"echo $(cat file); rm -rf /tmp/x", "second segment after a substitution"},
+		{"rm -rf / && echo $(pwd)", "destructive first segment"},
+		{"$(echo rm) -rf /", "command word is a substitution"},
+		{"rm -rf /; echo $(", "unbalanced $( fails closed"},
+		{"echo $(", "unbalanced $( alone fails closed"},
+		{"$X -rf /", "command word is a variable"},
+		{"sed -n $(echo w) f", "substitution argument to sed"},
+		// Loops: header, tail, redirect, and parse failure.
+		{"for x in $(rm -rf /tmp/x); do echo $x; done", "destructive substitution in the for list"},
+		{"for x in `rm -rf /`; do echo $x; done", "backticks in the for list"},
+		{"while rm -rf /tmp/x; do echo x; done", "destructive while header"},
+		{"for x in 1; do echo $x; done; rm -rf /tmp/x", "command after done"},
+		{"for x in 1; do echo $x; done > /tmp/pwn", "redirect after done"},
+		{"for x in a; do echo $x > /tmp/pwn; done", "redirect in the body"},
+		{"for f in *;do rm -rf $f;done", "no space before do"},
+		{"for f in *\ndo\nrm $f\ndone", "newline-separated loop"},
+		{"while\trm -rf /; do echo x; done", "tab after while"},
+		{"for ((i=0;i<3;i++)); do rm x; done", "arithmetic for is not parsed"},
+		{"case x in a) echo hi;; esac; rm -rf /", "case with a trailing command"},
+		{"case $(rm -rf /) in *) echo ok;; esac", "case subject substitution"},
+		{"case x in\n*) rm -rf /;; esac", "newline after case ... in"},
+		{"if true; then rm -rf /tmp/x; fi", "if is not parsed"},
+		{"{ rm -rf /tmp/x; }", "brace group"},
+		{"(rm -rf /tmp/x)", "subshell group"},
+		// sed: every script, every option.
+		{"sed -e 'w/tmp/pwn' file", "-e with a separate script argument"},
+		{"sed -e e file", "-e execute command"},
+		{"sed --in-place s/a/b/ file", "long in-place option"},
+		{"sed -ni s/a/b/ file", "-i inside a cluster"},
+		{"sed -f pwn.sed file", "script from a file"},
+		{"sed --file=pwn.sed file", "long script-file option"},
+		{"sed 's/.*/rm/e' file", "s///e executes"},
+		{"sed -n '1p;w /tmp/pwn' file", "w after a print in one script"},
+		{"sed -n '1p;1w/tmp/pwn' file", "addressed w after a print"},
+		{"sed -n -e 1p -e 'w out' file", "second -e script"},
+		{"sed 'y/a/b/;w out' file", "w after y"},
+		{"sed -n '/x/{p;w out\n}' file", "w inside a brace group"},
+		{"sed -i s/a/b/ file", "in-place"},
+		{"sed 'w out' file", "plain w"},
+		{"sed '1d' file", "delete"},
+		{"sed -n '1p' file > out", "redirect on a print"},
+		// Backslash-hidden flag that IsDestructiveShell does gate.
+		{"sed -\\i s/a/b/ f", "backslash inside sed -i"},
+	}
+	for _, tc := range destructive {
+		if !agent.IsDestructiveShell(tc.cmd) {
+			t.Errorf("IsDestructiveShell(%q) = false, want true (%s)", tc.cmd, tc.why)
+		}
+		if agent.IsReadOnlyShell(tc.cmd) {
+			t.Errorf("IsReadOnlyShell(%q) = true, want false (%s)", tc.cmd, tc.why)
+		}
+	}
+
+	readOnly := []struct{ cmd, why string }{
+		{"echo $(cat file)", "read-only substitution"},
+		{"echo $(cat file) $(ls)", "two read-only substitutions"},
+		{"result=$(grep needle file)", "assignment from a read-only substitution"},
+		{"echo $HOME", "variable argument to echo"},
+		{"grep \"$pat\" f", "variable argument to grep"},
+		{"cat $(ls)", "substitution argument to cat"},
+		{"for f in *.go; do echo $f; done", "for with echo"},
+		{"for f in *.go; do cat $f; done", "for with cat"},
+		{"for f in $(ls); do cat $f; done", "read-only substitution in the list"},
+		{"while true; do ls; done", "while with a read-only header and body"},
+		{"for f in a b; do echo $f && cat $f; done", "body with &&"},
+		{"sed -n '5p' file", "print one line"},
+		{"sed -n '1,10p' file", "print a range"},
+		{"sed -n -e '5p' file", "-e with a print"},
+		{"sed -ne '5p' file", "-ne cluster"},
+		{"sed -n '/foo/p' file", "regex address print"},
+		{"sed 's/a/b/g' file", "substitute to stdout"},
+		{"sed -n 's/a/b/gp' file", "substitute and print"},
+	}
+	for _, tc := range readOnly {
+		if !agent.IsReadOnlyShell(tc.cmd) {
+			t.Errorf("IsReadOnlyShell(%q) = false, want true (%s)", tc.cmd, tc.why)
+		}
+		if agent.IsDestructiveShell(tc.cmd) {
+			t.Errorf("IsDestructiveShell(%q) = true, want false (%s)", tc.cmd, tc.why)
+		}
+	}
+
+	// Not auto-approvable as reads, but not "always gate even in /auto"
+	// either: a variable or a backslash can hide a write flag, which the
+	// read-only allowlist must refuse. Only IsReadOnlyShell is asserted;
+	// IsDestructiveShell cannot know what a variable holds.
+	notReadOnly := []struct{ cmd, why string }{
+		{"find . $F", "variable argument to a binary with a write flag"},
+		{"find . $(echo -delete)", "substitution argument to find"},
+		{"git diff $(echo --output=x)", "substitution argument to git"},
+		{"git diff --\\output=evil.txt", "backslash inside a git flag"},
+		{"git diff --\\ext-diff", "backslash inside a git flag"},
+		{"yq -\\i '.a=1' f.yaml", "backslash inside a yq flag"},
+		{"date -\\s '2000-01-01'", "backslash inside date -s"},
+		{"less -\\o out.txt in.txt", "backslash inside a less flag"},
+		{"for f in -delete; do find . $f; done", "variable carries a find flag"},
+		{"for x in --output=pwn; do git diff $x; done", "variable carries a git flag"},
+	}
+	for _, tc := range notReadOnly {
+		if agent.IsReadOnlyShell(tc.cmd) {
+			t.Errorf("IsReadOnlyShell(%q) = true, want false (%s)", tc.cmd, tc.why)
+		}
+	}
+}
