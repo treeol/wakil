@@ -68,20 +68,6 @@ var destructiveCmds = map[string]bool{
 	"tee": true,
 }
 
-// extractBacktickInner returns the content of the first backtick pair in s,
-// or "" when there is none or it's unbalanced.
-func extractBacktickInner(s string) string {
-	start := strings.IndexByte(s, '`')
-	if start < 0 {
-		return ""
-	}
-	end := strings.IndexByte(s[start+1:], '`')
-	if end < 0 {
-		return ""
-	}
-	return s[start+1 : start+1+end]
-}
-
 // extractDollarParenInners returns the content of every $(...) pair in s.
 // Returns nil when there is none. Unbalanced $( is ignored (returns what
 // was found so far).
