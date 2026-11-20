@@ -107,6 +107,7 @@ func TestExitReasonName(t *testing.T) {
 		ExitBackendFailure: "backend_failure",
 		ExitGaps:           "gaps",
 		ExitError:          "error",
+		ExitIncomplete:     "incomplete",
 	}
 	for code, want := range cases {
 		if got := exitReasonName(code); got != want {

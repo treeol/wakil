@@ -37,7 +37,9 @@ in the TUI is decided by flags:
 | `--auto-counsel` | fire `mashura__debug` automatically when the struggle detector triggers; needs `--auto`, or the call is declined and still uses a slot |
 | `--max-counsel N` | cap on automatic counsel calls per session; defaults to 3 when `--auto-counsel` is set |
 | `--no-oracle` | skip Mashūra review entirely |
+| `--no-memory` | skip per-project memory: no memory tools, no memory store, no memory digest in the prompt |
 | `--transcript <file>` | write the JSON-lines events to this file instead of stdout |
+| `--result-json <file>` | write a machine-readable JSON summary at exit (tokens, cost, tool/collapse/mashura/declined counts); for bench harnesses |
 | `--attach-image <path>` | attach an image file to the first message (png, jpeg, gif, webp; comma-separate several) |
 | `--policy <path>` | load a policy JSON file (`default` plus `rules`) and install it for this run |
 | `--profile <name>` | use a built-in policy profile: `read-only`, `auto-safe`, `auto-destructive` or `ci`; `--policy` wins if both are given |

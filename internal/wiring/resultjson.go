@@ -56,6 +56,8 @@ func exitReasonName(code int) string {
 		return "gaps"
 	case ExitError:
 		return "error"
+	case ExitIncomplete:
+		return "incomplete"
 	default:
 		return fmt.Sprintf("exit_%d", code)
 	}

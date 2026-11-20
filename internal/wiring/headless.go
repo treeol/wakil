@@ -76,6 +76,11 @@ type HeadlessOptions struct {
 	// harness passes this so a run's tokens/cost/counts are captured without
 	// parsing the JSONL transcript.
 	ResultJSON string
+	// StartedAt, when non-zero, is the start time used for the `seconds`
+	// field in the result JSON. When zero, RunHeadlessApp uses time.Now()
+	// (which excludes bootstrap). Set by RunHeadless so the result includes
+	// bootstrap time.
+	StartedAt time.Time
 	// Workdir is the resolved workspace folder the session actually ran
 	// in, written into the result JSON so the bench harness can verify the
 	// agent ran in the expected temp folder. Set by RunHeadless from
@@ -367,6 +372,7 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	}
 
 	ran = true
+	opts.StartedAt = started
 	return RunHeadlessApp(ctx, app, task, opts.PlanMode, opts, out)
 }
 
@@ -379,7 +385,10 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 // dispatch return for every path, including the error return, so a run
 // that fails partway still leaves a result file for the bench harness.
 func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) int {
-	started := time.Now()
+	started := opts.StartedAt
+	if started.IsZero() {
+		started = time.Now()
+	}
 	code, err := dispatchHeadlessMode(ctx, app, task, planMode, opts, out)
 	if opts.ResultJSON != "" {
 		resCode := code
