@@ -455,10 +455,11 @@ func gitArgRunsOrWrites(a string) bool {
 		return false
 	}
 	name := strings.TrimLeft(a, "-")
-	// "--ext-diff=false", "--textconv=false" and "--no-ext-diff" switch the
-	// feature off; only the enabling forms run a program.
-	if strings.HasPrefix(name, "no-ext-diff") || strings.HasPrefix(name, "no-textconv") ||
-		strings.HasPrefix(name, "no-pager") || strings.HasSuffix(a, "=false") {
+	// Only the boolean switches that turn a program off are exempt:
+	// "--ext-diff=false", "--textconv=false", "--no-ext-diff", "--no-textconv",
+	// "--no-pager". Any other "=false" is a file or program name, not a switch.
+	switch a {
+	case "--ext-diff=false", "--textconv=false", "--no-ext-diff", "--no-textconv", "--no-pager":
 		return false
 	}
 	if j := strings.Index(name, "="); j >= 0 {
@@ -778,6 +779,13 @@ func dangerousEnvPrefix(name string) bool {
 	if strings.Contains(name, "PAGER") {
 		return true
 	}
+	// Config-path and home variables change which config an allowlisted
+	// reader loads (git core.pager/fsmonitor, rg --pre, ack --pager).
+	switch name {
+	case "HOME", "XDG_CONFIG_HOME", "RIPGREP_CONFIG_PATH", "ACKRC", "BAT_CONFIG_PATH",
+		"PERL5OPT", "PERL5LIB", "BASH_ENV", "ENV", "IFS", "CDPATH", "SHELLOPTS", "BASHOPTS":
+		return true
+	}
 	return false
 }
 
@@ -1036,6 +1044,11 @@ func sedArgsDestructive(args []string) bool {
 // Everything else — w W r R e a i c d D y and anything unrecognised — is
 // destructive (gated). Unparseable input is destructive.
 func sedScriptIsDestructive(script string) bool {
+	// The parser below does not model bracket expressions, so "[/]" can hide
+	// a delimiter, a "#" or a "w" from it. Gate any script with a bracket.
+	if strings.Contains(script, "[") {
+		return true
+	}
 	s := script
 	n := len(s)
 	i := 0
@@ -1218,7 +1231,7 @@ func readFlagsOK(bin string, args []string) bool {
 			switch args[1] {
 			case "show", "list":
 				for _, a := range args[2:] {
-					if strings.HasPrefix(a, "--output") {
+					if gitArgRunsOrWrites(a) {
 						return false
 					}
 				}
@@ -1249,7 +1262,7 @@ func readFlagsOK(bin string, args []string) bool {
 				return false
 			}
 			for _, a := range args[2:] {
-				if strings.HasPrefix(a, "--output") {
+				if gitArgRunsOrWrites(a) {
 					return false
 				}
 			}
@@ -1279,7 +1292,8 @@ func readFlagsOK(bin string, args []string) bool {
 		// key file, and clusters ("-ao out") hide the letter after the first.
 		for _, a := range args {
 			if strings.HasPrefix(a, "--") {
-				if strings.HasPrefix(a, "--log-file") || strings.HasPrefix(a, "--output") {
+				lower := strings.ToLower(a)
+				if strings.HasPrefix(lower, "--log-file") || strings.HasPrefix(lower, "--output") {
 					return false
 				}
 				continue
@@ -1299,8 +1313,21 @@ func readFlagsOK(bin string, args []string) bool {
 		}
 	case "ag", "ack":
 		for _, a := range args {
-			if strings.HasPrefix(a, "--pager") || strings.HasPrefix(a, "+") {
+			if strings.HasPrefix(strings.ToLower(a), "--pag") || strings.HasPrefix(a, "+") ||
+				strings.HasPrefix(strings.ToLower(a), "--ackrc") || strings.HasPrefix(a, "--ag") {
 				return false
+			}
+		}
+	case "bat", "file":
+		// bat runs --pager and can write a config file; file -C compiles a
+		// magic database to disk. Only the plain read forms are kept.
+		for _, a := range args {
+			if strings.HasPrefix(a, "-") {
+				lower := strings.ToLower(strings.TrimLeft(a, "-"))
+				if strings.HasPrefix(lower, "pag") || strings.HasPrefix(lower, "generate") ||
+					strings.HasPrefix(lower, "config") || a == "-C" || strings.HasPrefix(a, "-C") {
+					return false
+				}
 			}
 		}
 	case "find", "fd":
@@ -1327,8 +1354,8 @@ func readFlagsOK(bin string, args []string) bool {
 		}
 	case "yq":
 		for _, a := range args {
-			if a == "--inplace" || strings.HasPrefix(a, "--inplace=") || strings.HasPrefix(a, "--split-exp") {
-				return false
+			if strings.HasPrefix(a, "--in") || strings.HasPrefix(a, "--split-exp") {
+				return false // --inplace and --in-place, with or without a value
 			}
 			// -i in a cluster ("-Pi", "-ie") or -s/-i attached: any short
 			// option letter i or s makes yq write files.
@@ -1373,11 +1400,13 @@ func readFlagsOK(bin string, args []string) bool {
 		}
 	case "printf":
 		// "printf -v NAME ..." assigns a shell variable, which can be PATH.
+		// A variable or substitution argument can expand to "-v", so the
+		// literal check is not enough: any "$" in printf's arguments gates.
 		for _, a := range args {
 			if a == "--" {
 				break
 			}
-			if a == "-v" || strings.HasPrefix(a, "-v") {
+			if a == "-v" || strings.HasPrefix(a, "-v") || strings.Contains(a, "$") {
 				return false
 			}
 		}

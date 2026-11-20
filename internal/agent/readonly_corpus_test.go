@@ -63,14 +63,31 @@ var (
 // excuse: those are covered only when the classifier itself judges the parts
 // read-only, which the regression test checks separately.
 func intendedRelaxation(cmd string) (string, bool) {
-	stripped := regexp.MustCompile(`\$\([^()]*\)`).ReplaceAllString(cmd, "")
-	if reFDDup.MatchString(stripped) && !strings.Contains(stripped, ">>&") {
-		return "fd duplication", true
+	// Only the relaxation token itself may be excused. Remove the one matched
+	// token, then the rest of the command must contain no further redirect
+	// that is not itself a listed relaxation.
+	if strings.Contains(cmd, ">>&") {
+		return "", false
 	}
-	if reDevNullRedirect.MatchString(stripped) {
-		return "redirect to /dev/null", true
+	if loc := reFDDup.FindStringIndex(cmd); loc != nil {
+		rest := cmd[:loc[0]] + " " + cmd[loc[1]:]
+		if !hasOtherRedirect(rest) {
+			return "fd duplication", true
+		}
+	}
+	if loc := reDevNullRedirect.FindStringIndex(cmd); loc != nil {
+		rest := cmd[:loc[0]] + " " + cmd[loc[1]:]
+		if !hasOtherRedirect(rest) {
+			return "redirect to /dev/null", true
+		}
 	}
 	return "", false
+}
+
+// hasOtherRedirect reports whether s still contains a '>' or '<' redirect
+// after the relaxation token has been removed.
+func hasOtherRedirect(s string) bool {
+	return strings.ContainsAny(s, "<>")
 }
 
 // innerSubstitutionsReadOnly reports whether every "$(...)" in cmd has an
