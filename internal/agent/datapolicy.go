@@ -173,7 +173,11 @@ func handleNetworkCommand(fields []string, app *App) (handled, quit bool, cmd fu
 	note := func(text string) func() Msg { return NoteCmd(text) }
 
 	if len(fields) < 2 {
-		return true, false, note(app.networkStatus() + "\n" + networkPrecedenceNote)
+		msg := app.networkStatus() + "\n" + networkPrecedenceNote
+		if line := app.networkApplyLine(app.EffectiveNetwork()); line != "" {
+			msg += "\n" + line
+		}
+		return true, false, note(msg)
 	}
 	arg := fields[1]
 
