@@ -183,6 +183,11 @@ func loopHeaderCommand(kind, header string) (string, bool) {
 	if len(f) < 2 || f[1] != "in" || f[0] == "" {
 		return "", false
 	}
+	// A loop variable that a shell or a read-only tool depends on changes what
+	// the body runs ("for PATH in .; do ls; done" runs ./ls). Gate those.
+	if dangerousLoopVar(f[0]) {
+		return "", false
+	}
 	for i := 0; i < len(f[0]); i++ {
 		ch := f[0][i]
 		isAlpha := (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
@@ -252,12 +257,9 @@ func IsDestructiveShell(cmd string) bool {
 		if len(fields) == 0 {
 			continue
 		}
-		i := 0
-		for i < len(fields) && !strings.HasPrefix(fields[i], "-") && strings.Contains(fields[i], "=") {
-			if name := envPrefixName(fields[i]); dangerousEnvPrefix(name) {
-				return true
-			}
-			i++
+		i, bad := skipLeadingPrefixes(fields)
+		if bad {
+			return true
 		}
 		if i >= len(fields) {
 			continue
@@ -268,6 +270,7 @@ func IsDestructiveShell(cmd string) bool {
 		if strings.ContainsAny(rawBin, "$`") || strings.HasPrefix(rawBin, "(") || shellKeywords[rawBin] {
 			return true
 		}
+
 		bin := rawBin
 		if j := strings.LastIndex(bin, "/"); j >= 0 {
 			bin = bin[j+1:]
@@ -346,6 +349,119 @@ func IsDestructiveShell(cmd string) bool {
 	return false
 }
 
+// skipLeadingPrefixes walks the words that precede the command word and
+// returns the index of the command word. Leading VAR=value assignments and
+// leading redirects may appear in any order. An assignment that sets a
+// dangerous name, or a redirect that is not a harmless one (see
+// leadingRedirectOK), sets bad: the caller must then fail closed.
+func skipLeadingPrefixes(fields []string) (i int, bad bool) {
+	for i < len(fields) {
+		tok := fields[i]
+		switch {
+		case strings.HasPrefix(tok, "-"):
+			return i, false
+		case startsRedirect(tok):
+			consumed, ok := leadingRedirectOK(fields, i)
+			if !ok {
+				return i, true
+			}
+			i += 1 + consumed
+		case strings.Contains(tok, "="):
+			if dangerousEnvPrefix(envPrefixName(tok)) {
+				return i, true
+			}
+			i++
+		default:
+			return i, false
+		}
+	}
+	return i, false
+}
+
+// startsRedirect reports whether tok begins with a redirect operator: an
+// optional fd digit prefix followed by "<" or ">", or "&>". Any such token is
+// routed to leadingRedirectOK, which accepts only the harmless forms.
+func startsRedirect(tok string) bool {
+	j := 0
+	for j < len(tok) && tok[j] >= '0' && tok[j] <= '9' {
+		j++
+	}
+	if j == 0 && strings.HasPrefix(tok, "&>") {
+		return true
+	}
+	return j < len(tok) && (tok[j] == '>' || tok[j] == '<')
+}
+
+// leadingRedirectOK reports whether a token that starts a segment is a
+// redirection that is harmless: fd duplication or a redirect to /dev/null.
+// consumed is how many following tokens the redirect used (1 for "> /dev/null",
+// 0 when the target is glued on). Any other redirect fails closed.
+func leadingRedirectOK(fields []string, i int) (consumed int, ok bool) {
+	tok := fields[i]
+	// Operator: optional digit prefix or "&", then ">" or ">>".
+	j := 0
+	for j < len(tok) && tok[j] >= '0' && tok[j] <= '9' {
+		j++
+	}
+	if j == 0 && strings.HasPrefix(tok, "&>") {
+		j = 1
+	}
+	if j >= len(tok) || tok[j] != '>' {
+		return 0, false // "<" and anything else is not a harmless leading redirect
+	}
+	j++
+	if j < len(tok) && tok[j] == '>' {
+		j++
+	}
+	// A "&" right after the operator with the target glued on is fd dup.
+	rest := tok[j:]
+	if rest == "" {
+		if i+1 >= len(fields) {
+			return 0, false
+		}
+		rest = fields[i+1]
+		consumed = 1
+	}
+	if strings.HasPrefix(rest, "&") {
+		if isFDDup(rest) {
+			return consumed, true
+		}
+		return 0, false
+	}
+	if rest == "/dev/null" {
+		return consumed, true
+	}
+	return 0, false
+}
+
+// isFDDup reports whether right (text after ">") is an fd duplication:
+// "&N" or "&-" with digits, followed by end, whitespace or a separator.
+// "&1out.txt" and "&2x" are file writes and return false.
+func isFDDup(right string) bool {
+	if len(right) < 2 || right[0] != '&' {
+		return false
+	}
+	j := 1
+	if right[j] == '-' {
+		j++
+	} else {
+		for j < len(right) && right[j] >= '0' && right[j] <= '9' {
+			j++
+		}
+		if j == 1 {
+			return false
+		}
+	}
+	if j == len(right) {
+		return true
+	}
+	switch right[j] {
+	case ' ', '\t', '|', ';', '&', '\n', ')':
+		return true
+	}
+	return false
+}
+
 // hasDestructiveRedirect reports whether cmd contains a redirection that
 // writes to a file (>, >>, or a numbered prefix thereof that targets a
 // real path). It returns false for fd duplication (2>&1, >&2, 1>&2,
@@ -389,9 +505,9 @@ func hasDestructiveRedirect(cmd string) bool {
 			if isDevNull(right) {
 				continue
 			}
-			// &>M or >&M with M a digit or '-' is fd duplication.
-			if len(right) > 1 && (right[1] == '-' ||
-				(right[1] >= '0' && right[1] <= '9')) {
+			// >&N, >&-, N>&M: fd duplication only with digits or '-' and a
+			// token boundary after them. ">&1out.txt" is a file write.
+			if isFDDup(right) {
 				continue
 			}
 			// &> followed by a file path is a write — destructive.
@@ -478,6 +594,25 @@ func envPrefixName(tok string) string {
 	return ""
 }
 
+// dangerousLoopVar reports whether a loop variable name can change what the
+// loop body runs or writes. Names the shell or the allowlisted tools read
+// (PATH, IFS, the LD_/DYLD_ loader vars, GIT_*, LESS*, *PAGER*, editors and
+// config-path vars) are gated. This is a deny list, not a proof: a name that
+// is not listed is still judged by the loop body's own classification.
+func dangerousLoopVar(name string) bool {
+	if dangerousEnvPrefix(name) {
+		return true
+	}
+	switch name {
+	case "PATH", "IFS", "HOME", "CDPATH", "ENV", "BASH_ENV", "SHELLOPTS", "BASHOPTS",
+		"PS4", "PROMPT_COMMAND", "HISTFILE", "TMPDIR", "XDG_CONFIG_HOME", "EDITOR",
+		"VISUAL", "SHELL", "MANPAGER", "RIPGREP_CONFIG_PATH", "ACKRC", "BAT_CONFIG_PATH",
+		"GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY":
+		return true
+	}
+	return false
+}
+
 // dangerousEnvPrefix reports whether an env assignment can influence execution
 // of allowlisted readers.
 func dangerousEnvPrefix(name string) bool {
@@ -548,12 +683,9 @@ func IsReadOnlyShell(cmd string) bool {
 	}
 	for _, seg := range segs {
 		fields := strings.Fields(seg)
-		i := 0
-		for i < len(fields) && !strings.HasPrefix(fields[i], "-") && strings.Contains(fields[i], "=") {
-			if name := envPrefixName(fields[i]); dangerousEnvPrefix(name) {
-				return false
-			}
-			i++
+		i, bad := skipLeadingPrefixes(fields)
+		if bad {
+			return false
 		}
 		if i >= len(fields) {
 			// A pure assignment is read-only only when its value is a
@@ -1031,6 +1163,16 @@ func readFlagsOK(bin string, args []string) bool {
 	case "hostname":
 		for _, a := range args {
 			if !strings.HasPrefix(a, "-") {
+				return false
+			}
+		}
+	case "printf":
+		// "printf -v NAME ..." assigns a shell variable, which can be PATH.
+		for _, a := range args {
+			if a == "--" {
+				break
+			}
+			if a == "-v" || strings.HasPrefix(a, "-v") {
 				return false
 			}
 		}
