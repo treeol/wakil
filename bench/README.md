@@ -76,15 +76,22 @@ For each task and run number:
    is added to `.git/info/exclude` so it does not show up as untracked.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
-3. `wakil run --auto --no-memory [--auto-counsel] --result-json <file>
-   --transcript <log>` runs with the task text as the final argument,
-   under a `timeout` guard. `--no-memory` skips per-project memory so
-   there is no carry-over between runs (no memory tools, no `plan/current`
-   read or write, no memory digest in the prompt). `WAKIL_HOST_WORKDIR`
-   is set to the fixed work folder so the sandbox mounts it (not the
-   configured `work_dir`).
-4. `check.sh` from the task folder runs in the work folder; exit 0 is a
-   pass.
+3. `wakil run --auto --allow-destructive --no-memory [--auto-counsel]
+   --result-json <file> --transcript <log>` runs with the task text as
+   the final argument, under a `timeout` guard (with stdin from
+   `/dev/null`). `--allow-destructive` is passed because the work folder
+   is a throwaway copy inside the sandbox and the workdir guard is in
+   place — without it, the bench measures approval friction instead of
+   the model. `--no-memory` skips per-project memory so there is no
+   carry-over between runs (no memory tools, no `plan/current` read or
+   write, no memory digest in the prompt). `WAKIL_HOST_WORKDIR` is set
+   to the fixed work folder so the sandbox mounts it (not the configured
+   `work_dir`).
+4. `check.sh` from the task folder runs in the work folder after every
+   run that ended (`pass`, `declined`, or `error`); `result` is `pass`
+   or `fail` from `check.sh`, and `exit_reason` keeps what the run
+   reported. Only `timeout`, `wrong-workdir` / `missing-workdir`, and
+   `sandbox-not-acknowledged` skip `check.sh`.
 5. **Workdir guard.** After each run, the harness reads the `workdir`
    field from the result JSON and compares it to the fixed folder. On
    mismatch the run is marked `error` with `exit_reason=wrong-workdir`

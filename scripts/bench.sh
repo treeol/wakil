@@ -289,11 +289,11 @@ run_one() {
     export WAKIL_HOST_WORKDIR="$workdir"
 
     if [ -n "$model_name" ]; then
-        WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto --no-memory $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
+        WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 &
     else
-        timeout -k 10 "$timeout_sec" "$bin" run --auto --no-memory $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" >"$log_file.out" 2>&1 &
+        timeout -k 10 "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 &
     fi
     run_pid=$!
 
@@ -339,77 +339,69 @@ run_one() {
         [ -n "$rm_model" ] && resolved_model="$rm_model"
     fi
 
-    # check.sh only when the run itself did not error out. It lives in
-    # the task dir (never in the work folder) and runs in the work folder.
-    chk_rc=1
-    if [ "$wak_rc" -eq 0 ]; then
-        set +e
-        ( cd "$workdir" && "$tdir/check.sh" ) >/dev/null 2>&1
-        chk_rc=$?
-        set -e
-    fi
-
-    # Result and exit_reason for the CSV row and the summary line.
-    if [ "$wak_rc" -eq 124 ]; then
-        result="timeout"
-    elif [ "$wak_rc" -ne 0 ]; then
-        result="error"
-    elif [ "$chk_rc" -eq 0 ]; then
-        result="pass"
-    else
-        result="fail"
-    fi
     exit_reason=$(json_field "$result_json" "exit_reason")
 
     # Post-run "not acknowledged" / "has not been approved" detection: when
-    # the run failed and the log mentions either sandbox approval error, the
-    # exit reason is sandbox-not-acknowledged and the bench stops with the
-    # folder and the one command to run, BEFORE any workdir guard message.
-    # The gate also fires when exit_reason is "error" (the binary writes
-    # "error" on bootstrap failure).
-    if [ "$result" != "pass" ]; then
+    # the run did not succeed and the log mentions either sandbox approval
+    # error, the exit reason is sandbox-not-acknowledged and the bench stops
+    # with the folder and the one command to run, BEFORE any workdir guard
+    # message or check.sh.
+    if [ "$wak_rc" -ne 0 ]; then
         if [ -z "$exit_reason" ] || [ "$exit_reason" = "error" ]; then
             if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null || \
                grep -q "has not been approved" "$log_file" 2>/dev/null; then
                 result="error"
                 exit_reason="sandbox-not-acknowledged"
+                csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+                echo "$prog: bench stopped — task $task run $run: sandbox approval required for $workdir" >&2
+                echo "  run: WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust" >&2
+                return 1
             fi
         fi
     fi
 
-    csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
-
-    # A sandbox-not-acknowledged result is a harness-level error, not a
-    # model failure: stop the whole bench and name the folder and the one
-    # command to run. This check runs before the workdir guard so the
-    # "not approved / not acknowledged" message prints first.
-    if [ "$exit_reason" = "sandbox-not-acknowledged" ]; then
-        echo "$prog: bench stopped — task $task run $run: sandbox approval required for $workdir" >&2
-        echo "  run: WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust" >&2
-        return 1
-    fi
-
-    # Workdir guard: verify the agent ran in the fixed folder we set
-    # up, not in the user's configured work_dir. The result JSON carries
-    # the resolved workdir from the binary; a missing value or mismatch
-    # means the sandbox mounted the wrong directory. A missing value is
-    # an error (the binary must report its workdir).
-    _actual_workdir=$(json_field "$result_json" "workdir")
-    if [ -z "$_actual_workdir" ]; then
-        echo "$prog: MISSING WORKDIR in $task run $run: binary did not report workdir" >&2
-        result="error"
-        exit_reason="missing-workdir"
+    # Timeout: skip check.sh and workdir guard (killed mid-run).
+    if [ "$wak_rc" -eq 124 ]; then
+        result="timeout"
         csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
-        cat "$log_file" 2>/dev/null || true
-        return 1
-    fi
-    if [ "$_actual_workdir" != "$workdir" ]; then
-        echo "$prog: WRONG WORKDIR in $task run $run: binary reports workdir=$_actual_workdir, expected $workdir — agent ran in the wrong folder" >&2
-        result="error"
-        exit_reason="wrong-workdir"
+    else
+        # Workdir guard: verify the agent ran in the fixed folder we set
+        # up, not in the user's configured work_dir. The result JSON carries
+        # the resolved workdir from the binary; a missing value or mismatch
+        # means the sandbox mounted the wrong directory. Skip check.sh on
+        # wrong/missing workdir and stop the bench.
+        _actual_workdir=$(json_field "$result_json" "workdir")
+        if [ -z "$_actual_workdir" ]; then
+            echo "$prog: MISSING WORKDIR in $task run $run: binary did not report workdir" >&2
+            result="error"
+            exit_reason="missing-workdir"
+            csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+            cat "$log_file" 2>/dev/null || true
+            return 1
+        fi
+        if [ "$_actual_workdir" != "$workdir" ]; then
+            echo "$prog: WRONG WORKDIR in $task run $run: binary reports workdir=$_actual_workdir, expected $workdir — agent ran in the wrong folder" >&2
+            result="error"
+            exit_reason="wrong-workdir"
+            csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+            cat "$log_file" 2>/dev/null || true
+            return 1
+        fi
+
+        # Run check.sh after every completed run (pass, declined, or error).
+        # Result is pass or fail from check.sh; exit_reason keeps whatever
+        # the binary reported. check.sh lives in the task dir (never in the
+        # work folder) and runs in the work folder.
+        set +e
+        ( cd "$workdir" && "$tdir/check.sh" ) >/dev/null 2>&1
+        chk_rc=$?
+        set -e
+        if [ "$chk_rc" -eq 0 ]; then
+            result="pass"
+        else
+            result="fail"
+        fi
         csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
-        cat "$log_file" 2>/dev/null || true
-        return 1
     fi
 
     # Progress: one line after each run with the result, elapsed time,
@@ -646,6 +638,60 @@ EOF
         [ "$_row_result" = "pass" ] || { echo "self-test FAILED: solve $task: expected pass, got $_row_result" >&2; _pass_count=$((_pass_count + 1)); }
     done
     [ "$_pass_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+
+    echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
+    # Also asserts that bench.sh passes --allow-destructive to `wakil run`.
+    stub_declined="$tmpdir/wakil-declined"
+    cat > "$stub_declined" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-declined/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    saw_allow_destructive=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --allow-destructive) saw_allow_destructive=1; shift ;;
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ "$saw_allow_destructive" -ne 1 ]; then
+      echo "missing --allow-destructive flag" >&2
+      exit 3
+    fi
+    if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
+      cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    fi
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-declined/0.0.0","model":"stub","exit_reason":"declined","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0}
+JSON
+    exit 1 ;;
+esac
+EOF
+    chmod +x "$stub_declined"
+    _dec_task="$(echo "$tasks" | awk '{print $1}')"
+    task_idx=1
+    BENCH_TASK_DIR="$tasks_dir/$_dec_task" run_one "$_dec_task" "self-declined-pass" "$stub_declined"
+    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    if [ "$_row_result" != "pass" ] || [ "$_row_reason" != "declined" ]; then
+        echo "self-test FAILED: declined-solve: got result=$_row_result exit_reason=$_row_reason, want pass/declined" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    # Same declined stub WITHOUT copying solution → check.sh must run and record fail + exit_reason=declined.
+    BENCH_TASK_DIR="" run_one "$_dec_task" "self-declined-fail" "$stub_declined"
+    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    if [ "$_row_result" != "fail" ] || [ "$_row_reason" != "declined" ]; then
+        echo "self-test FAILED: declined-noop: got result=$_row_result exit_reason=$_row_reason, want fail/declined" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    echo "  declined+check.sh OK (--allow-destructive passed; result from check.sh, exit_reason preserved)"
 
     echo "== self-test: stub that sleeps past the timeout (expect timeout) =="
     # Use the harness's own timeout path with a short per-run timeout so
