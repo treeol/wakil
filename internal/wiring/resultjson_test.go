@@ -81,7 +81,7 @@ func TestResultJSON_SingleTask(t *testing.T) {
 
 func TestResultJSON_NilApp(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, nil, ExitError, time.Now(), ""); err != nil {
+	if err := writeResultJSON(p, nil, ExitError, time.Now(), "", ""); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -144,7 +144,7 @@ func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
 	})
 
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -171,7 +171,7 @@ func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
 	app2.Costs = &proxy.CostTracker{}
 	app2.Costs.Record("inference·openrouter/test", 1000, 100, 0.001, true, proxy.ConfExact)
 	p2 := filepath.Join(t.TempDir(), "r2.json")
-	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatal(err)
 	}
 	data2, err := os.ReadFile(p2)
@@ -192,7 +192,7 @@ func TestResultJSON_DeclinedCalls(t *testing.T) {
 	app.SetDeclinedCallCount(3)
 
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -212,7 +212,7 @@ func TestResultJSON_DeclinedCalls(t *testing.T) {
 	app2.Client.Model = "openrouter/test"
 	app2.Costs = &proxy.CostTracker{}
 	p2 := filepath.Join(t.TempDir(), "r2.json")
-	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatal(err)
 	}
 	data2, err := os.ReadFile(p2)
@@ -225,5 +225,46 @@ func TestResultJSON_DeclinedCalls(t *testing.T) {
 	}
 	if res2.DeclinedCalls == nil || *res2.DeclinedCalls != 0 {
 		t.Errorf("declined_calls = %v, want 0 (present, not nil)", res2.DeclinedCalls)
+	}
+}
+
+// TestResultJSON_SandboxBackend pins the sandbox_backend field the bench
+// harness reads to tell a host workdir (hisn, direct) from a container path
+// (docker), and that it is omitted when unknown.
+func TestResultJSON_SandboxBackend(t *testing.T) {
+	cases := []struct {
+		name, backend string
+		wantKey       bool
+	}{
+		{"hisn", "hisn", true},
+		{"docker", "docker", true},
+		{"direct", "direct", true},
+		{"unknown", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "r.json")
+			if err := writeResultJSON(p, nil, ExitOK, time.Now(), "/mnt/ws", tc.backend); err != nil {
+				t.Fatalf("writeResultJSON: %v", err)
+			}
+			data, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			var raw map[string]any
+			if err := json.Unmarshal(data, &raw); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			got, ok := raw["sandbox_backend"]
+			if ok != tc.wantKey {
+				t.Fatalf("sandbox_backend present = %v, want %v (json %s)", ok, tc.wantKey, data)
+			}
+			if tc.wantKey && got != tc.backend {
+				t.Errorf("sandbox_backend = %v, want %q", got, tc.backend)
+			}
+			if raw["workdir"] != "/mnt/ws" {
+				t.Errorf("workdir = %v, want /mnt/ws", raw["workdir"])
+			}
+		})
 	}
 }

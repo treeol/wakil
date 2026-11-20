@@ -108,6 +108,10 @@ work_root="$cache_home/wakil-bench/work"
 # One lock file per task, outside the work folder (the folder is emptied and
 # refilled before every run, so a lock inside it would not survive).
 lock_root="$cache_home/wakil-bench/locks"
+# The per-run result JSON lives here, outside the work folder: the agent can
+# write into its folder, so a result file in it could be forged (workdir,
+# exit_reason) or replaced by a symlink the host-side wakil would then follow.
+run_root="$cache_home/wakil-bench/run"
 
 # Metric columns come from jq parsing of the per-run result JSON; without
 # jq they are honestly n/a, but say so once rather than per row.
@@ -465,7 +469,9 @@ run_one_locked() {
     prep_workdir "$task" || return 1
 
     task_text=$(cat "$tdir/task.txt")
-    result_json="$workdir/.bench-result.json"
+    mkdir -p "$run_root" || { echo "$prog: cannot create $run_root" >&2; return 1; }
+    result_json="$run_root/$task.json"
+    rm -f "$result_json"
     log_file="$results_dir/${task}-${run}-$(date +%H%M%S).log"
 
     # Progress: one line before each run so a long session is not silent.
@@ -573,10 +579,16 @@ run_one_locked() {
 
         # Workdir guard: verify the agent ran in the fixed folder we set
         # up, not in the user's configured work_dir. The result JSON carries
-        # the resolved workdir from the binary; a missing value or mismatch
-        # means the sandbox mounted the wrong directory. Skip check.sh on
-        # wrong/missing workdir and stop the bench.
+        # the executor's own workspace root and the resolved sandbox backend.
+        # The root is a HOST path for hisn (symlink-resolved) and direct, so it
+        # is compared with the folder and with its "pwd -P" form; for docker it
+        # is a container path (/mnt/<name>) that can never equal a host path, so
+        # it can neither be compared nor trusted: the run is an error, not a
+        # silent pass and not a wrong-workdir false alarm. An absent backend
+        # field (an older binary, a stub) means the plain comparison. check.sh
+        # is skipped on every failure and the bench stops.
         _actual_workdir=$(json_field "$result_json" "workdir")
+        _backend=$(json_field "$result_json" "sandbox_backend")
         if [ -z "$_actual_workdir" ]; then
             echo "$prog: MISSING WORKDIR in $task run $run: binary did not report workdir" >&2
             result="error"
@@ -585,7 +597,16 @@ run_one_locked() {
             cat "$log_file" 2>/dev/null || true
             return 1
         fi
-        if [ "$_actual_workdir" != "$workdir" ]; then
+        if [ "$_backend" = "docker" ]; then
+            echo "$prog: workdir not verifiable (docker) in $task run $run: the binary reports the container path $_actual_workdir, not the host folder $workdir" >&2
+            result="error"
+            exit_reason="workdir-not-verifiable"
+            csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+            cat "$log_file" 2>/dev/null || true
+            return 1
+        fi
+        _real_workdir=$(cd "$workdir" 2>/dev/null && pwd -P) || _real_workdir="$workdir"
+        if [ "$_actual_workdir" != "$workdir" ] && [ "$_actual_workdir" != "$_real_workdir" ]; then
             echo "$prog: WRONG WORKDIR in $task run $run: binary reports workdir=$_actual_workdir, expected $workdir — agent ran in the wrong folder" >&2
             result="error"
             exit_reason="wrong-workdir"
@@ -780,6 +801,8 @@ self_test() {
     # The self-test takes its locks in its own directory, never the real ones.
     _saved_lock_root="$lock_root"
     lock_root="$tmpdir/locks"
+    _saved_run_root="$run_root"
+    run_root="$tmpdir/run"
 
     # Stub that changes nothing (writes a result-json with the correct
     # workdir so the guard passes, but no solution — check.sh fails).
@@ -790,15 +813,16 @@ case "$1" in
   version) echo "stub-noop/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
     done
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-noop/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0}
 JSON
     exit 0 ;;
@@ -815,10 +839,11 @@ case "$1" in
   version) echo "stub-solve/0.0.0" ;;
   run)
     shift  # run
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
@@ -826,7 +851,7 @@ case "$1" in
     if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0}
 JSON
     exit 0 ;;
@@ -843,15 +868,16 @@ case "$1" in
   version) echo "stub-slow/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
     done
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-slow/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0}
 JSON
     sleep 3600 ;;
@@ -868,15 +894,16 @@ case "$1" in
   version) echo "stub-wrong/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
     done
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-wrong/0.0.0","model":"stub","exit_reason":"pass","workdir":"/tmp/definitely-wrong","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
 JSON
     exit 0 ;;
@@ -915,12 +942,13 @@ case "$1" in
   version) echo "stub-declined/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     saw_allow_destructive=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --allow-destructive) saw_allow_destructive=1; shift ;;
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
@@ -932,7 +960,7 @@ case "$1" in
     if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-declined/0.0.0","model":"stub","exit_reason":"declined","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0}
 JSON
     exit 1 ;;
@@ -972,10 +1000,11 @@ case "$1" in
   version) echo "stub-cheat/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
@@ -987,7 +1016,7 @@ case "$1" in
       init)
         printf 'package %s\nimport ("fmt"; "os")\nfunc init() { fmt.Println("--- PASS: %s (0.00s)"); fmt.Println("PASS"); os.Exit(0) }\n' "$BENCH_CHEAT_PKG" "$BENCH_CHEAT_TEST" > "$d/zz_init.go" ;;
     esac
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-cheat/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
 JSON
     exit 0 ;;
@@ -1068,17 +1097,18 @@ case "$1" in
   version) echo "stub-plant/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
     done
     mkdir -p "$workdir/solution" "$workdir/.wakil"
     echo planted > "$workdir/.wakil/state"
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-plant/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
 JSON
     exit 0 ;;
@@ -1203,10 +1233,11 @@ case "$1" in
   version) echo "stub-deaf/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
@@ -1214,7 +1245,7 @@ case "$1" in
     if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
 JSON
     echo "executor error: sandbox risk is not acknowledged (label signing)" >&2
@@ -1246,6 +1277,80 @@ EOF
     fi
     echo "  TERM-ignoring run -> timeout (exit 137 after ${_row_secs}s), no check.sh, no sandbox-not-acknowledged"
 
+    echo "== self-test: workdir guard per backend (docker not verifiable; hisn resolved path; direct mismatch) =="
+    # One fake binary whose result JSON is set by the caller: the workdir it
+    # reports and the sandbox backend it names (empty = an older binary with
+    # no sandbox_backend field). Each case states the result, the exit_reason
+    # and whether the bench stops (rc 1) or goes on to check.sh (rc 0).
+    stub_fake="$tmpdir/wakil-fake"
+    cat > "$stub_fake" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-fake/0.0.0" ;;
+  run)
+    shift
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    wd=$BENCH_FAKE_WORKDIR
+    [ "$wd" != "@real" ] || wd=$(cd "$WAKIL_HOST_WORKDIR" && pwd -P)
+    [ "$wd" != "@same" ] || wd=$WAKIL_HOST_WORKDIR
+    backend=""
+    [ -z "$BENCH_FAKE_BACKEND" ] || backend=",\"sandbox_backend\":\"$BENCH_FAKE_BACKEND\""
+    printf '{"wakil_version":"stub-fake/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s"%s,"seconds":0.0}\n' "$wd" "$backend" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+    chmod +x "$stub_fake"
+    _g_task="$(echo "$tasks" | awk '{print $1}')"
+    ln -s "$_self_work_root" "$tmpdir/linkroot"
+    _g_real_root="$work_root"
+    # name|work_root|reported workdir|backend|want rc|want result|want exit_reason|want stderr text
+    for _gc in \
+        "docker|plain|/mnt/$_g_task|docker|1|error|workdir-not-verifiable|workdir not verifiable (docker)" \
+        "docker-same-path|plain|@same|docker|1|error|workdir-not-verifiable|workdir not verifiable (docker)" \
+        "hisn-same|plain|@same|hisn|0|fail|pass|" \
+        "hisn-symlinked-root|link|@real|hisn|0|fail|pass|" \
+        "direct-same|plain|@same|direct|0|fail|pass|" \
+        "direct-mismatch|plain|/tmp/definitely-wrong|direct|1|error|wrong-workdir|WRONG WORKDIR" \
+        "hisn-mismatch|plain|/tmp/definitely-wrong|hisn|1|error|wrong-workdir|WRONG WORKDIR" \
+        "legacy-no-backend|plain|@same||0|fail|pass|" \
+        "legacy-mismatch|plain|/tmp/definitely-wrong||1|error|wrong-workdir|WRONG WORKDIR"; do
+        _g_name=$(echo "$_gc" | cut -d'|' -f1); _g_root=$(echo "$_gc" | cut -d'|' -f2)
+        _g_wd=$(echo "$_gc" | cut -d'|' -f3); _g_be=$(echo "$_gc" | cut -d'|' -f4)
+        _g_rc=$(echo "$_gc" | cut -d'|' -f5); _g_res=$(echo "$_gc" | cut -d'|' -f6)
+        _g_why=$(echo "$_gc" | cut -d'|' -f7); _g_msg=$(echo "$_gc" | cut -d'|' -f8)
+        case "$_g_root" in link) work_root="$tmpdir/linkroot" ;; *) work_root="$_g_real_root" ;; esac
+        task_idx=1
+        _g_err="$tmpdir/guard-$_g_name.err"
+        _rc=0
+        BENCH_FAKE_WORKDIR="$_g_wd" BENCH_FAKE_BACKEND="$_g_be" BENCH_TASK_DIR="" \
+            run_one "$_g_task" "self-guard-$_g_name" "$stub_fake" 2>"$_g_err" >/dev/null || _rc=$?
+        work_root="$_g_real_root"
+        _g_got_res=$(csv_cell "$csv_file" last 6); _g_got_why=$(csv_cell "$csv_file" last 7)
+        if [ "$_rc" -ne "$_g_rc" ] || [ "$_g_got_res" != "$_g_res" ] || [ "$_g_got_why" != "$_g_why" ]; then
+            echo "self-test FAILED: workdir guard case $_g_name: rc=$_rc result=$_g_got_res exit_reason=$_g_got_why, want $_g_rc/$_g_res/$_g_why" >&2
+            cat "$_g_err" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        if [ -n "$_g_msg" ] && ! grep -q -F "$_g_msg" "$_g_err"; then
+            echo "self-test FAILED: workdir guard case $_g_name: stderr lacks '$_g_msg'" >&2
+            cat "$_g_err" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        # A guard stop must not have run check.sh.
+        if [ "$_g_rc" -eq 1 ] && grep -q 'check.sh (' "$results_dir/$_g_task-self-guard-$_g_name-"*.log 2>/dev/null; then
+            echo "self-test FAILED: workdir guard case $_g_name: check.sh ran after a guard stop" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+    done
+    echo "  docker -> error workdir-not-verifiable (check.sh skipped); hisn resolved/symlinked path accepted; direct and hisn mismatch -> wrong-workdir; no backend field -> plain comparison"
+
     echo "== self-test: stub that reports a wrong workdir (expect error + stop) =="
     _saved_timeout="$timeout_sec"
     timeout_sec=5
@@ -1270,15 +1375,16 @@ case "$1" in
   version) echo "stub-missing/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --result-json) result_json=$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
     done
-    cat > "$workdir/.bench-result.json" <<JSON
+    cat > "$result_json" <<JSON
 {"wakil_version":"stub-missing/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
 JSON
     exit 0 ;;
@@ -1309,16 +1415,17 @@ case "\$1" in
   version) echo "stub-$_case_name/0.0.0" ;;
   run)
     shift
-    workdir=""
+    workdir=\$WAKIL_HOST_WORKDIR
+    result_json=""
     while [ \$# -gt 0 ]; do
       case "\$1" in
-        --result-json) workdir=\$(dirname "\$2"); shift 2 ;;
+        --result-json) result_json=\$2; shift 2 ;;
         --transcript) shift 2 ;;
         *) shift ;;
       esac
     done
     echo "executor error: $_case_msg" >&2
-    cat > "\$workdir/.bench-result.json" <<JSON
+    cat > "\$result_json" <<JSON
 {"wakil_version":"stub-$_case_name/0.0.0","model":"stub","exit_reason":"error","seconds":0.0}
 JSON
     exit 3 ;;
@@ -1480,6 +1587,7 @@ EOF
     results_dir="$_saved_results_dir"
     work_root="$_saved_work_root"
     lock_root="$_saved_lock_root"
+    run_root="$_saved_run_root"
     csv_file="$_saved_csv_file"
 }
 

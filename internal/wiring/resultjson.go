@@ -24,10 +24,15 @@ import (
 // when the run did not observe the value (e.g. a binary built without
 // cost tracking, or counts unavailable).
 type ResultJSON struct {
-	Version          string   `json:"wakil_version"`
-	Model            string   `json:"model"`
-	ExitReason       string   `json:"exit_reason"`
-	Workdir          string   `json:"workdir,omitempty"`
+	Version    string `json:"wakil_version"`
+	Model      string `json:"model"`
+	ExitReason string `json:"exit_reason"`
+	Workdir    string `json:"workdir,omitempty"`
+	// SandboxBackend is the resolved sandbox backend ("hisn", "docker",
+	// "direct"). Workdir is the executor's own view of the workspace: a host
+	// path for hisn and direct, a container path for docker, so a reader that
+	// compares it with a host folder needs to know which one it is.
+	SandboxBackend   string   `json:"sandbox_backend,omitempty"`
 	Seconds          float64  `json:"seconds"`
 	TokensIn         *int64   `json:"tokens_in"`
 	TokensOut        *int64   `json:"tokens_out"`
@@ -69,13 +74,15 @@ func exitReasonName(code int) string {
 // saved session snapshot (which only exists with --transcript).
 //
 // workdir is the resolved workspace folder the session actually ran in;
-// empty when unknown (e.g. bootstrap failure before resolution).
-func writeResultJSON(path string, app *agent.App, code int, started time.Time, workdir string) error {
+// empty when unknown (e.g. bootstrap failure before resolution). backend is
+// the resolved sandbox backend name, empty when unknown.
+func writeResultJSON(path string, app *agent.App, code int, started time.Time, workdir, backend string) error {
 	res := ResultJSON{
-		Version:    buildinfo.ResolvedVersion(),
-		ExitReason: exitReasonName(code),
-		Workdir:    workdir,
-		Seconds:    time.Since(started).Seconds(),
+		Version:        buildinfo.ResolvedVersion(),
+		ExitReason:     exitReasonName(code),
+		Workdir:        workdir,
+		SandboxBackend: backend,
+		Seconds:        time.Since(started).Seconds(),
 	}
 	if app != nil && app.Client != nil {
 		res.Model = app.Client.Model

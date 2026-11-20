@@ -86,6 +86,9 @@ type HeadlessOptions struct {
 	// agent ran in the expected temp folder. Set by RunHeadless from
 	// cfg.HostWorkDir (the config-layer value, after env/flag resolution).
 	Workdir string
+	// SandboxBackend is the resolved sandbox backend, written into the result
+	// JSON next to Workdir. Set by RunHeadless from cfg.Sandbox.Backend.
+	SandboxBackend string
 	// Continuous turns on the experimental bounded continuous coordinator. CLI
 	// opt-in only; never enabled by a config file.
 	Continuous *ContinuousOptions
@@ -256,11 +259,12 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	// stamp the real workspace root. Empty when the executor did not
 	// resolve one.
 	opts.Workdir = cfg.HostWorkDir
+	opts.SandboxBackend = cfg.Sandbox.Backend
 
 	// Bootstrap failures must still leave a result file (bench harness).
 	defer func() {
 		if opts.ResultJSON != "" && !ran {
-			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, started, opts.Workdir); werr != nil {
+			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, started, opts.Workdir, opts.SandboxBackend); werr != nil {
 				fmt.Fprintln(os.Stderr, "result-json:", werr)
 			}
 		}
@@ -395,7 +399,7 @@ func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 		if err != nil {
 			resCode = ExitError
 		}
-		if werr := writeResultJSON(opts.ResultJSON, app, resCode, started, opts.Workdir); werr != nil {
+		if werr := writeResultJSON(opts.ResultJSON, app, resCode, started, opts.Workdir, opts.SandboxBackend); werr != nil {
 			fmt.Fprintln(os.Stderr, "result-json:", werr)
 		}
 	}

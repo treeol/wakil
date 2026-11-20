@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bench: the workdir guard knows the sandbox backend, and the result JSON no longer lives in the work folder.** `--result-json` now carries `sandbox_backend` (`hisn`, `docker`, `direct`). `workdir` is a host path for hisn (symlink-resolved) and direct but a container path (`/mnt/<name>`) for docker, so the old comparison gave a false `wrong-workdir` under docker and under a symlinked cache dir. Now docker is recorded as `error` / `workdir-not-verifiable` ("workdir not verifiable (docker)", `check.sh` skipped, bench stops), hisn is compared against the folder and its `pwd -P` form, and an absent field (older binary) keeps the plain comparison. The bench reads the result file from `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/run/<task>.json`, outside the folder the agent can write to.
+
 - **Bench: `--self-test` writes to the cache, not the repo.** Its CSV and logs go to `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/selftest/`; `bench/results/` is created only by a real run, and the self-test asserts that nothing under it changed. Files already under `bench/results/selftest/` are left alone.
 
 - **Bench: two benches can no longer run on the same task at once.** Each task takes a `flock` on `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/locks/<task>.lock` (outside the work folder) before the folder is emptied; a second bench on the same task prints "task <t> is already being run by another bench", exits 75 and leaves the folder and the CSV untouched. Without `flock` the harness refuses to run. `--task` rejects names with a `/` or a leading `.`.
