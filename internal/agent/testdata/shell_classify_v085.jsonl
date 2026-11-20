@@ -1,0 +1,1125 @@
+{"cmd":"\"cat f\"","v085_ro":false,"v085_d":false}
+{"cmd":"\"git diff\"","v085_ro":false,"v085_d":false}
+{"cmd":"\"git status\"","v085_ro":false,"v085_d":false}
+{"cmd":"\"ls\"","v085_ro":true,"v085_d":false}
+{"cmd":"\"rm x\"","v085_ro":false,"v085_d":false}
+{"cmd":"\"sed 1d f\"","v085_ro":false,"v085_d":false}
+{"cmd":"$(cat f)","v085_ro":false,"v085_d":true}
+{"cmd":"$(git diff)","v085_ro":false,"v085_d":true}
+{"cmd":"$(git status)","v085_ro":false,"v085_d":true}
+{"cmd":"$(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"$(rm x)","v085_ro":false,"v085_d":true}
+{"cmd":"$(sed 1d f)","v085_ro":false,"v085_d":true}
+{"cmd":"'cat f'","v085_ro":false,"v085_d":false}
+{"cmd":"'git diff'","v085_ro":false,"v085_d":false}
+{"cmd":"'git status'","v085_ro":false,"v085_d":false}
+{"cmd":"'ls'","v085_ro":true,"v085_d":false}
+{"cmd":"'r'm x","v085_ro":false,"v085_d":false}
+{"cmd":"'rm x'","v085_ro":false,"v085_d":false}
+{"cmd":"'sed 1d f'","v085_ro":false,"v085_d":false}
+{"cmd":"(cd sub && make)","v085_ro":false,"v085_d":false}
+{"cmd":"(rm x)","v085_ro":false,"v085_d":false}
+{"cmd":"/usr/bin/cat /etc/hostname","v085_ro":true,"v085_d":false}
+{"cmd":"2> /dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 \\git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 \\ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 command cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 command git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 command git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 command ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 command rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 env cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 env git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 env git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 env ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 env rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 exec git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 exec ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nice git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nice ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 time cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 time git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 time git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 time ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 time rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>&1 time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null \\git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null \\ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null command cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null command git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null command git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null command ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null command rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null env cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null env git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null env git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null env ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null env rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null exec git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null exec ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nice git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nice ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null time cat f","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null time git diff","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null time git status","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null time ls","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null time rm x","v085_ro":false,"v085_d":true}
+{"cmd":"2>/dev/null time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"</dev/null \\cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null \\git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null \\git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null \\ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null \\rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null \\sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null command cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null command git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null command git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null command ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null command rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null command sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null env cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null env git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null env git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null env ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null env rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null env sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null exec cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null exec git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null exec git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null exec ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null exec rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null exec sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nice cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nice git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nice git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nice ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nice rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nice sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nohup cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nohup git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nohup git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nohup ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nohup rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null nohup sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null rm -rf x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null time cat f","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null time git diff","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null time git status","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null time ls","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null time rm x","v085_ro":false,"v085_d":false}
+{"cmd":"</dev/null time sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"> /dev/null rm -rf x","v085_ro":false,"v085_d":true}
+{"cmd":"> out \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out \\git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out \\ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out command cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out command git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out command git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out command ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out command rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out env cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out env git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out env git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out env ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out env rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out exec git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out exec ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out nice git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out nice ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"> out time cat f","v085_ro":false,"v085_d":true}
+{"cmd":"> out time git diff","v085_ro":false,"v085_d":true}
+{"cmd":"> out time git status","v085_ro":false,"v085_d":true}
+{"cmd":"> out time ls","v085_ro":false,"v085_d":true}
+{"cmd":"> out time rm x","v085_ro":false,"v085_d":true}
+{"cmd":"> out time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out \\git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out \\ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out command cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out command git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out command git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out command ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out command rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out env cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out env git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out env git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out env ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out env rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out exec git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out exec ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nice git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nice ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out time cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&1out time git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&1out time git status","v085_ro":false,"v085_d":true}
+{"cmd":">&1out time ls","v085_ro":false,"v085_d":true}
+{"cmd":">&1out time rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&1out time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 \\git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 \\ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 command cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 command git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 command git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 command ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 command rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 env cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 env git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 env git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 env ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 env rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 exec git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 exec ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nice git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nice ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 time cat f","v085_ro":false,"v085_d":true}
+{"cmd":">&2 time git diff","v085_ro":false,"v085_d":true}
+{"cmd":">&2 time git status","v085_ro":false,"v085_d":true}
+{"cmd":">&2 time ls","v085_ro":false,"v085_d":true}
+{"cmd":">&2 time rm x","v085_ro":false,"v085_d":true}
+{"cmd":">&2 time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null \\git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null \\ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null command cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null command git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null command git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null command ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null command rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null env cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null env git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null env git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null env ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null env rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null exec git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null exec ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nice git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nice ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null rm -rf x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null time cat f","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null time git diff","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null time git status","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null time ls","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null time rm x","v085_ro":false,"v085_d":true}
+{"cmd":">/dev/null time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out \\cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out \\git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out \\git status","v085_ro":false,"v085_d":true}
+{"cmd":">out \\ls","v085_ro":false,"v085_d":true}
+{"cmd":">out \\rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out \\sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out command cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out command git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out command git status","v085_ro":false,"v085_d":true}
+{"cmd":">out command ls","v085_ro":false,"v085_d":true}
+{"cmd":">out command rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out command sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out env cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out env git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out env git status","v085_ro":false,"v085_d":true}
+{"cmd":">out env ls","v085_ro":false,"v085_d":true}
+{"cmd":">out env rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out env sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out exec cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out exec git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out exec git status","v085_ro":false,"v085_d":true}
+{"cmd":">out exec ls","v085_ro":false,"v085_d":true}
+{"cmd":">out exec rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out exec sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out git status","v085_ro":false,"v085_d":true}
+{"cmd":">out ls","v085_ro":false,"v085_d":true}
+{"cmd":">out nice cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out nice git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out nice git status","v085_ro":false,"v085_d":true}
+{"cmd":">out nice ls","v085_ro":false,"v085_d":true}
+{"cmd":">out nice rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out nice sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out nohup cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out nohup git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out nohup git status","v085_ro":false,"v085_d":true}
+{"cmd":">out nohup ls","v085_ro":false,"v085_d":true}
+{"cmd":">out nohup rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out nohup sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":">out time cat f","v085_ro":false,"v085_d":true}
+{"cmd":">out time git diff","v085_ro":false,"v085_d":true}
+{"cmd":">out time git status","v085_ro":false,"v085_d":true}
+{"cmd":">out time ls","v085_ro":false,"v085_d":true}
+{"cmd":">out time rm x","v085_ro":false,"v085_d":true}
+{"cmd":">out time sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"GIT_PAGER=sh git log","v085_ro":false,"v085_d":true}
+{"cmd":"LD_PRELOAD=x.so ls","v085_ro":false,"v085_d":true}
+{"cmd":"PATH=. ls","v085_ro":false,"v085_d":true}
+{"cmd":"X=1 rm -rf x","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\</dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"\\</dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"\\</dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"\\</dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"\\</dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"\\</dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"\\> out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\> out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\> out git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\> out ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\> out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\> out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\>&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"\\>out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"\\>out git status","v085_ro":false,"v085_d":true}
+{"cmd":"\\>out ls","v085_ro":false,"v085_d":true}
+{"cmd":"\\>out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"\\>out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"\\cat f","v085_ro":false,"v085_d":false}
+{"cmd":"\\git diff","v085_ro":false,"v085_d":false}
+{"cmd":"\\git status","v085_ro":false,"v085_d":false}
+{"cmd":"\\ls","v085_ro":false,"v085_d":false}
+{"cmd":"\\rm x","v085_ro":false,"v085_d":false}
+{"cmd":"\\sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"`cat f`","v085_ro":false,"v085_d":true}
+{"cmd":"`git diff`","v085_ro":false,"v085_d":true}
+{"cmd":"`git status`","v085_ro":false,"v085_d":true}
+{"cmd":"`ls`","v085_ro":false,"v085_d":true}
+{"cmd":"`rm x`","v085_ro":false,"v085_d":true}
+{"cmd":"`sed 1d f`","v085_ro":false,"v085_d":true}
+{"cmd":"ack --pager=sh x","v085_ro":false,"v085_d":false}
+{"cmd":"ag --pager=sh x","v085_ro":false,"v085_d":false}
+{"cmd":"bash x.sh","v085_ro":false,"v085_d":true}
+{"cmd":"bat x","v085_ro":true,"v085_d":false}
+{"cmd":"case x in x) rm y;; esac","v085_ro":false,"v085_d":false}
+{"cmd":"cat $F","v085_ro":false,"v085_d":false}
+{"cmd":"cat <(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"cat <<EOF","v085_ro":true,"v085_d":false}
+{"cmd":"cat a | rm b","v085_ro":false,"v085_d":true}
+{"cmd":"cat f","v085_ro":true,"v085_d":false}
+{"cmd":"cat foo.go","v085_ro":true,"v085_d":false}
+{"cmd":"cd src && ls","v085_ro":true,"v085_d":false}
+{"cmd":"chmod -R 777 x","v085_ro":false,"v085_d":true}
+{"cmd":"chown -R u x","v085_ro":false,"v085_d":true}
+{"cmd":"command \"cat f\"","v085_ro":false,"v085_d":false}
+{"cmd":"command \"git diff\"","v085_ro":false,"v085_d":false}
+{"cmd":"command \"git status\"","v085_ro":false,"v085_d":false}
+{"cmd":"command \"ls\"","v085_ro":false,"v085_d":false}
+{"cmd":"command \"rm x\"","v085_ro":false,"v085_d":false}
+{"cmd":"command \"sed 1d f\"","v085_ro":false,"v085_d":false}
+{"cmd":"command 'cat f'","v085_ro":false,"v085_d":false}
+{"cmd":"command 'git diff'","v085_ro":false,"v085_d":false}
+{"cmd":"command 'git status'","v085_ro":false,"v085_d":false}
+{"cmd":"command 'ls'","v085_ro":false,"v085_d":false}
+{"cmd":"command 'rm x'","v085_ro":false,"v085_d":false}
+{"cmd":"command 'sed 1d f'","v085_ro":false,"v085_d":false}
+{"cmd":"command 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command </dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"command </dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"command </dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"command </dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"command </dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"command </dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"command > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"command > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"command > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"command >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"command >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"command >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"command >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"command >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"command >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"command >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"command >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"command >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"command >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"command >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"command cat f","v085_ro":false,"v085_d":false}
+{"cmd":"command git diff","v085_ro":false,"v085_d":false}
+{"cmd":"command git status","v085_ro":false,"v085_d":false}
+{"cmd":"command ls","v085_ro":false,"v085_d":false}
+{"cmd":"command rm x","v085_ro":false,"v085_d":false}
+{"cmd":"command sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"command xcat f","v085_ro":false,"v085_d":false}
+{"cmd":"command xgit diff","v085_ro":false,"v085_d":false}
+{"cmd":"command xgit status","v085_ro":false,"v085_d":false}
+{"cmd":"command xls","v085_ro":false,"v085_d":false}
+{"cmd":"command xrm x","v085_ro":false,"v085_d":false}
+{"cmd":"command xsed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"cp -f a b","v085_ro":false,"v085_d":false}
+{"cmd":"curl -o f http://x","v085_ro":false,"v085_d":false}
+{"cmd":"date","v085_ro":true,"v085_d":false}
+{"cmd":"date +%Y-%m-%d","v085_ro":true,"v085_d":false}
+{"cmd":"date --set=2020","v085_ro":false,"v085_d":false}
+{"cmd":"date -s 2020-01-01","v085_ro":false,"v085_d":false}
+{"cmd":"date -us 2020","v085_ro":true,"v085_d":false}
+{"cmd":"dd if=/dev/zero of=x","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(cat f)","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(cat f) > out","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(git diff)","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(git status)","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(rm x)","v085_ro":false,"v085_d":true}
+{"cmd":"echo $(sed 1d f)","v085_ro":false,"v085_d":true}
+{"cmd":"echo $HOME","v085_ro":false,"v085_d":false}
+{"cmd":"echo `rm x`","v085_ro":false,"v085_d":true}
+{"cmd":"echo cat f $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo git diff $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo git status $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo hi &","v085_ro":true,"v085_d":false}
+{"cmd":"echo hi >>&1","v085_ro":false,"v085_d":true}
+{"cmd":"echo hi; 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo ls $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo rm x $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo sed 1d f $(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"echo x &>/dev/null","v085_ro":false,"v085_d":true}
+{"cmd":"echo x &>file","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 1>&2","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&-","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>&12foo","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>1","v085_ro":false,"v085_d":true}
+{"cmd":"echo x 2>>/dev/null","v085_ro":false,"v085_d":true}
+{"cmd":"echo x </dev/null cat f","v085_ro":true,"v085_d":false}
+{"cmd":"echo x </dev/null git diff","v085_ro":true,"v085_d":false}
+{"cmd":"echo x </dev/null git status","v085_ro":true,"v085_d":false}
+{"cmd":"echo x </dev/null ls","v085_ro":true,"v085_d":false}
+{"cmd":"echo x </dev/null rm x","v085_ro":true,"v085_d":false}
+{"cmd":"echo x </dev/null sed 1d f","v085_ro":true,"v085_d":false}
+{"cmd":"echo x > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x > out.txt","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&-out.txt","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&1out.txt","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2)","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >&2x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/nullfoo","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >/dev/nullx","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >> out.txt","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >>&1 f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >file 2>&1","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"echo x >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"echo x cat f","v085_ro":true,"v085_d":false}
+{"cmd":"echo x git diff","v085_ro":true,"v085_d":false}
+{"cmd":"echo x git status","v085_ro":true,"v085_d":false}
+{"cmd":"echo x ls","v085_ro":true,"v085_d":false}
+{"cmd":"echo x rm x","v085_ro":true,"v085_d":false}
+{"cmd":"echo x sed 1d f","v085_ro":true,"v085_d":false}
+{"cmd":"echo x |& rm y","v085_ro":false,"v085_d":true}
+{"cmd":"env \"cat f\"","v085_ro":false,"v085_d":false}
+{"cmd":"env \"git diff\"","v085_ro":false,"v085_d":false}
+{"cmd":"env \"git status\"","v085_ro":false,"v085_d":false}
+{"cmd":"env \"ls\"","v085_ro":false,"v085_d":false}
+{"cmd":"env \"rm x\"","v085_ro":false,"v085_d":false}
+{"cmd":"env \"sed 1d f\"","v085_ro":false,"v085_d":false}
+{"cmd":"env 'cat f'","v085_ro":false,"v085_d":false}
+{"cmd":"env 'git diff'","v085_ro":false,"v085_d":false}
+{"cmd":"env 'git status'","v085_ro":false,"v085_d":false}
+{"cmd":"env 'ls'","v085_ro":false,"v085_d":false}
+{"cmd":"env 'rm x'","v085_ro":false,"v085_d":false}
+{"cmd":"env 'sed 1d f'","v085_ro":false,"v085_d":false}
+{"cmd":"env 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env </dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"env </dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"env </dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"env </dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"env </dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"env </dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"env > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"env > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"env > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"env >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"env >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"env >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"env >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"env >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"env >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"env >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"env >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"env >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"env >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"env >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"env cat f","v085_ro":false,"v085_d":false}
+{"cmd":"env git diff","v085_ro":false,"v085_d":false}
+{"cmd":"env git status","v085_ro":false,"v085_d":false}
+{"cmd":"env ls","v085_ro":false,"v085_d":false}
+{"cmd":"env rm x","v085_ro":false,"v085_d":false}
+{"cmd":"env sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"env xcat f","v085_ro":false,"v085_d":false}
+{"cmd":"env xgit diff","v085_ro":false,"v085_d":false}
+{"cmd":"env xgit status","v085_ro":false,"v085_d":false}
+{"cmd":"env xls","v085_ro":false,"v085_d":false}
+{"cmd":"env xrm x","v085_ro":false,"v085_d":false}
+{"cmd":"env xsed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"eval 'rm x'","v085_ro":false,"v085_d":false}
+{"cmd":"exec 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec </dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"exec </dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"exec </dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"exec </dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"exec </dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"exec </dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"exec > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"exec >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"exec >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"exec >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"exec >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"exec >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"exec cat f","v085_ro":false,"v085_d":false}
+{"cmd":"exec git diff","v085_ro":false,"v085_d":false}
+{"cmd":"exec git status","v085_ro":false,"v085_d":false}
+{"cmd":"exec ls","v085_ro":false,"v085_d":false}
+{"cmd":"exec rm x","v085_ro":false,"v085_d":false}
+{"cmd":"exec sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"fd -Hx rm","v085_ro":true,"v085_d":false}
+{"cmd":"fd -x rm","v085_ro":false,"v085_d":false}
+{"cmd":"fd . --type f","v085_ro":true,"v085_d":false}
+{"cmd":"file -C f","v085_ro":true,"v085_d":false}
+{"cmd":"find . $F","v085_ro":false,"v085_d":false}
+{"cmd":"find . -delete","v085_ro":false,"v085_d":true}
+{"cmd":"find . -exec rm {} ;","v085_ro":false,"v085_d":true}
+{"cmd":"find . -execdir ls ;","v085_ro":false,"v085_d":true}
+{"cmd":"find . -fprint o","v085_ro":false,"v085_d":false}
+{"cmd":"find . -name '*.go'","v085_ro":true,"v085_d":false}
+{"cmd":"find . -okdir ls ;","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_EXTERNAL_DIFF in x; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_PAGER in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_PAGER in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_PAGER in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_PAGER in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_PAGER in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for GIT_PAGER in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for HOME in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for HOME in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for HOME in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for HOME in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for HOME in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for HOME in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for IFS in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for IFS in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for IFS in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for IFS in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for IFS in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for IFS in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in ./e.so; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for LD_PRELOAD in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in .; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for PATH in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in *; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for f in a; do ls; done; done","v085_ro":false,"v085_d":false}
+{"cmd":"for x in a b; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for x in a b; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"for x in a b; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"for x in a b; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"for x in a b; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"for x in a b; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"git -C . reset --hard","v085_ro":false,"v085_d":false}
+{"cmd":"git -C . status","v085_ro":false,"v085_d":false}
+{"cmd":"git -c core.pager=./p.sh log","v085_ro":false,"v085_d":false}
+{"cmd":"git add .","v085_ro":false,"v085_d":false}
+{"cmd":"git blame f","v085_ro":true,"v085_d":false}
+{"cmd":"git branch","v085_ro":true,"v085_d":false}
+{"cmd":"git branch -D x","v085_ro":false,"v085_d":true}
+{"cmd":"git branch -a","v085_ro":true,"v085_d":false}
+{"cmd":"git checkout -- f","v085_ro":false,"v085_d":true}
+{"cmd":"git clean -fd","v085_ro":false,"v085_d":true}
+{"cmd":"git commit -m x","v085_ro":false,"v085_d":false}
+{"cmd":"git config -- k --list","v085_ro":true,"v085_d":false}
+{"cmd":"git config --get user.name","v085_ro":true,"v085_d":false}
+{"cmd":"git config user.name x","v085_ro":false,"v085_d":false}
+{"cmd":"git diff","v085_ro":true,"v085_d":false}
+{"cmd":"git diff $(echo --output=x)","v085_ro":false,"v085_d":true}
+{"cmd":"git diff --\\output=evil.txt","v085_ro":false,"v085_d":false}
+{"cmd":"git diff --ext-diff","v085_ro":false,"v085_d":false}
+{"cmd":"git diff --output=x","v085_ro":false,"v085_d":false}
+{"cmd":"git diff --stat","v085_ro":true,"v085_d":false}
+{"cmd":"git diff --textconv","v085_ro":false,"v085_d":false}
+{"cmd":"git grep --open-files-in-pager=./p.sh x","v085_ro":false,"v085_d":false}
+{"cmd":"git grep -O./p.sh x","v085_ro":true,"v085_d":false}
+{"cmd":"git grep x","v085_ro":true,"v085_d":false}
+{"cmd":"git log --output=x","v085_ro":false,"v085_d":false}
+{"cmd":"git log -n 3","v085_ro":true,"v085_d":false}
+{"cmd":"git ls-remote --upload-pack=./u.sh .","v085_ro":true,"v085_d":false}
+{"cmd":"git ls-remote origin","v085_ro":true,"v085_d":false}
+{"cmd":"git push --force origin main","v085_ro":false,"v085_d":true}
+{"cmd":"git reflog expire","v085_ro":false,"v085_d":false}
+{"cmd":"git reflog show","v085_ro":true,"v085_d":false}
+{"cmd":"git reset --hard","v085_ro":false,"v085_d":true}
+{"cmd":"git restore .","v085_ro":false,"v085_d":false}
+{"cmd":"git show HEAD","v085_ro":true,"v085_d":false}
+{"cmd":"git stash clear","v085_ro":false,"v085_d":true}
+{"cmd":"git stash drop","v085_ro":false,"v085_d":true}
+{"cmd":"git stash list","v085_ro":true,"v085_d":false}
+{"cmd":"git status","v085_ro":true,"v085_d":false}
+{"cmd":"grep -i needle file.txt","v085_ro":true,"v085_d":false}
+{"cmd":"grep needle file | head -n 20","v085_ro":true,"v085_d":false}
+{"cmd":"hostname","v085_ro":true,"v085_d":false}
+{"cmd":"hostname --file=f","v085_ro":true,"v085_d":false}
+{"cmd":"hostname -F f","v085_ro":false,"v085_d":false}
+{"cmd":"hostname -f","v085_ro":true,"v085_d":false}
+{"cmd":"if true; then ls; fi","v085_ro":false,"v085_d":false}
+{"cmd":"if true; then rm x; fi","v085_ro":false,"v085_d":false}
+{"cmd":"kill 1","v085_ro":false,"v085_d":true}
+{"cmd":"less +!sh f","v085_ro":true,"v085_d":false}
+{"cmd":"less -ao out f","v085_ro":true,"v085_d":false}
+{"cmd":"ls","v085_ro":true,"v085_d":false}
+{"cmd":"ls & rm x","v085_ro":false,"v085_d":true}
+{"cmd":"ls && rm x","v085_ro":false,"v085_d":true}
+{"cmd":"ls -la","v085_ro":true,"v085_d":false}
+{"cmd":"ls || rm x","v085_ro":false,"v085_d":true}
+{"cmd":"ls; rm x","v085_ro":false,"v085_d":true}
+{"cmd":"mv a b","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice </dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"nice </dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"nice </dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"nice </dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"nice </dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"nice </dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"nice > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nice >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nice >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"nice >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"nice >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nice >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nice cat f","v085_ro":false,"v085_d":false}
+{"cmd":"nice git diff","v085_ro":false,"v085_d":false}
+{"cmd":"nice git status","v085_ro":false,"v085_d":false}
+{"cmd":"nice ls","v085_ro":false,"v085_d":false}
+{"cmd":"nice rm x","v085_ro":false,"v085_d":false}
+{"cmd":"nice sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"nohup 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup </dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"nohup </dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"nohup </dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"nohup </dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"nohup </dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"nohup </dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"nohup > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"nohup >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"nohup cat f","v085_ro":false,"v085_d":false}
+{"cmd":"nohup git diff","v085_ro":false,"v085_d":false}
+{"cmd":"nohup git status","v085_ro":false,"v085_d":false}
+{"cmd":"nohup ls","v085_ro":false,"v085_d":false}
+{"cmd":"nohup rm x","v085_ro":false,"v085_d":false}
+{"cmd":"nohup sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"printf -v PATH . ; ls","v085_ro":true,"v085_d":false}
+{"cmd":"printf -v x y","v085_ro":true,"v085_d":false}
+{"cmd":"printf x","v085_ro":true,"v085_d":false}
+{"cmd":"pwd","v085_ro":true,"v085_d":false}
+{"cmd":"r\"\"m x","v085_ro":false,"v085_d":false}
+{"cmd":"result=$(grep x f)","v085_ro":false,"v085_d":true}
+{"cmd":"rg --pre=sh x","v085_ro":false,"v085_d":false}
+{"cmd":"rm -rf x","v085_ro":false,"v085_d":true}
+{"cmd":"rm x","v085_ro":false,"v085_d":true}
+{"cmd":"rm x $(cat f)","v085_ro":false,"v085_d":true}
+{"cmd":"rsync -a --delete a b","v085_ro":false,"v085_d":true}
+{"cmd":"sed -E 's/(a|b)/c/g' f","v085_ro":false,"v085_d":false}
+{"cmd":"sed -i s/a/b/ f","v085_ro":false,"v085_d":true}
+{"cmd":"sed -n '/foo bar/p' f","v085_ro":false,"v085_d":false}
+{"cmd":"sed -n 'w out' f","v085_ro":false,"v085_d":false}
+{"cmd":"sed -n --expression=p f","v085_ro":false,"v085_d":false}
+{"cmd":"sed -n -e p","v085_ro":false,"v085_d":false}
+{"cmd":"sed -n p -- -i","v085_ro":false,"v085_d":true}
+{"cmd":"sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"sh -c 'rm x'","v085_ro":false,"v085_d":true}
+{"cmd":"sudo ls","v085_ro":false,"v085_d":true}
+{"cmd":"tail -n 50 app.log","v085_ro":true,"v085_d":false}
+{"cmd":"tar x","v085_ro":false,"v085_d":false}
+{"cmd":"tee out","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>&1 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>&1 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>&1 git status","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>&1 ls","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>&1 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>&1 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time 2>/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time </dev/null cat f","v085_ro":false,"v085_d":false}
+{"cmd":"time </dev/null git diff","v085_ro":false,"v085_d":false}
+{"cmd":"time </dev/null git status","v085_ro":false,"v085_d":false}
+{"cmd":"time </dev/null ls","v085_ro":false,"v085_d":false}
+{"cmd":"time </dev/null rm x","v085_ro":false,"v085_d":false}
+{"cmd":"time </dev/null sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"time > out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time > out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time > out git status","v085_ro":false,"v085_d":true}
+{"cmd":"time > out ls","v085_ro":false,"v085_d":true}
+{"cmd":"time > out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time > out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time >&1out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time >&1out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time >&1out git status","v085_ro":false,"v085_d":true}
+{"cmd":"time >&1out ls","v085_ro":false,"v085_d":true}
+{"cmd":"time >&1out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time >&1out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time >&2 cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time >&2 git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time >&2 git status","v085_ro":false,"v085_d":true}
+{"cmd":"time >&2 ls","v085_ro":false,"v085_d":true}
+{"cmd":"time >&2 rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time >&2 sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time >/dev/null cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time >/dev/null git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time >/dev/null git status","v085_ro":false,"v085_d":true}
+{"cmd":"time >/dev/null ls","v085_ro":false,"v085_d":true}
+{"cmd":"time >/dev/null rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time >/dev/null sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time >out cat f","v085_ro":false,"v085_d":true}
+{"cmd":"time >out git diff","v085_ro":false,"v085_d":true}
+{"cmd":"time >out git status","v085_ro":false,"v085_d":true}
+{"cmd":"time >out ls","v085_ro":false,"v085_d":true}
+{"cmd":"time >out rm x","v085_ro":false,"v085_d":true}
+{"cmd":"time >out sed 1d f","v085_ro":false,"v085_d":true}
+{"cmd":"time cat f","v085_ro":false,"v085_d":false}
+{"cmd":"time git diff","v085_ro":false,"v085_d":false}
+{"cmd":"time git status","v085_ro":false,"v085_d":false}
+{"cmd":"time ls","v085_ro":false,"v085_d":false}
+{"cmd":"time rm x","v085_ro":false,"v085_d":false}
+{"cmd":"time sed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"timeout 1 rm x","v085_ro":false,"v085_d":false}
+{"cmd":"tree -ao out","v085_ro":true,"v085_d":false}
+{"cmd":"until false; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"wc -l *.go","v085_ro":true,"v085_d":false}
+{"cmd":"wget http://x","v085_ro":false,"v085_d":false}
+{"cmd":"while cat f; do cat f; done","v085_ro":false,"v085_d":false}
+{"cmd":"while echo $f; do echo $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"while git diff; do git diff; done","v085_ro":false,"v085_d":false}
+{"cmd":"while git status; do git status; done","v085_ro":false,"v085_d":false}
+{"cmd":"while ls; do ls; done","v085_ro":false,"v085_d":false}
+{"cmd":"while read l; do echo $l; done < f","v085_ro":false,"v085_d":false}
+{"cmd":"while rm $f; do rm $f; done","v085_ro":false,"v085_d":false}
+{"cmd":"while true; do echo hi; done","v085_ro":false,"v085_d":false}
+{"cmd":"x=$(cat f)","v085_ro":false,"v085_d":true}
+{"cmd":"x=$(git diff)","v085_ro":false,"v085_d":true}
+{"cmd":"x=$(git status)","v085_ro":false,"v085_d":true}
+{"cmd":"x=$(ls)","v085_ro":false,"v085_d":true}
+{"cmd":"x=$(rm x)","v085_ro":false,"v085_d":true}
+{"cmd":"x=$(sed 1d f)","v085_ro":false,"v085_d":true}
+{"cmd":"xargs rm","v085_ro":false,"v085_d":true}
+{"cmd":"xcat f","v085_ro":false,"v085_d":false}
+{"cmd":"xgit diff","v085_ro":false,"v085_d":false}
+{"cmd":"xgit status","v085_ro":false,"v085_d":false}
+{"cmd":"xls","v085_ro":false,"v085_d":false}
+{"cmd":"xrm x","v085_ro":false,"v085_d":false}
+{"cmd":"xsed 1d f","v085_ro":false,"v085_d":false}
+{"cmd":"xxd - out","v085_ro":true,"v085_d":false}
+{"cmd":"xxd -r f out","v085_ro":false,"v085_d":false}
+{"cmd":"xxd f","v085_ro":true,"v085_d":false}
+{"cmd":"yq '.a' f","v085_ro":true,"v085_d":false}
+{"cmd":"yq '.key' file.yaml","v085_ro":true,"v085_d":false}
+{"cmd":"yq -Pi .a f","v085_ro":true,"v085_d":false}
+{"cmd":"yq -i .a=1 f","v085_ro":false,"v085_d":false}
+{"cmd":"zsh x","v085_ro":false,"v085_d":true}
+{"cmd":"{ rm x; }","v085_ro":false,"v085_d":false}

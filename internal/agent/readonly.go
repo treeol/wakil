@@ -304,6 +304,16 @@ func IsDestructiveShell(cmd string) bool {
 		for k, a := range rawArgs {
 			args[k] = unquoteShellArg(a)
 		}
+		// A substitution or variable argument can expand to any flag, so a
+		// binary that has flags it could misuse is gated here too (the
+		// read-only path gates the same case through varSafeCmds).
+		if !varSafeCmds[bin] {
+			for _, a := range rawArgs {
+				if strings.Contains(a, "$__SUBST") {
+					return true
+				}
+			}
+		}
 		switch bin {
 		case "git":
 			// Global options before the subcommand: "-C <dir>" is skipped;
@@ -827,6 +837,11 @@ func IsReadOnlyShell(cmd string) bool {
 			if len(fields) > 0 && strings.Contains(seg, "$__SUBST") {
 				continue
 			}
+			return false
+		}
+		// A quoted or escaped command word hides its name ("r\"\"m"), and
+		// IsDestructiveShell gates it; the read-only path must agree.
+		if strings.ContainsAny(fields[i], "'\"\\") {
 			return false
 		}
 		bin := unquoteShellArg(fields[i])
