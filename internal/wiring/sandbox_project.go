@@ -57,30 +57,29 @@ func loadProjectSurface(cfg config.Config) (hisn.Surface, project.Loaded, error)
 // deliberately no flag that skips the question and no non-terminal path: the
 // approval is the user's decision, and a process an agent can drive must not
 // be able to make it.
+//
+// Workspace resolution matches `wakil run` (positional path >
+// WAKIL_HOST_WORKDIR > config > cwd): one canonical path is used for loading
+// and writing .wakil/sandbox.json, computing the profile risk, and keying the
+// approval store.
 func SandboxTrust(out io.Writer, dir string, openTTY func() (io.ReadCloser, error)) error {
-	if dir == "" {
-		dir = "."
-	}
-	abs, err := filepath.Abs(dir)
+	return sandboxTrustWith(out, dir, openTTY, productionRisk)
+}
+
+func sandboxTrustWith(out io.Writer, dir string, openTTY func() (io.ReadCloser, error), risk riskFunc) error {
+	ws, cfg, cfgErr, err := resolveTrustWorkspace(dir)
 	if err != nil {
 		return err
-	}
-	ws, err := filepath.EvalSymlinks(abs)
-	if err != nil {
-		return fmt.Errorf("workspace %q: %w", dir, err)
 	}
 	l, err := project.Load(ws)
 	if err != nil {
 		return err
 	}
 	if !l.Present || bootstrapEligible(l.Raw) {
-		cfg, err := loadTrustConfig(ws)
-		if err != nil {
-			return err
+		if cfgErr != nil {
+			return cfgErr
 		}
-		return trustBootstrap(out, cfg, l, openTTY, func(c config.Config, sf hisn.Surface) (hisn.Risk, error) {
-			return productionRisk(c, sf)
-		})
+		return trustBootstrap(out, cfg, l, openTTY, risk)
 	}
 	if !l.Needs() {
 		fmt.Fprintf(out, "%s needs no approval (absent, empty or asks for nothing).\n", project.RelPath)
@@ -95,6 +94,7 @@ func SandboxTrust(out io.Writer, dir string, openTTY func() (io.ReadCloser, erro
 		fmt.Fprintf(out, "%s is already approved (sha256 %s).\n", project.RelPath, l.Hash[:16])
 		return nil
 	}
+	fmt.Fprintf(out, "workspace: %s\n", ws)
 	fmt.Fprintf(out, "%s in %s\n\n%s\n\nIt asks for:\n", project.RelPath, ws, strings.TrimSpace(string(l.Raw)))
 	for _, line := range project.Summary(l) {
 		fmt.Fprintf(out, "  - %s\n", line)
@@ -116,6 +116,85 @@ func SandboxTrust(out io.Writer, dir string, openTTY func() (io.ReadCloser, erro
 	}
 	fmt.Fprintln(out, "approved.")
 	return nil
+}
+
+// resolveTrustWorkspace resolves the single workspace path for
+// `wakil sandbox trust [dir]` using the same precedence as `wakil run`
+// (positional path > WAKIL_HOST_WORKDIR > config > cwd).
+//
+// When a config loads cleanly, cfg has both HostWorkDir and WorkDir aligned
+// with the resolved workspace (LoadConfig receives dir as its positional
+// workspace argument when non-empty). When no config file exists (e.g. a
+// unit test or a hand-written .wakil/sandbox.json before `wakil init`),
+// cfgErr is returned alongside the fallback workspace path so the
+// hand-written trust path still works while the bootstrap path surfaces
+// cfgErr.
+func resolveTrustWorkspace(dir string) (ws string, cfg config.Config, cfgErr error, err error) {
+	var argv []string
+	if dir != "" {
+		argv = []string{dir}
+	}
+	cfg, cfgErr = config.LoadConfig(argv)
+	if cfgErr == nil {
+		raw := cfg.HostWorkDir
+		if cfg.ExecMode == "direct" && raw == "" {
+			raw = cfg.WorkDir
+		}
+		if raw == "" {
+			raw = "."
+		}
+		ws, err = canonicalTrustDir(raw)
+		if err != nil {
+			return "", config.Config{}, nil, err
+		}
+		cfg.HostWorkDir = ws
+		if cfg.ExecMode == "direct" || cfg.Sandbox.Backend == config.SandboxBackendHisn {
+			cfg.WorkDir = ws
+		}
+		return ws, cfg, nil, nil
+	}
+	// Special case: when the user's config sets host_work_dir (or work_dir),
+	// a positional arg to `wakil sandbox trust <path>` must still win without
+	// conflicting with hisn's --workdir check (config.go:2362).
+	if dir != "" && strings.Contains(cfgErr.Error(), "conflicts with sandbox backend hisn") {
+		if ws2, werr := canonicalTrustDir(dir); werr == nil {
+			if cfg2, err2 := config.LoadConfig([]string{"--workdir", ws2, ws2}); err2 == nil {
+				cfg2.HostWorkDir = ws2
+				cfg2.WorkDir = ws2
+				return ws2, cfg2, nil, nil
+			}
+		}
+	}
+	// No usable config (e.g. NoConfigError in tests or before `wakil init`):
+	// resolve positional > WAKIL_HOST_WORKDIR > ILM_HOST_WORKDIR > cwd so
+	// hand-written .wakil/sandbox.json approval still works.
+	raw := dir
+	if raw == "" {
+		if env := os.Getenv("WAKIL_HOST_WORKDIR"); env != "" {
+			raw = env
+		} else if env := os.Getenv("ILM_HOST_WORKDIR"); env != "" {
+			raw = env
+		} else {
+			raw = "."
+		}
+	}
+	ws, err = canonicalTrustDir(raw)
+	if err != nil {
+		return "", config.Config{}, nil, err
+	}
+	return ws, config.Config{}, cfgErr, nil
+}
+
+func canonicalTrustDir(dir string) (string, error) {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	ws, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("workspace %q: %w", dir, err)
+	}
+	return ws, nil
 }
 
 // ackBootstrapForm is the only file content Wakil rewrites on its own: the
@@ -176,26 +255,6 @@ func bootstrapEligible(raw []byte) bool {
 	return ok
 }
 
-// loadTrustConfig returns the config startup would use in ws: the real global
-// configuration (LoadConfig with ws as the working directory, exactly as
-// `wakil run` run from that repo resolves it), so the trust-time risk is the
-// startup risk. The working directory is restored before returning.
-func loadTrustConfig(ws string) (config.Config, error) {
-	prev, err := os.Getwd()
-	if err != nil {
-		return config.Config{}, err
-	}
-	if err := os.Chdir(ws); err != nil {
-		return config.Config{}, err
-	}
-	defer func() { _ = os.Chdir(prev) }()
-	cfg, err := config.LoadConfig(nil)
-	if err != nil {
-		return config.Config{}, err
-	}
-	return cfg, nil
-}
-
 // productionRisk is the real plan-time risk: hisn.PlannedRisk over the same
 // options startup builds (hisnOptions), so the labels match what startup
 // would refuse without an ack.
@@ -239,6 +298,7 @@ func trustBootstrap(out io.Writer, cfg config.Config, l project.Loaded, openTTY 
 			return nil
 		}
 	}
+	fmt.Fprintf(out, "workspace: %s\n", cfg.HostWorkDir)
 	printLabels(out, r)
 	path := l.Path
 	if l.Present {

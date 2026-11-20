@@ -182,3 +182,158 @@ func TestStartupStillRefusesUnapprovedAckOnlyFile(t *testing.T) {
 		t.Fatal("an unapproved file must be refused by startup")
 	}
 }
+
+// TestSandboxTrustPositionalOverridesConfigWorkDir pins the trust bug fix:
+// when config.json configures a fixed host_work_dir (different from <path>),
+// `wakil sandbox trust <path>` must write .wakil/sandbox.json in <path> AND
+// store the approval under <path>'s workspace key (not the config's work_dir),
+// and print "workspace: <path>" before asking. A subsequent run in <path>
+// (WAKIL_HOST_WORKDIR=<path>) must then load as approved.
+func TestSandboxTrustPositionalOverridesConfigWorkDir(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_WORKSPACE_KEY", "")
+	t.Setenv("WAKIL_WORKSPACE_PATH", "")
+	t.Setenv("WAKIL_HOST_WORKDIR", "")
+	t.Setenv("ILM_HOST_WORKDIR", "")
+	t.Setenv("WAKIL_WORKDIR", "")
+	t.Setenv("ILM_WORKDIR", "")
+
+	configuredDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfgFile := filepath.Join(t.TempDir(), "config.json")
+	cfgJSON := `{"endpoints":{"local":{"kind":"ilm-proxy","base_url":"http://127.0.0.1:1","model":"test"}},"default_endpoint":"local","host_work_dir":` +
+		`"` + configuredDir + `","sandbox":{"backend":"docker"}}`
+	if err := os.WriteFile(cfgFile, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAKIL_CONFIG", cfgFile)
+
+	var out bytes.Buffer
+	err = sandboxTrustWith(&out, targetDir, tty("yes\n"), fakeRisk("signing", "signing"))
+	if err != nil {
+		t.Fatalf("sandboxTrustWith(%s) failed: %v\nout:\n%s", targetDir, err, out.String())
+	}
+	if !strings.Contains(out.String(), "workspace: "+targetDir+"\n") {
+		t.Errorf("must print resolved workspace before asking; got:\n%s", out.String())
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, ".wakil", "sandbox.json")); err != nil {
+		t.Fatalf("expected .wakil/sandbox.json in targetDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(configuredDir, ".wakil", "sandbox.json")); err == nil {
+		t.Fatalf("must not write .wakil/sandbox.json in configuredDir")
+	}
+
+	// Simulate `WAKIL_HOST_WORKDIR=<targetDir> wakil run`: LoadConfig resolves
+	// targetDir and loadProjectSurface must see it as approved.
+	t.Setenv("WAKIL_HOST_WORKDIR", targetDir)
+	runCfg, err := config.LoadConfig(nil)
+	if err != nil {
+		t.Fatalf("LoadConfig for run: %v", err)
+	}
+	if _, _, err := loadProjectSurface(runCfg); err != nil {
+		t.Fatalf("subsequent run in targetDir must see approval: %v", err)
+	}
+}
+
+// TestSandboxTrustNoArgUsesConfigPrecedence verifies that calling trust with
+// no positional argument resolves WAKIL_HOST_WORKDIR > config host_work_dir >
+// cwd, matching `wakil run`, and prints "workspace: <resolved>".
+func TestSandboxTrustNoArgUsesConfigPrecedence(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_WORKSPACE_KEY", "")
+	t.Setenv("WAKIL_WORKSPACE_PATH", "")
+	t.Setenv("WAKIL_HOST_WORKDIR", "")
+	t.Setenv("ILM_HOST_WORKDIR", "")
+	t.Setenv("WAKIL_WORKDIR", "")
+	t.Setenv("ILM_WORKDIR", "")
+
+	configuredDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	envDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cfgFile := filepath.Join(t.TempDir(), "config.json")
+	cfgJSON := `{"endpoints":{"local":{"kind":"ilm-proxy","base_url":"http://127.0.0.1:1","model":"test"}},"default_endpoint":"local","host_work_dir":` +
+		`"` + configuredDir + `","sandbox":{"backend":"docker"}}`
+	if err := os.WriteFile(cfgFile, []byte(cfgJSON), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAKIL_CONFIG", cfgFile)
+
+	// Without env or positional arg, config host_work_dir wins.
+	var out1 bytes.Buffer
+	if err := sandboxTrustWith(&out1, "", tty("yes\n"), fakeRisk("signing", "signing")); err != nil {
+		t.Fatalf("no-arg trust failed: %v\nout:\n%s", err, out1.String())
+	}
+	if !strings.Contains(out1.String(), "workspace: "+configuredDir+"\n") {
+		t.Errorf("no-arg trust must print configuredDir; got:\n%s", out1.String())
+	}
+	runCfg1, err := config.LoadConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadProjectSurface(runCfg1); err != nil {
+		t.Fatalf("run in configuredDir must see approval: %v", err)
+	}
+
+	// With WAKIL_HOST_WORKDIR set and no positional arg, env wins over config.
+	t.Setenv("WAKIL_HOST_WORKDIR", envDir)
+	var out2 bytes.Buffer
+	if err := sandboxTrustWith(&out2, "", tty("yes\n"), fakeRisk("signing", "signing")); err != nil {
+		t.Fatalf("env trust failed: %v\nout:\n%s", err, out2.String())
+	}
+	if !strings.Contains(out2.String(), "workspace: "+envDir+"\n") {
+		t.Errorf("env trust must print envDir; got:\n%s", out2.String())
+	}
+	runCfg2, err := config.LoadConfig(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := loadProjectSurface(runCfg2); err != nil {
+		t.Fatalf("run in envDir must see approval: %v", err)
+	}
+
+	// Without any config file and no argument, trust resolves cwd as before.
+	cwdDir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("WAKIL_HOST_WORKDIR", "")
+	t.Setenv("WAKIL_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwdDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prevWD) })
+	p := filepath.Join(cwdDir, ".wakil", "sandbox.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, []byte(projFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out3 bytes.Buffer
+	if err := SandboxTrust(&out3, "", tty("yes\n")); err != nil {
+		t.Fatalf("no-arg hand-written trust in cwd failed: %v\nout:\n%s", err, out3.String())
+	}
+	if !strings.Contains(out3.String(), "workspace: "+cwdDir+"\n") {
+		t.Errorf("no-arg cwd trust must print cwdDir; got:\n%s", out3.String())
+	}
+	if _, _, err := loadProjectSurface(testCfg(cwdDir)); err != nil {
+		t.Fatalf("loadProjectSurface in cwdDir must see approval: %v", err)
+	}
+}
