@@ -9,7 +9,7 @@ import (
 
 // TestInstallScriptHisnVersionMatchesMinVersion keeps install.sh from
 // installing a hisn older than the one Wakil requires: HISN_VERSION in the
-// installer must equal MinVersion.
+// installer must equal MinHisnVersion.
 func TestInstallScriptHisnVersionMatchesMinVersion(t *testing.T) {
 	b, err := os.ReadFile(filepath.Join("..", "..", "..", "install.sh"))
 	if err != nil {
@@ -20,6 +20,6 @@ func TestInstallScriptHisnVersionMatchesMinVersion(t *testing.T) {
 		t.Fatal(`install.sh: line HISN_VERSION="X.Y.Z" not found`)
 	}
 	if got := string(m[1]); got != MinVersion {
-		t.Fatalf("install.sh HISN_VERSION = %q, want MinVersion %q (internal/sandbox/hisn/backend.go)", got, MinVersion)
+		t.Fatalf("install.sh HISN_VERSION = %q, want MinHisnVersion %q (internal/sandbox/backend.go)", got, MinVersion)
 	}
 }

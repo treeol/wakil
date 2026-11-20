@@ -29,7 +29,7 @@
 
 set -eu
 
-# Keep HISN_VERSION equal to MinVersion in internal/sandbox/hisn/backend.go
+# Keep HISN_VERSION equal to MinHisnVersion in internal/sandbox/backend.go
 # (enforced by TestInstallScriptHisnVersionMatchesMinVersion).
 HISN_VERSION="0.6.1"
 KVR_VERSION="0.2.0"

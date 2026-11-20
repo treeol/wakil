@@ -596,12 +596,21 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				if ti < len(msg.ToolCalls) {
 					skipped := make([]proxy.Message, 0, len(msg.ToolCalls)-ti)
 					for _, pending := range msg.ToolCalls[ti:] {
+						skipText := "ERROR: tool call skipped after finalize_goal ended the invocation"
 						skipped = append(skipped, proxy.Message{
 							Role:       "tool",
 							ToolCallID: pending.ID,
 							Name:       pending.Function.Name,
-							Content:    StrPtr("ERROR: tool call skipped after finalize_goal ended the invocation"),
+							Content:    StrPtr(skipText),
 						})
+						if a.Trace != nil {
+							*traceToolCalls = append(*traceToolCalls, trace.ToolTrace{
+								Name:         pending.Function.Name,
+								PreCapBytes:  len(skipText),
+								PostCapBytes: len(skipText),
+								Capped:       false,
+							})
+						}
 					}
 					a.appendConv(skipped...)
 				}

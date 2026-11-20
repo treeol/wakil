@@ -787,12 +787,12 @@ func (a *App) resolvePanel(toolName, override string) (name string, panel config
 // fallbackModel returns the prefixed model string for the built-in fallback
 // panel when no "default" panel is configured. Resolution:
 //  1. MashuraFallbackModel (config) if set — must be explicitly prefixed.
-//  2. OracleModel if it already contains a provider prefix (colon).
-//  3. Auto-detect: if only the OpenRouter key is set, use "openrouter:" + the
-//     OpenRouter default model constant. If only the Anthropic key is set, use
-//     "anthropic:" + OracleModel. If both, prefer "anthropic:" + OracleModel
-//     (backward compat). If neither, use "anthropic:" + OracleModel (the key
-//     check in mashuraPanelKeys will catch the missing key and fail-closed).
+//  2. OracleModel if it already contains a provider prefix (anthropic: or
+//     openrouter:).
+//  3. If an OpenRouter credential resolves, use "openrouter:" + the
+//     OpenRouter default model constant. Otherwise use "anthropic:" +
+//     OracleModel (the credential check in mashuraPanelKeys will catch the
+//     missing key and fail-closed).
 func (a *App) fallbackModel() string {
 	if fm := a.Cfg.MashuraFallbackModel; fm != "" {
 		return fm

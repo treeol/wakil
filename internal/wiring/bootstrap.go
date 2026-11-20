@@ -373,6 +373,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	}
 	// Store the override version on the app for /prompt status display.
 	app.PromptOverrideVersion = overrideVersion
+	app.PromptUsingEmbedded = usingEmbedded
 
 	// Staging client
 	if planned := plannedKVR(exe); planned != "" {

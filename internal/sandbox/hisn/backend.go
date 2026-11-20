@@ -470,7 +470,8 @@ type discard struct{}
 
 func (discard) Write(p []byte) (int, error) { return len(p), nil }
 
-// SetDiagnostics redirects non-fatal diagnostics (Wakil passes os.Stderr).
+// SetDiagnostics redirects non-fatal diagnostics (callers pass a diagWriter
+// that forwards to the diag package, not os.Stderr directly).
 func SetDiagnostics(w io.Writer) { errWriter = w }
 
 // Grants returns the active grants of the current session: the backend's

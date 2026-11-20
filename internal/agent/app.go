@@ -413,6 +413,11 @@ type App struct {
 	// their override is stale. Displayed in /prompt status.
 	PromptOverrideVersion int
 
+	// PromptUsingEmbedded is true when AgentPrompt came from the embedded
+	// prompt (no path configured, or the file was missing/empty). Used by
+	// AgentPromptNote to show "built-in" instead of the stale path.
+	PromptUsingEmbedded bool
+
 	// InjectDate keeps a day-stable system message (agent prompt + date + cwd
 	// + tool inventory) as Conv[0], so the model doesn't fall back to its
 	// training-era guess about "now". Enabled for the parent; off for
@@ -2279,6 +2284,9 @@ func (a *App) AgentPromptNote() string {
 	path := a.Cfg.AgentPromptPath
 	if path == "" || a.AgentPrompt == "" {
 		return "· agent prompt: built-in fallback (no path configured)"
+	}
+	if a.PromptUsingEmbedded {
+		return fmt.Sprintf("· agent prompt: built-in (file not found at %s)", path)
 	}
 	return fmt.Sprintf("· agent prompt: %s (%d bytes)", path, len(a.AgentPrompt))
 }
