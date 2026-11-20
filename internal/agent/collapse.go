@@ -1244,7 +1244,7 @@ func (a *App) collapseFinishedTurns() {
 		// first fix, which counted the uncapped answer.
 		// A.7: unified one-line format: prior tokens, sent tokens, archive
 		// path, and what was dropped (msgs range + tool results) in one line.
-		fmt.Fprintln(a.Out, Dim(formatCollapseNotice(t, wSize, projected, wOnly, s.first+1, archive)))
+		a.emitCollapseNotice(formatCollapseNotice(t, wSize, projected, wOnly, s.first+1, archive))
 	}
 }
 
@@ -1262,6 +1262,21 @@ func aggregateToolResults(msgs []proxy.Message) map[string]int {
 		}
 	}
 	return counts
+}
+
+// emitCollapseNotice sends a collapse notice through the notice path
+// (SysNoteMsg → KindSessionNote in the TUI, rendered as a dim system note)
+// rather than the assistant stream. When no event sink is attached (headless
+// mode, tests), it falls back to a.Out so the notice is not lost.
+func (a *App) emitCollapseNotice(text string) {
+	a.callbackMu.Lock()
+	sink := a.EventSink
+	a.callbackMu.Unlock()
+	if sink != nil {
+		sink(SysNoteMsg{Text: text})
+	} else {
+		fmt.Fprintln(a.Out, text)
+	}
 }
 
 // formatToolAggregation renders a tool-name → count map as a sorted, capped
@@ -1890,7 +1905,7 @@ func (a *App) collapseMidTurnPrefix() {
 	// The notice reports the actual archived size and the actual
 	// checkpoint size (cpEstimate is measured above from the stored
 	// record, before any stash/index side effects).
-	fmt.Fprintln(a.Out, Dim(formatCollapseNotice(a.curTurn, wSize, cpEstimate, w, taskIdx+1, archive)+" [mid-turn]"))
+	a.emitCollapseNotice(formatCollapseNotice(a.curTurn, wSize, cpEstimate, w, taskIdx+1, archive) + " [mid-turn]")
 }
 
 // isCleanAnswer reports whether m is a finished assistant message: role

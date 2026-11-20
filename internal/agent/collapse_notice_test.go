@@ -192,3 +192,73 @@ func abs(n int) int {
 	}
 	return n
 }
+
+// TestCollapseNoticeThroughNoticePath verifies K5: the collapse notice is
+// delivered through the SysNoteMsg notice path (not the assistant stream)
+// when an event sink is attached. One collapse event produces exactly one
+// SysNoteMsg. Without a sink the notice falls back to a.Out.
+func TestCollapseNoticeThroughNoticePath(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextCollapseMinBytes = 1
+
+	var out strings.Builder
+	app.Out = &out
+
+	var notes []SysNoteMsg
+	app.EventSink = func(msg interface{}) {
+		if sn, ok := msg.(SysNoteMsg); ok {
+			notes = append(notes, sn)
+		}
+	}
+
+	conv := oneCollapsedTurn(1)
+	for i := range conv {
+		conv[i].Turn = 1
+	}
+	app.Conv = conv
+	app.turnSeq = 1
+
+	app.collapseFinishedTurns()
+
+	// Exactly one SysNoteMsg for one collapse.
+	if len(notes) != 1 {
+		t.Fatalf("got %d SysNoteMsg events, want 1", len(notes))
+	}
+	// The notice text is one line (no embedded newlines).
+	if strings.Contains(notes[0].Text, "\n") {
+		t.Errorf("notice is not one line: %q", notes[0].Text)
+	}
+	// The notice went through the notice path, not the assistant stream.
+	if out.String() != "" {
+		t.Errorf("notice leaked to a.Out (assistant stream): %q", out.String())
+	}
+	// The notice carries the collapse marker.
+	if !strings.Contains(notes[0].Text, "collapsed request 1:") {
+		t.Errorf("notice missing collapse marker: %q", notes[0].Text)
+	}
+}
+
+// TestCollapseNoticeFallsBackToOutWhenNoSink verifies the headless fallback:
+// when no EventSink is attached, the notice falls back to a.Out.
+func TestCollapseNoticeFallsBackToOutWhenNoSink(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextCollapseMinBytes = 1
+
+	var out strings.Builder
+	app.Out = &out
+
+	conv := oneCollapsedTurn(1)
+	for i := range conv {
+		conv[i].Turn = 1
+	}
+	app.Conv = conv
+	app.turnSeq = 1
+
+	app.collapseFinishedTurns()
+
+	if !strings.Contains(out.String(), "collapsed request 1:") {
+		t.Errorf("notice not in a.Out fallback: %q", out.String())
+	}
+}
