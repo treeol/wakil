@@ -104,6 +104,9 @@ mkdir -p "$results_dir"
 # ${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/work/<task>.
 cache_home="${XDG_CACHE_HOME:-$HOME/.cache}"
 work_root="$cache_home/wakil-bench/work"
+# One lock file per task, outside the work folder (the folder is emptied and
+# refilled before every run, so a lock inside it would not survive).
+lock_root="$cache_home/wakil-bench/locks"
 
 # Metric columns come from jq parsing of the per-run result JSON; without
 # jq they are honestly n/a, but say so once rather than per row.
@@ -139,7 +142,11 @@ wakil_version="$("$wakil_bin" version 2>/dev/null | head -n 1 | tr -d '\r' || ec
 # Task list.
 if [ -n "$only_task" ]; then
     # Validate --task against the list of task folder names so a typo
-    # cannot make do_setup or prep_workdir run rm -rf on an arbitrary path.
+    # cannot make do_setup or prep_workdir run rm -rf on an arbitrary path;
+    # the name also becomes a lock file name, so no "/" and no leading ".".
+    case "$only_task" in
+        */*|.*|'') echo "$prog: --task: invalid task name '$only_task'" >&2; exit 2 ;;
+    esac
     if [ ! -d "$tasks_dir/$only_task" ]; then
         echo "$prog: --task: no task named '$only_task' in $tasks_dir" >&2
         exit 2
@@ -332,7 +339,7 @@ prep_workdir() {
     # working directory.
     cp -R "$tdir/repo/." "$workdir/" || { echo "$prog: prep_workdir: cannot copy $tdir/repo into $workdir" >&2; return 1; }
     if [ -x "$tdir/setup.sh" ]; then
-        if ! ( cd "$workdir" && "$tdir/setup.sh" ) >"$workdir/.bench-setup.log" 2>&1; then
+        if ! ( cd "$workdir" && "$tdir/setup.sh" ) >"$workdir/.bench-setup.log" 2>&1 9>&-; then
             echo "$prog: prep_workdir: setup.sh of $task failed — aborting:" >&2
             cat "$workdir/.bench-setup.log" >&2
             return 1
@@ -408,12 +415,48 @@ wakil_digest() {
     ( cd "$1/.wakil" && find . -type f -exec sha256sum {} + 2>/dev/null | sort | sha256sum | awk '{ print $1 }' )
 }
 
+# lock_task <task>: take the exclusive lock of one task's work folder on
+# fd 9 (flock -n: never waits). Two benches on the same task would otherwise
+# empty and refill the same folder under each other. A held lock prints a
+# message and returns 75 without touching the folder; the caller must not
+# write a CSV row for it. The fd stays open until unlock_task; the children
+# (wakil, check.sh, setup.sh) are started with 9>&- so they do not inherit
+# it and keep the lock after the bench is gone.
+lock_task() {
+    if ! command -v flock >/dev/null 2>&1; then
+        echo "$prog: flock not found — refusing to run: two benches on one task would delete each other's work folder" >&2
+        return 1
+    fi
+    mkdir -p "$lock_root" || { echo "$prog: cannot create $lock_root" >&2; return 1; }
+    _lk_file="$lock_root/$1.lock"
+    exec 9>"$_lk_file"
+    if ! flock -n 9; then
+        exec 9>&-
+        echo "$prog: task $1 is already being run by another bench (lock $_lk_file) — its work folder was not touched" >&2
+        return 75
+    fi
+}
+
+# unlock_task: release the lock taken by lock_task.
+unlock_task() {
+    exec 9>&-
+}
+
 # run_one <task> <run> <wakil-bin>
 # Sets up the fixed work folder, runs wakil under the timeout, then
 # checks. The task's check and reference solution are never copied into
 # the work folder. Always returns 0 (a failed task is a result, not a
 # harness error); a crashed run still leaves a CSV row.
 run_one() {
+    lock_task "$1" || return $?
+    _ro_rc=0
+    run_one_locked "$@" || _ro_rc=$?
+    unlock_task
+    return "$_ro_rc"
+}
+
+# run_one_locked <task> <run> <wakil-bin>: run_one with the task lock held.
+run_one_locked() {
     task=$1; run=$2; bin=$3
     tdir="$tasks_dir/$task"
     workdir="$work_root/$task"
@@ -437,10 +480,10 @@ run_one() {
 
     if [ -n "$model_name" ]; then
         WAKIL_MODEL="$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 &
+            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
     else
         timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 &
+            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
     fi
     run_pid=$!
 
@@ -569,7 +612,7 @@ run_one() {
         # the binary reported. check.sh lives in the task dir (never in the
         # work folder) and runs in the work folder.
         set +e
-        { printf '\n--- check.sh (%s) ---\n' "$task"; ( cd "$workdir" && "$tdir/check.sh" ) 2>&1; } >>"$log_file" 2>&1
+        { printf '\n--- check.sh (%s) ---\n' "$task"; ( cd "$workdir" && "$tdir/check.sh" ) 2>&1; } >>"$log_file" 2>&1 9>&-
         chk_rc=$?
         set -e
         if [ "$chk_rc" -eq 0 ]; then
@@ -684,7 +727,7 @@ run_all() {
         task_idx=$((task_idx + 1))
         i=1
         while [ "$i" -le "$runs" ]; do
-            run_one "$task" "$i" "$1" || return 1
+            run_one "$task" "$i" "$1" || return $?
             i=$((i + 1))
         done
     done
@@ -700,7 +743,11 @@ do_setup() {
     for task in $tasks; do
         tdir="$tasks_dir/$task"
         workdir="$work_root/$task"
-        prep_workdir "$task" || return 1
+        lock_task "$task" || return $?
+        _su_rc=0
+        prep_workdir "$task" || _su_rc=1
+        unlock_task
+        [ "$_su_rc" -eq 0 ] || return 1
         echo "WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust"
     done
     echo
@@ -726,6 +773,9 @@ self_test() {
     work_root="$_self_work_root"
 
     tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/bench-selftest.XXXXXX")
+    # The self-test takes its locks in its own directory, never the real ones.
+    _saved_lock_root="$lock_root"
+    lock_root="$tmpdir/locks"
 
     # Stub that changes nothing (writes a result-json with the correct
     # workdir so the guard passes, but no solution — check.sh fails).
@@ -1084,6 +1134,40 @@ EOF
     printf '%s\n' "$_tbl" | grep -q "$_csv_task" || { echo "self-test FAILED: print_table cannot read the quoted row" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  csv_field and a full row with comma/quote/newline read back intact (16 cells, one line)"
 
+    echo "== self-test: a second bench on a task that is already being run (expect exit 75, folder untouched) =="
+    # The first bench holds the task's lock (lock_task, as run_one does) and
+    # its folder holds a marker. A second run_one on the same task, in a
+    # subshell with its own open file description, must refuse with a clear
+    # message, return 75, write no CSV row and leave the marker alone. After
+    # the first bench lets go, the same call works and refills the folder.
+    _lock_task="$(echo "$tasks" | awk '{print $1}')"
+    _lock_workdir="$work_root/$_lock_task"
+    prep_workdir "$_lock_task"
+    echo keep > "$_lock_workdir/.bench-lock-marker"
+    lock_task "$_lock_task" || { echo "self-test FAILED: first lock_task" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _lock_err="$tmpdir/lock.err"
+    _lines_before=$(wc -l < "$csv_file")
+    _rc=0
+    ( BENCH_TASK_DIR="" run_one "$_lock_task" "self-lock" "$stub_noop" ) 2>"$_lock_err" >/dev/null || _rc=$?
+    _lines_after=$(wc -l < "$csv_file")
+    if [ "$_rc" -ne 75 ]; then
+        echo "self-test FAILED: second bench on a locked task returned $_rc, want 75" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    grep -q "task $_lock_task is already being run by another bench" "$_lock_err" || { echo "self-test FAILED: no clear message for a locked task" >&2; cat "$_lock_err" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ -f "$_lock_workdir/.bench-lock-marker" ] || { echo "self-test FAILED: the second bench touched the locked work folder" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ "$_lines_before" -eq "$_lines_after" ] || { echo "self-test FAILED: a refused bench wrote a CSV row" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # A different task is not blocked by the lock of this one.
+    for _other in $tasks; do
+        [ "$_other" = "$_lock_task" ] && continue
+        ( lock_task "$_other" ) || { echo "self-test FAILED: the lock of $_lock_task blocked task $_other" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        break
+    done
+    unlock_task
+    BENCH_TASK_DIR="" run_one "$_lock_task" "self-lock-free" "$stub_noop" >/dev/null
+    [ ! -e "$_lock_workdir/.bench-lock-marker" ] || { echo "self-test FAILED: after the lock was released the folder was not refilled" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  held lock -> exit 75, message, folder and CSV untouched; released lock -> run proceeds"
+
     echo "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
     # Use the harness's own timeout path with a short per-run timeout so
     # the whole self-test stays fast: the slow stub is killed at 2s.
@@ -1381,6 +1465,7 @@ EOF
     # Restore the real-run work root and CSV so main() and find_prev_csv
     # see them.
     work_root="$_saved_work_root"
+    lock_root="$_saved_lock_root"
     csv_file="$_saved_csv_file"
 }
 
@@ -1405,7 +1490,7 @@ main() {
     csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
     printf '%s\n' "$csv_header" > "$csv_file"
 
-    run_all "$wakil_bin" || exit 1
+    run_all "$wakil_bin" || exit $?
 
     echo
     echo "== this run =="
