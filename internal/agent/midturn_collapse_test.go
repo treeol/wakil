@@ -210,3 +210,67 @@ func TestAutomaticCollapsePreservesExplicitCheckpoint(t *testing.T) {
 	}
 	assertNoOrphanedToolCalls(t, app.contextProjection())
 }
+
+// TestMidTurnCollapseTailClampedToHardMax verifies K3: when the mid-turn
+// collapse ceiling exceeds hardMax, the kept tail is clamped to 30% of
+// hardMax, not 30% of the ceiling. Without the clamp the tail alone can
+// exceed hardMax and the request stays over the trigger after collapsing.
+func TestMidTurnCollapseTailClampedToHardMax(t *testing.T) {
+	isolateToolCache(t)
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.curTurn, app.turnSeq = 1, 1
+	// Ceiling = 200000 tokens × 4 = 800000 chars. HardMax = 100000 chars.
+	// Without K3, tailCap = 800000*30/100 = 240000 > hardMax. With K3,
+	// tailCap = min(240000, 100000*30/100) = 30000.
+	app.Cfg.ContextCollapseCeilingTokens = 200000
+	app.Cfg.ContextCollapseMinBytes = 1
+	app.Cfg.HardMaxBytes = 100000
+	app.Out = new(strings.Builder)
+	// Task message large enough that the projection exceeds hardMax.
+	app.appendConv(proxy.Message{Role: "user", Content: StrPtr(strings.Repeat("task ", 5000))}) // ~25k
+	// Each round: assistant tool call (~40 chars) + tool result (~10000 chars).
+	// 10 rounds = ~100k → tail of 10 rounds would be ~100k.
+	// With the clamp at 30000, only ~3 rounds should be kept.
+	roundSize := 10000
+	for i := 1; i <= 10; i++ {
+		id := fmt.Sprintf("c%d", i)
+		app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: id, Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}})
+		app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("x", roundSize))})
+	}
+
+	app.collapseMidTurnPrefix()
+
+	app.stateMu.RLock()
+	rec, ok := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if !ok || !rec.Partial {
+		t.Fatal("expected a partial mid-turn collapse")
+	}
+
+	// The kept tail must be under 30% of hardMax (30000 chars) plus a small
+	// margin for the most recent round (always kept even if it exceeds the
+	// cap). The most recent round is ~1040 chars, so the tail should be
+	// well under 30000 + 1040.
+	tailBytes := 0
+	boundaryIdx := findBoundaryAssistantIdx(app.Conv, turnSpansFromSlice(app.Conv)[1], rec.BoundaryCallID)
+	if boundaryIdx < 0 {
+		t.Fatal("could not find boundary assistant in conversation")
+	}
+	for i := boundaryIdx; i < len(app.Conv); i++ {
+		tailBytes += messageSize(app.Conv[i])
+	}
+	hardCap := app.Cfg.HardMaxBytes * 30 / 100
+	if tailBytes > hardCap+roundSize+100 { // allow most-recent-round + margin
+		t.Errorf("tail %d bytes exceeds hardMax clamp (~%d): kept tail not clamped to 30%% of hardMax", tailBytes, hardCap)
+	}
+
+	// Without the clamp, tailCap would be 240000 and all 10 rounds (~10k)
+	// would fit — the tail would be ~10000. With the clamp at 30000, fewer
+	// rounds fit but at least the most recent is always kept.
+	if tailBytes <= 0 {
+		t.Error("tail is empty — at least one round must always be kept")
+	}
+
+	assertNoOrphanedToolCalls(t, app.contextProjection())
+}

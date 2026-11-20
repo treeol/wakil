@@ -1348,9 +1348,12 @@ func stashFailureReason(rec CollapseRecord) string {
 // collapseTailStart returns the start index of the kept tail of whole tool
 // rounds immediately before before: the most recent assistant batch before
 // before plus earlier batches kept while their combined size stays within
-// 30 percent of the mid-turn ceiling. It returns before when there is no
-// completed round before before.
-func (a *App) collapseTailStart(s span, taskIdx, before int) int {
+// 30 percent of the mid-turn ceiling, but no more than 30 percent of hardMax
+// (whichever is smaller). It returns before when there is no completed round
+// before before. hardMax is passed in (already computed before any locking)
+// to avoid a lock-ordering hazard. At least the most recent round is always
+// kept, even if it alone exceeds the cap.
+func (a *App) collapseTailStart(s span, taskIdx, before, hardMax int) int {
 	boundaryIdx := -1
 	for i := before - 1; i > taskIdx; i-- {
 		if a.Conv[i].Role == "assistant" && len(a.Conv[i].ToolCalls) > 0 {
@@ -1387,6 +1390,17 @@ func (a *App) collapseTailStart(s span, taskIdx, before int) int {
 		return boundaryIdx
 	}
 	tailCap := a.midTurnCollapseCeiling() * 30 / 100
+	// K3: the ceiling can exceed hardMax, so 30% of the ceiling can exceed
+	// hardMax alone. Clamp the tail to 30% of hardMax (when > 0) so the
+	// kept tail never dominates the request. At least the most recent
+	// round is always kept — the walk starts from it and only adds earlier
+	// rounds while they fit, so the clamp never drops it.
+	if hardMax > 0 {
+		hardCap := hardMax * 30 / 100
+		if hardCap < tailCap {
+			tailCap = hardCap
+		}
+	}
 	tailBytes := roundSize(boundaryIdx, roundEnd(boundaryIdx))
 	for i := boundaryIdx - 1; i > taskIdx; i-- {
 		if a.Conv[i].Role != "assistant" || len(a.Conv[i].ToolCalls) == 0 {
@@ -1777,7 +1791,7 @@ func (a *App) collapseMidTurnPrefix() {
 	}
 	// Derive the kept tail of whole rounds before the boundary exactly as
 	// the model-initiated writer does, so both writers share one walk.
-	tailStart := a.collapseTailStart(s, taskIdx, boundaryIdx+1)
+	tailStart := a.collapseTailStart(s, taskIdx, boundaryIdx+1, hardMax)
 	// Already collapsed up to this tail? The previous record anchors at
 	// the first kept batch (its BoundaryCallID). If that anchor is at or
 	// before the tail this pass would keep, the range [taskIdx+1,
