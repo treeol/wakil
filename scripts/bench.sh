@@ -204,26 +204,35 @@ csv_row() {
 # prep_workdir <task>: empty and refill the fixed work folder from the
 # task's repo/, preserving the .wakil/ directory (the user's approved
 # .wakil/sandbox.json lives there and the approval is keyed on its
-# content — sha256 of its raw bytes). A repo-local identity
-# ("wakil-bench" / "bench@localhost") is set after git init so the
-# commit has an identity without reading any host config file. The bench
-# runs with the user's normal profile — no GIT_CONFIG_GLOBAL override,
-# no GIT_CONFIG_* unsetting, no commit.gpgsign override.
+# content — sha256 of its raw bytes). The .wakil/ directory is moved
+# aside (mv) before the folder is emptied and moved back after, so it
+# is never copied or re-created — the directory inode and its content
+# stay untouched. A repo-local identity ("wakil-bench" / "bench@localhost")
+# is set after git init so the commit has an identity without reading any
+# host config file. The bench runs with the user's normal profile — no
+# GIT_CONFIG_GLOBAL override, no GIT_CONFIG_* unsetting, no commit.gpgsign
+# override.
 prep_workdir() {
     task=$1
     tdir="$tasks_dir/$task"
     workdir="$work_root/$task"
 
-    # Delete everything inside the folder except .wakil/ (the stable
-    # path is what the sandbox acknowledgement is keyed on — see
-    # --setup; .wakil/sandbox.json is its content hash).
+    # Move .wakil/ aside so it survives the folder cleanup untouched.
+    _wakil_saved=""
+    if [ -d "$workdir/.wakil" ]; then
+        _wakil_saved="${TMPDIR:-/tmp}/bench-wakil-saved.$$"
+        mv "$workdir/.wakil" "$_wakil_saved"
+    fi
+
+    # Delete everything in the folder (it is now empty of .wakil/).
     if [ -d "$workdir" ]; then
-        # Use find to delete everything except .wakil.
-        find "$workdir" -mindepth 1 -maxdepth 1 \
-            ! -name '.wakil' \
-            -exec rm -rf {} +
-    else
-        mkdir -p "$workdir"
+        rm -rf "$workdir"
+    fi
+    mkdir -p "$workdir"
+
+    # Move .wakil/ back so the directory inode and content are untouched.
+    if [ -n "$_wakil_saved" ]; then
+        mv "$_wakil_saved" "$workdir/.wakil"
     fi
 
     # Fresh copy + git init + one commit with a repo-local identity.
@@ -367,6 +376,19 @@ run_one() {
         fi
     fi
 
+    csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+
+    # A sandbox-not-acknowledged result is a harness-level error, not a
+    # model failure: stop the whole bench and name the label and the
+    # one command to run. The label was detected by the post-run log
+    # scan above. This check runs before the workdir guard so the
+    # "not acknowledged" message prints first.
+    if [ "$exit_reason" = "sandbox-not-acknowledged" ]; then
+        echo "$prog: bench stopped — task $task run $run: sandbox risk is not acknowledged in $workdir" >&2
+        echo "  run 'wakil sandbox trust $workdir' to review and acknowledge it" >&2
+        return 1
+    fi
+
     # Workdir guard: verify the agent ran in the fixed folder we set
     # up, not in the user's configured work_dir. The result JSON carries
     # the resolved workdir from the binary; a missing value or mismatch
@@ -387,18 +409,6 @@ run_one() {
         exit_reason="wrong-workdir"
         csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
         cat "$log_file" 2>/dev/null || true
-        return 1
-    fi
-
-    csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
-
-    # A sandbox-not-acknowledged result is a harness-level error, not a
-    # model failure: stop the whole bench and name the label and the
-    # one command to run. The label was detected by the post-run log
-    # scan above.
-    if [ "$exit_reason" = "sandbox-not-acknowledged" ]; then
-        echo "$prog: bench stopped — task $task run $run: sandbox risk is not acknowledged in $workdir" >&2
-        echo "  run 'wakil sandbox trust $workdir' to review and acknowledge it" >&2
         return 1
     fi
 
@@ -715,16 +725,19 @@ EOF
     echo "  freshness OK (marker gone after refill)"
 
     echo "== self-test: .wakil/ preservation (sandbox.json byte-identical after two refills) =="
-    # A .wakil/sandbox.json placed before a run must survive two
-    # refills byte-identical (the approval is keyed on its content
-    # hash — sha256 of its raw bytes). A marker file elsewhere must
-    # be gone after each refill.
+    # A .wakil/sandbox.json with unusual formatting (indentation, trailing
+    # newline) placed before a run must survive two refills byte-identical
+    # (the approval is keyed on its content hash — sha256 of its raw
+    # bytes). A marker file elsewhere must be gone after each refill. No
+    # other file under .wakil/ should be created by the harness.
     _wakil_task="$(echo "$tasks" | awk '{print $1}')"
     _wakil_workdir="$work_root/$_wakil_task"
     prep_workdir "$_wakil_task"
     mkdir -p "$_wakil_workdir/.wakil"
-    printf '{"hisn":{"risk_ack":"signing"}}' > "$_wakil_workdir/.wakil/sandbox.json"
+    # Unusual formatting: 2-space indent + trailing newline.
+    printf '  {"hisn": {\n    "risk_ack": "signing"\n  }}\n' > "$_wakil_workdir/.wakil/sandbox.json"
     _sandbox_hash_before=$(sha256sum "$_wakil_workdir/.wakil/sandbox.json" | awk '{print $1}')
+    _wakil_file_count_before=$(find "$_wakil_workdir/.wakil" -type f | wc -l)
     # First refill.
     touch "$_wakil_workdir/.bench-marker-from-run-1"
     prep_workdir "$_wakil_task"
@@ -736,6 +749,12 @@ EOF
     fi
     if [ -e "$_wakil_workdir/.bench-marker-from-run-1" ]; then
         echo "self-test FAILED: marker survived refill 1 (folder not emptied)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    _wakil_file_count_after=$(find "$_wakil_workdir/.wakil" -type f | wc -l)
+    if [ "$_wakil_file_count_before" != "$_wakil_file_count_after" ]; then
+        echo "self-test FAILED: file count under .wakil/ changed (before=$_wakil_file_count_before after=$_wakil_file_count_after)" >&2
         rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
@@ -753,7 +772,13 @@ EOF
         rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
-    echo "  .wakil/ preservation OK (sandbox.json byte-identical after 2 refills, markers gone)"
+    _wakil_file_count_after2=$(find "$_wakil_workdir/.wakil" -type f | wc -l)
+    if [ "$_wakil_file_count_before" != "$_wakil_file_count_after2" ]; then
+        echo "self-test FAILED: file count under .wakil/ changed after refill 2 (before=$_wakil_file_count_before after=$_wakil_file_count_after2)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    echo "  .wakil/ preservation OK (sandbox.json byte-identical after 2 refills, no extra files, markers gone)"
 
     echo "== self-test: fixed-path stability (expect same path across runs) =="
     _stab_task="$(echo "$tasks" | awk '{print $1}')"

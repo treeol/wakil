@@ -70,12 +70,10 @@ For each task and run number:
    (`user.name "wakil-bench"`, `user.email "bench@localhost"`), so every
    run starts from the same state and the stable path means the user's
    one-time sandbox acknowledgement holds. The `.wakil/` directory is
-   preserved when the folder is emptied and refilled — the user's
-   approved `.wakil/sandbox.json` lives there and the approval is keyed
-   on its content hash (sha256 of its raw bytes). `.wakil/` is added to
-   `.git/info/exclude` so it does not show up as untracked. The bench
-   runs with the user's normal profile — no `GIT_CONFIG_GLOBAL` override,
-   no `GIT_CONFIG_*` unsetting, no `commit.gpgsign` override.
+   **moved aside** (mv) before the folder is emptied and moved back after,
+   so the directory inode and its content stay untouched — the user's
+   approved `.wakil/sandbox.json` is never copied or re-created. `.wakil/`
+   is added to `.git/info/exclude` so it does not show up as untracked.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
 3. `wakil run --auto --no-memory [--auto-counsel] --result-json <file>
