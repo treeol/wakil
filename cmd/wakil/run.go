@@ -33,6 +33,7 @@ type RunFlags struct {
 	Auto             bool
 	AllowDestructive bool
 	NoOracle         bool
+	NoMemory         bool
 	TranscriptFile   string
 	ResultJSONFile   string
 	AllowExternal    bool
@@ -65,7 +66,7 @@ func parseDurationStrict(s string) (time.Duration, error) {
 // parseRunArgs parses the args that follow "run":
 //
 //	[--plan] [--auto] [--allow-destructive] [--allow-external]
-//	[--auto-counsel] [--max-counsel N] [--no-oracle] [--transcript <file>]
+//	[--auto-counsel] [--max-counsel N] [--no-oracle] [--no-memory] [--transcript <file>]
 //	[--attach-image <path>] [--policy <path>] [--profile <name>] [--verify]
 //	[--budget $N] [--continue --max-turns N --max-time D --verify-cmd CMD] "<task>"
 func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, err error) {
@@ -91,6 +92,8 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			}
 		case "--no-oracle":
 			flags.NoOracle = true
+		case "--no-memory":
+			flags.NoMemory = true
 		case "--transcript":
 			i++
 			if i >= len(args) {
@@ -179,7 +182,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--transcript <file>] [--result-json <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--no-memory] [--transcript <file>] [--result-json <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
 				"[--continue --max-turns N --max-time D [--verify-cmd CMD]] \"<task>\"")
 	}
 	// No default cap is baked in here: --max-counsel 0 means "not set" and
@@ -217,6 +220,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		AllowDestructive: flags.AllowDestructive,
 		AllowExternal:    flags.AllowExternal,
 		NoOracle:         flags.NoOracle,
+		NoMemory:         flags.NoMemory,
 		AutoCounsel:      flags.AutoCounsel,
 		MaxCounsel:       flags.MaxCounsel,
 		AttachImage:      flags.AttachImage,

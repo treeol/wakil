@@ -238,3 +238,23 @@ func TestParseRunArgs_NoTask(t *testing.T) {
 		t.Fatal("expected error when no task provided")
 	}
 }
+
+func TestParseRunArgs_NoMemory(t *testing.T) {
+	_, _, flags, err := parseRunArgs([]string{"--no-memory", "do task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !flags.NoMemory {
+		t.Error("NoMemory should be true")
+	}
+}
+
+func TestParseRunArgs_NoMemoryDefault(t *testing.T) {
+	_, _, flags, err := parseRunArgs([]string{"do task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.NoMemory {
+		t.Error("NoMemory should be false by default")
+	}
+}

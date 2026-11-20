@@ -53,6 +53,7 @@ type HeadlessOptions struct {
 	// context to a cloud provider.
 	AllowExternal bool
 	NoOracle      bool // skip oracle review entirely; log "oracle disabled by flag"
+	NoMemory      bool // skip memory store, tools, and digest (bench: no carry-over)
 	AutoCounsel   bool
 	MaxCounsel    int
 	// AttachImage is the path(s) to an image file attached to the first user
@@ -269,6 +270,7 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 
 	app, res, err := BuildApp(cfg, exe, BuildAppOpts{
 		IsHeadless:  true,
+		NoMemory:    opts.NoMemory,
 		AutoCounsel: opts.AutoCounsel,
 		MaxCounsel:  opts.MaxCounsel,
 	})

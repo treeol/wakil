@@ -41,6 +41,7 @@ import (
 // the TUI (main.go) and headless (run.go) construction paths.
 type BuildAppOpts struct {
 	IsHeadless  bool
+	NoMemory    bool
 	AutoCounsel bool
 	MaxCounsel  int
 }
@@ -261,6 +262,25 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		EffectiveCtxMaxCharsOverride: -1, // -1 = not set → use config value
 	}
 	appRef = app
+	// When --no-memory is set, strip memory tools from the tool list so
+	// the model never sees them and cannot read or write per-project
+	// memory (bench: no carry-over between runs). MemoryStore is also
+	// nil (see below), so the preamble skips the memory digest and
+	// retrieveMemoryContext returns "".
+	if opts.NoMemory {
+		filtered := app.Tools[:0]
+		for _, t := range app.Tools {
+			name := t.Function.Name
+			if name == "memory_put" || name == "memory_get" || name == "memory_search" ||
+				name == "memory_list" || name == "memory_forget" ||
+				name == "memory_promote" || name == "memory_reject" ||
+				name == "memory_promote_from_staging" {
+				continue
+			}
+			filtered = append(filtered, t)
+		}
+		app.Tools = filtered
+	}
 	// Deferred fields (slated for sub-struct extraction) are set via options,
 	// not composite-literal keys — this is the WP-6.3-followup construction API.
 	// Once all cross-package construction goes through options/setters, these
@@ -345,32 +365,37 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		app.StagingClient = staging.NewClient(kvrSocket)
 	}
 
-	// Memory store
-	memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
-	if memDBPath != "" {
-		endMem := timeline.Begin("open memory store")
-		memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
-		endMem()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
-		} else {
-			endLegacy := timeline.Begin("open legacy memory store (read-through)")
-			app.LegacyMemory = agent.OpenLegacyMemory(app.Cfg, memDBPath)
-			endLegacy()
-			// Sweep runs in the background — it expires stale mid-tier
-			// entries and is not on the critical path. The store is
-			// usable immediately after Open; Sweep just reclaims space.
-			// Errors go through diag (not os.Stderr) so they can't
-			// garble the TUI alt-screen if the sweep finishes late.
-			go func() {
-				sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 10*time.Second)
-				defer sweepCancel()
-				if err := memStore.Sweep(sweepCtx); err != nil {
-					diag.Printf("memory: sweep warning: %v", err)
-				}
-			}()
-			app.MemoryStore = memStore
-			res.MemStore = memStore
+	// Memory store — skipped when --no-memory is set (bench: no
+	// carry-over between runs). MemoryStore stays nil, so memory
+	// tools dispatch to a nil-store error and the preamble skips the
+	// memory digest.
+	if !opts.NoMemory {
+		memDBPath := agent.MemoryDBPath(app.SessionWorkspace())
+		if memDBPath != "" {
+			endMem := timeline.Begin("open memory store")
+			memStore, err := memory.Open(memDBPath, app.SessionWorkspace())
+			endMem()
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "memory: failed to open store:", err)
+			} else {
+				endLegacy := timeline.Begin("open legacy memory store (read-through)")
+				app.LegacyMemory = agent.OpenLegacyMemory(app.Cfg, memDBPath)
+				endLegacy()
+				// Sweep runs in the background — it expires stale mid-tier
+				// entries and is not on the critical path. The store is
+				// usable immediately after Open; Sweep just reclaims space.
+				// Errors go through diag (not os.Stderr) so they can't
+				// garble the TUI alt-screen if the sweep finishes late.
+				go func() {
+					sweepCtx, sweepCancel := context.WithTimeout(context.Background(), 10*time.Second)
+					defer sweepCancel()
+					if err := memStore.Sweep(sweepCtx); err != nil {
+						diag.Printf("memory: sweep warning: %v", err)
+					}
+				}()
+				app.MemoryStore = memStore
+				res.MemStore = memStore
+			}
 		}
 	}
 

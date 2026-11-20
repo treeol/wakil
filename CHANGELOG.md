@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **`wakil run --result-json <file>` writes one JSON object at exit** with `wakil_version`, `model`, `exit_reason`, `workdir`, `seconds`, `tokens_in`, `tokens_out`, `cost_usd`, `tool_calls`, `collapses` and `mashura_rounds` (unknown values are null). The `workdir` field records the resolved workspace folder the session actually ran in, so a bench harness can verify the agent used the expected temp folder. For a bench harness that needs per-run numbers without parsing the JSONL transcript.
+- **`wakil run --no-memory` skips per-project memory.** No memory tools are offered, the memory store is not opened, and the memory digest is not included in the prompt — so a headless run has no carry-over from a previous session's memory, plan/current, or mid-tier entries.
 - **Bench harness sandbox safety.** The temp repo's `.git/config` now sets `commit.gpgsign=false` and `tag.gpgsign=false`, so a host with global `commit.gpgsign=true` does not make the generated hisn profile carry a "signing" risk label — bench tasks never sign. A pre-run `wakil sandbox trust` probe stops the bench with `exit_reason=sandbox-not-acknowledged` when a risk label survives, and a post-run log scan catches one that surfaces only after the model ran. Self-test CSVs are written to `bench/results/selftest/` so `find_prev_csv` never picks them up as an earlier run. The default `model` column is `unknown` (never `config`).
 
 ### Fixed
