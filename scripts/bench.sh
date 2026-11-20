@@ -257,6 +257,7 @@ csv_line() {
 # arr[1..n] with the cells of one line and returns n.
 CSV_AWK_LIB='
 function csvsplit(line, a,    n, i, c, field, inq, L) {
+    split("", a)
     n = 0; field = ""; inq = 0; L = length(line)
     for (i = 1; i <= L; i++) {
         c = substr(line, i, 1)
@@ -565,7 +566,9 @@ run_one_locked() {
         if [ "$wak_rc" -eq 137 ] && [ "$secs" -lt "$timeout_sec" ]; then
             exit_reason="killed"
         fi
-        csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+        # The result JSON of a cut-off run is stale or half-written, so its
+        # metrics are not recorded either (an empty path reads as n/a).
+        csv_row "$task" "$run" "$result" "$exit_reason" "$secs" ""
     else
         # Post-run "not acknowledged" / "has not been approved" detection: when
         # the run did not succeed and the log mentions either sandbox approval
@@ -629,7 +632,7 @@ run_one_locked() {
         # copied in, so one of these names means the agent got hold of the
         # check, hidden files or the solution. Never scored; stops the bench.
         for _n in check.sh hidden solution; do
-            if [ -e "$workdir/$_n" ]; then
+            if [ -e "$workdir/$_n" ] || [ -L "$workdir/$_n" ]; then
                 echo "$prog: LEAK in $task run $run — $_n is present in the work folder after the run" >&2
                 result="error"
                 exit_reason="leak-detected"
@@ -1019,9 +1022,22 @@ case "$1" in
       esac
     done
     d="$workdir/$BENCH_CHEAT_DIR"
+    # A task whose check has earlier, cheaper failure points (rename: the old
+    # name must be gone) starts from the reference solution with the behaviour
+    # broken, so only the hidden test stands between the cheat and a pass.
+    if [ -n "$BENCH_CHEAT_SOLUTION" ]; then
+      cp -R "$BENCH_CHEAT_SOLUTION/." "$workdir/"
+      sed -i 's/a + b/a - b/' "$workdir"/shared/*.go
+    fi
     case "$BENCH_CHEAT" in
       testmain)
         printf 'package %s\nimport ("os"; "testing")\nfunc TestMain(m *testing.M) { os.Exit(0) }\n' "$BENCH_CHEAT_PKG" > "$d/zz_test.go" ;;
+      underscore)
+        # A package in a "_x" directory is skipped by ./... but still imported.
+        mod=$(awk '$1 == "module" { print $2; exit }' "$workdir/go.mod")
+        mkdir -p "$d/_x"
+        printf 'package x\nimport ("fmt"; "os")\nfunc init() { fmt.Println("--- PASS: %s (0.00s)"); fmt.Println("PASS"); os.Exit(0) }\n' "$BENCH_CHEAT_TEST" > "$d/_x/x.go"
+        printf 'package %s\nimport _ "%s/%s/_x"\n' "$BENCH_CHEAT_PKG" "$mod" "$BENCH_CHEAT_DIR" > "$d/zz_x.go" ;;
       init)
         printf 'package %s\nimport ("fmt"; "os")\nfunc init() { fmt.Println("--- PASS: %s (0.00s)"); fmt.Println("PASS"); os.Exit(0) }\n' "$BENCH_CHEAT_PKG" "$BENCH_CHEAT_TEST" > "$d/zz_init.go" ;;
     esac
@@ -1037,9 +1053,11 @@ EOF
         set -- $_c
         _ct=$1; _cdir=$2; _cpkg=$3; _ctest=$4
         [ -d "$tasks_dir/$_ct" ] || continue
-        for _how in testmain init; do
+        for _how in testmain init underscore; do
             task_idx=1
-            BENCH_CHEAT="$_how" BENCH_CHEAT_DIR="$_cdir" BENCH_CHEAT_PKG="$_cpkg" BENCH_CHEAT_TEST="$_ctest" \
+            _csol=""
+            [ "$_ct" != rename ] || _csol="$tasks_dir/rename/solution"
+            BENCH_CHEAT="$_how" BENCH_CHEAT_DIR="$_cdir" BENCH_CHEAT_PKG="$_cpkg" BENCH_CHEAT_TEST="$_ctest" BENCH_CHEAT_SOLUTION="$_csol" \
                 BENCH_TASK_DIR="" run_one "$_ct" "self-cheat-$_how" "$stub_cheat"
             _row_result=$(csv_cell "$csv_file" last 6)
             if [ "$_row_result" != "fail" ]; then
@@ -1047,9 +1065,16 @@ EOF
                 rm -rf "$tmpdir" "$_self_work_root"
                 exit 1
             fi
+            # It must have failed in the check's own logic (a "check: ..."
+            # line), not because the cheat file was never written.
+            if ! grep -q '^check: ' "$results_dir/$_ct-self-cheat-$_how-"*.log 2>/dev/null; then
+                echo "self-test FAILED: $_ct with a $_how cheat failed without a check: reason" >&2
+                rm -rf "$tmpdir" "$_self_work_root"
+                exit 1
+            fi
         done
     done
-    echo "  TestMain-exit-0 and init()-prints-PASS cheats scored fail"
+    echo "  TestMain-exit-0, init()-prints-PASS and underscore-package cheats scored fail, each with a check: reason"
 
     echo "== self-test: no generator, seed or check in the work folder or its history =="
     # The real long-read folder, as built by prep_workdir: only docs/ and
@@ -1255,7 +1280,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":999,"tokens_out":999,"cost_usd":9.99,"tool_calls":1,"collapses":0,"mashura_rounds":0}
 JSON
     echo "executor error: sandbox risk is not acknowledged (label signing)" >&2
     trap '' TERM
@@ -1278,6 +1303,11 @@ EOF
     fi
     if [ "$_row_secs" -lt 3 ]; then
         echo "self-test FAILED: TERM-ignoring stub ended after ${_row_secs}s; the KILL path (timeout 2s + grace 1s) was not exercised" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    _row_tok=$(csv_cell "$csv_file" last 9); _row_cost=$(csv_cell "$csv_file" last 12)
+    if [ "$_row_tok" != "n/a" ] || [ "$_row_cost" != "n/a" ]; then
+        echo "self-test FAILED: a timeout row recorded metrics from the untrusted result JSON (tokens_in=$_row_tok cost=$_row_cost)" >&2
         rm -rf "$tmpdir" "$_self_work_root"; exit 1
     fi
     if grep -q 'check.sh (' "$results_dir"/"$_slow_task"-self-deaf-*.log 2>/dev/null; then

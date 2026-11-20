@@ -149,13 +149,13 @@ ignored, not penalised); restores the task's reference `go.mod` and drops
 `go.sum`; refuses any non-test package that imports outside a per-task
 allow-list of standard-library packages (so agent code cannot reach `os`,
 `syscall`, `runtime`, `unsafe`, `embed` or cgo, and cannot call `os.Exit`) or
-that carries assembly, C or cgo files; copies the task's `hidden/` tests in
+that carries assembly, C or cgo files (the import closure is walked, so a package in a `_x` or `.x` directory, which `./...` skips, is checked too); copies the task's `hidden/` tests in
 and runs them with a fixed Go environment (`GOFLAGS=-buildvcs=false`,
 `GOWORK=off`, `GOENV=off`, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`,
 `GOPROXY=off`). The test run must exit 0, print no `--- FAIL`, and print a
 `--- PASS: <name>` line for every named hidden test. The self-test covers a
 `TestMain` that exits 0 and an `init()` that prints a `PASS` line and exits,
-on both Go tasks (each must score `fail`).
+and an `init()` in an underscore-directory package that the main package imports, on both Go tasks (each must score `fail` with a `check:` reason in the log). A timeout row records no tokens or cost (the result JSON of a cut-off run is not trusted).
 
 Every CSV cell is written by one quoting function (RFC 4180: a value with a
 comma or a double quote is quoted and its quotes doubled; a CR or LF becomes

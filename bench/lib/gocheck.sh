@@ -54,9 +54,14 @@ gocheck_prepare() {
     unset GOROOT GOTMPDIR GOEXPERIMENT GOARCH GOOS
 
     GC_MOD=$(awk '$1 == "module" { print $2; exit }' go.mod)
-    go list -e -f '{{.ImportPath}}|{{join .Imports " "}}|{{if .Error}}{{.Error}}{{end}}|{{join .SFiles " "}}{{join .CgoFiles " "}}{{join .CFiles " "}}{{join .CXXFiles " "}}{{join .MFiles " "}}{{join .HFiles " "}}{{join .FFiles " "}}{{join .SwigFiles " "}}{{join .SwigCXXFiles " "}}{{join .SysoFiles " "}}' ./... > "$GC_TMP/list.txt" 2>"$GC_TMP/list.err" \
+    # -deps walks the import closure of ./..., not just the directories ./...
+    # matches: a package in a "_x" or ".x" directory is skipped by ./... but
+    # can still be imported, so it must be checked too. Standard-library
+    # packages are filtered out (their own imports are not the agent's).
+    go list -e -deps -f '{{if not .Standard}}{{.ImportPath}}|{{join .Imports " "}}|{{if .Error}}{{.Error}}{{end}}|{{join .SFiles " "}}{{join .CgoFiles " "}}{{join .CFiles " "}}{{join .CXXFiles " "}}{{join .MFiles " "}}{{join .HFiles " "}}{{join .FFiles " "}}{{join .SwigFiles " "}}{{join .SwigCXXFiles " "}}{{join .SysoFiles " "}}{{end}}' ./... > "$GC_TMP/list.txt" 2>"$GC_TMP/list.err" \
         || gocheck_fail "go list failed: $(head -n 3 "$GC_TMP/list.err")"
     while IFS='|' read -r p imps err extra; do
+        [ -n "$p" ] || continue
         [ -z "$err" ] || gocheck_fail "package $p: $err"
         [ -z "$extra" ] || gocheck_fail "package $p has assembly/C/cgo files: $extra"
         for i in $imps; do
