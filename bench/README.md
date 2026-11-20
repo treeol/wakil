@@ -53,11 +53,12 @@ Emptying and refilling the folder does **not** invalidate the
 acknowledgement as long as the risk label (and thus the
 `.wakil/sandbox.json` content) is the same: the hash is of the file's
 bytes, and the same content yields the same hash. The `.wakil/`
-directory itself is recreated by the hisn backend on each run with the
-same risk label (same config, same hisn version), so the hash matches.
-If the risk label changes (different hisn version, different config),
-the content changes, the hash changes, and the approval is invalid —
-the user must re-acknowledge with `wakil sandbox trust <path>`.
+directory is **preserved** when the folder is emptied and refilled —
+the harness deletes everything inside the folder except `.wakil/` —
+so the approved `.wakil/sandbox.json` stays in place and its hash is
+stable. If the risk label changes (different hisn version, different
+config), the content changes, the hash changes, and the approval is
+invalid — the user must re-acknowledge with `wakil sandbox trust <path>`.
 
 ## How a run works
 

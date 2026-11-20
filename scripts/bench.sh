@@ -106,8 +106,10 @@ if ! command -v jq >/dev/null 2>&1; then
 fi
 
 csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds'
-csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
-printf '%s\n' "$csv_header" > "$csv_file"
+# CSV is created lazily: --setup and --self-test do not write a real-run
+# CSV (a header-only file would be picked up by find_prev_csv as the
+# "earlier run"). main() creates it before run_all only.
+csv_file=""
 
 # The resolved model for the CSV: from --model, else the result-json of
 # the first run (resolved model, not requested), else "unknown". The
@@ -417,15 +419,20 @@ run_one() {
     fi
 }
 
-# find_prev_csv: the most recent bench CSV (not this run's, not a
-# self-test). Echoes path. Self-test CSVs live in $results_dir/selftest/
-# and are excluded by the top-level glob (results_dir/20*-bench.csv matches
-# direct children only, not the selftest/ subdir).
+# find_prev_csv: the most recent bench CSV whose model matches the
+# resolved model (not this run's, not a self-test). Echoes path.
+# Self-test CSVs live in $results_dir/selftest/ and are excluded by
+# the top-level glob (results_dir/20*-bench.csv matches direct children
+# only, not the selftest/ subdir).
 find_prev_csv() {
+    _want_model="${1:-}"
     last=""
     for f in "$results_dir"/20*-bench.csv; do
         [ -f "$f" ] || continue
         [ "$f" = "$csv_file" ] && continue
+        # Filter by model: the CSV's model is in column 3 ($3).
+        _f_model=$(awk -F, 'NR==2 { print $3 }' "$f" 2>/dev/null)
+        [ -n "$_want_model" ] && [ "$_f_model" != "$_want_model" ] && continue
         last="$f"
     done
     printf '%s' "$last"
@@ -486,8 +493,12 @@ self_test() {
     selftest_dir="$results_dir/selftest"
     mkdir -p "$selftest_dir"
     _saved_csv_file="$csv_file"
+    _saved_work_root="$work_root"
     csv_file="$selftest_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
     printf '%s\n' "$csv_header" > "$csv_file"
+    # Use a temp work root so the self-test never touches the real one.
+    _self_work_root=$(mktemp -d "${TMPDIR:-/tmp}/bench-selftest-work.XXXXXX")
+    work_root="$_self_work_root"
 
     tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/bench-selftest.XXXXXX")
 
@@ -569,16 +580,26 @@ EOF
 
     echo "== self-test: stub that changes nothing (expect fail on every task) =="
     task_idx=0
+    _fail_count=0
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="" run_one "$task" "self-noop" "$stub_noop"
+        _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: noop $task: expected fail, got $_row_result" >&2; _fail_count=$((_fail_count + 1)); }
     done
+    [ "$_fail_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+
     echo "== self-test: stub that applies the solution (expect pass on every task) =="
     task_idx=0
+    _pass_count=0
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="$tasks_dir/$task" run_one "$task" "self-solve" "$stub_solve"
+        _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+        [ "$_row_result" = "pass" ] || { echo "self-test FAILED: solve $task: expected pass, got $_row_result" >&2; _pass_count=$((_pass_count + 1)); }
     done
+    [ "$_pass_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+
     echo "== self-test: stub that sleeps past the timeout (expect timeout) =="
     # Use the harness's own timeout path with a short per-run timeout so
     # the whole self-test stays fast: the slow stub is killed at 2s.
@@ -587,6 +608,8 @@ EOF
     task_idx=1
     BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-slow" "$stub_slow"
     timeout_sec="$_saved_timeout"
+    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+    [ "$_row_result" = "timeout" ] || { echo "self-test FAILED: slow stub: expected timeout, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
 
     echo "== self-test: stub that reports a wrong workdir (expect error + stop) =="
     _saved_timeout="$timeout_sec"
@@ -597,7 +620,7 @@ EOF
     timeout_sec="$_saved_timeout"
     if [ "$_rc" -ne 1 ]; then
         echo "self-test FAILED: wrong-workdir guard did not stop the bench (exit=$_rc)" >&2
-        rm -rf "$tmpdir"
+        rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
     echo "  wrong-workdir guard fired correctly (bench stopped with exit 1)"
@@ -612,36 +635,51 @@ EOF
     prep_workdir "$_fresh_task"
     if [ -e "$_fresh_workdir/.bench-marker-from-run-1" ]; then
         echo "self-test FAILED: marker file survived prep_workdir (folder not emptied)" >&2
-        rm -rf "$tmpdir"
+        rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
     echo "  freshness OK (marker gone after refill)"
 
-    echo "== self-test: .wakil/ preservation (sandbox.json byte-identical after refills) =="
+    echo "== self-test: .wakil/ preservation (sandbox.json byte-identical after two refills) =="
     # A .wakil/sandbox.json placed before a run must survive two
     # refills byte-identical (the approval is keyed on its content
     # hash — sha256 of its raw bytes). A marker file elsewhere must
-    # be gone.
+    # be gone after each refill.
     _wakil_task="$(echo "$tasks" | awk '{print $1}')"
     _wakil_workdir="$work_root/$_wakil_task"
     prep_workdir "$_wakil_task"
     mkdir -p "$_wakil_workdir/.wakil"
     printf '{"hisn":{"risk_ack":"signing"}}' > "$_wakil_workdir/.wakil/sandbox.json"
     _sandbox_hash_before=$(sha256sum "$_wakil_workdir/.wakil/sandbox.json" | awk '{print $1}')
+    # First refill.
     touch "$_wakil_workdir/.bench-marker-from-run-1"
     prep_workdir "$_wakil_task"
     _sandbox_hash_after=$(sha256sum "$_wakil_workdir/.wakil/sandbox.json" 2>/dev/null | awk '{print $1}')
     if [ "$_sandbox_hash_before" != "$_sandbox_hash_after" ]; then
-        echo "self-test FAILED: .wakil/sandbox.json not preserved (hash $_sandbox_hash_before -> $_sandbox_hash_after)" >&2
-        rm -rf "$tmpdir"
+        echo "self-test FAILED: .wakil/sandbox.json not preserved after refill 1 (hash $_sandbox_hash_before -> $_sandbox_hash_after)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
     if [ -e "$_wakil_workdir/.bench-marker-from-run-1" ]; then
-        echo "self-test FAILED: marker file survived prep_workdir (folder not emptied)" >&2
-        rm -rf "$tmpdir"
+        echo "self-test FAILED: marker survived refill 1 (folder not emptied)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
-    echo "  .wakil/ preservation OK (sandbox.json byte-identical, marker gone)"
+    # Second refill.
+    touch "$_wakil_workdir/.bench-marker-from-run-2"
+    prep_workdir "$_wakil_task"
+    _sandbox_hash_after2=$(sha256sum "$_wakil_workdir/.wakil/sandbox.json" 2>/dev/null | awk '{print $1}')
+    if [ "$_sandbox_hash_before" != "$_sandbox_hash_after2" ]; then
+        echo "self-test FAILED: .wakil/sandbox.json not preserved after refill 2 (hash $_sandbox_hash_before -> $_sandbox_hash_after2)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    if [ -e "$_wakil_workdir/.bench-marker-from-run-2" ]; then
+        echo "self-test FAILED: marker survived refill 2 (folder not emptied)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"
+        exit 1
+    fi
+    echo "  .wakil/ preservation OK (sandbox.json byte-identical after 2 refills, markers gone)"
 
     echo "== self-test: fixed-path stability (expect same path across runs) =="
     _stab_task="$(echo "$tasks" | awk '{print $1}')"
@@ -650,7 +688,7 @@ EOF
     _stab_path2="$work_root/$_stab_task"
     if [ "$_stab_path1" != "$_stab_path2" ]; then
         echo "self-test FAILED: path changed between runs ($_stab_path1 -> $_stab_path2)" >&2
-        rm -rf "$tmpdir"
+        rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
     echo "  path stability OK ($_stab_path1)"
@@ -663,8 +701,10 @@ EOF
     echo
     echo "self-test done (harness worked)"
 
-    rm -rf "$tmpdir"
-    # Restore the real-run CSV so main() and find_prev_csv see it.
+    rm -rf "$tmpdir" "$_self_work_root"
+    # Restore the real-run work root and CSV so main() and find_prev_csv
+    # see them.
+    work_root="$_saved_work_root"
     csv_file="$_saved_csv_file"
 }
 
@@ -683,6 +723,12 @@ main() {
         */*) [ -x "$wakil_bin" ] || { echo "$prog: wakil binary not executable: $wakil_bin" >&2; exit 1; } ;;
     esac
 
+    # Create the real-run CSV only now (--setup and --self-test return
+    # above, so they never create a real-run CSV that find_prev_csv
+    # would pick up).
+    csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
+    printf '%s\n' "$csv_header" > "$csv_file"
+
     run_all "$wakil_bin" || exit 1
 
     echo
@@ -691,7 +737,7 @@ main() {
     print_table "$csv_file" "$resolved_model"
     echo "total cost: $(sum_cost "$csv_file")"
 
-    prev=$(find_prev_csv)
+    prev=$(find_prev_csv "$resolved_model")
     if [ -n "$prev" ]; then
         echo
         echo "== most recent earlier run (model $resolved_model) =="
