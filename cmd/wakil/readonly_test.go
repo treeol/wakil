@@ -24,6 +24,15 @@ func TestIsReadOnlyShell(t *testing.T) {
 		"hostname",            // hostname read (no arg)
 		"hostname -f",         // hostname flag-only
 		"fd . --type f",       // fd read
+		// fd duplication and /dev/null redirects: not destructive, and
+		// echo/cat with these are read-only (no file write).
+		"echo x 2>&1",        // fd dup — not a file write
+		"echo x >&2",         // fd dup
+		"echo x 1>&2",        // fd dup
+		"echo x 2>&-",        // fd close
+		"echo x 2>/dev/null", // /dev/null redirect
+		"echo x &>/dev/null", // combined /dev/null redirect
+		"cat a 2>&1",         // cat with fd dup
 	}
 	for _, c := range readOnly {
 		if !agent.IsReadOnlyShell(c) {
@@ -61,6 +70,21 @@ func TestIsReadOnlyShell(t *testing.T) {
 		"git reflog expire --all", // reflog mutation
 		"find . \"-delete\"",      // quoted flag (shell strips quotes)
 		"git diff --output=p.txt", // diff writes a file
+		// redirect classification: file writes that look like fd-dup
+		"2>1",        // file write to file named "1"
+		"2>-",        // file write to file named "-"
+		"2>123.txt",  // file write
+		"echo x 2>1", // 2>1 (no &) is a file write
+		// redirect classification: /dev/null boundary — not /dev/null
+		"echo x >/dev/nullfoo",   // /dev/null prefix is not /dev/null
+		"echo x 2>/dev/null.bak", // /dev/null.bak is not /dev/null
+		// redirect classification: quoted ">" in arguments
+		`echo "a > b"`, // > inside quoted string (not a redirect)
+		// redirect classification: mixed file redirect + fd dup
+		"echo x > /tmp/out 2>&1", // file redirect + fd dup — destructive
+		// redirect classification: &>file (combined redirect to a file)
+		"echo x &> /tmp/out", // &> with a space then a file — destructive
+		"echo x &>/tmp/out",  // &>file (no space) — destructive
 	}
 	for _, c := range writes {
 		if agent.IsReadOnlyShell(c) {
@@ -90,6 +114,18 @@ func TestIsDestructiveShell(t *testing.T) {
 		{"cat <(grep needle file)", "process substitution"},
 		// Mixed: file redirect + fd dup — the file write makes it destructive.
 		{"echo x > /tmp/out 2>&1", "file redirect + fd dup"},
+		// fd-dup false positives: "2>1" (no &) is a file write.
+		{"echo x 2>1", "2>1 without & is a file write"},
+		{"2>1", "bare 2>1 is a file write"},
+		// /dev/null boundary: not /dev/null.
+		{"echo x >/dev/nullfoo", "/dev/null prefix is not /dev/null"},
+		{"echo x 2>/dev/null.bak", "/dev/null.bak is not /dev/null"},
+		// &>file (combined redirect to a file, not /dev/null).
+		{"echo x &> /tmp/out", "&> file (with space) — destructive"},
+		{"echo x &>/tmp/out", "&>file (no space) — destructive"},
+		// Quoted ">" inside arguments — conservative: classified as
+		// destructive because hasDestructiveRedirect does not track quotes.
+		{`echo "a > b"`, "quoted > inside arguments (conservative)"},
 		// Existing chaining cases (must still work).
 		{"echo ok && rm -rf /tmp/x", "rm after &&"},
 		{"ls | rm -rf", "rm in pipeline"},

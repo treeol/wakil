@@ -1,10 +1,37 @@
+// Package agent — readonly.go: shell-command classification for the auto-mode gate.
+//
+// isDestructiveShell is friction against accidental destruction in auto mode,
+// NOT a security boundary. It is bypassable by construction: a model that wants
+// to run `rm -rf /` can wrap it in a variable, a here-doc, or any other shell
+// construct that defeats first-token analysis. The goal is to catch common
+// accidental cases, not adversarial ones.
+//
+// Known limitations (inherent to first-token analysis, not fixable without a
+// real shell parser):
+//   - Env-var wrappers like `VAR=$(rm foo)` are caught by the $() check, but
+//     deeply nested constructs could still evade detection.
+//   - This is friction, not a security boundary. A model that wants to run
+//     `rm -rf /` can wrap it in constructs that defeat first-token analysis.
+//     The goal is to catch common accidental cases, not adversarial ones.
 package agent
-
-// readonly.go: shell-command classification for the auto-mode gate.
 
 import "strings"
 
 // readOnlyCmds is a conservative allowlist of shell binaries that only read.
+// Commands with easy write vectors via positional output files or common flags
+// (sort -o, uniq out, tee, dd, sed -i, awk 'print>') are deliberately excluded —
+// misclassifying a write as a read is the dangerous direction, so when in doubt
+// the command falls through to a normal confirm prompt rather than auto-approve.
+//
+// git is included because its read-only subcommands (diff, status, log, show,
+// blame, etc.) are common investigative operations the agent runs before edits.
+// The mutating subcommands (reset, clean, checkout --, push --force, stash drop,
+// branch -D) are caught by IsDestructiveShell; readFlagsOK gates the remaining
+// git subcommands to a read-only allowlist so non-recognized subcommands (e.g.
+// "git add", "git commit") are NOT auto-approved.
+//
+// NB: "command" is deliberately NOT allowlisted — POSIX command executes
+// its argument ("command rm -rf x" would be arbitrary execution).
 var readOnlyCmds = map[string]bool{
 	"cat": true, "bat": true, "tac": true, "nl": true, "head": true, "tail": true,
 	"grep": true, "egrep": true, "fgrep": true, "rg": true, "ag": true, "ack": true,
@@ -22,21 +49,34 @@ var readOnlyCmds = map[string]bool{
 
 // destructiveCmds is the set of shell binaries whose first-token presence makes
 // a segment immediately destructive, with no flag inspection required.
+// Shell wrappers (sh/bash/zsh) and xargs gate unconditionally because their
+// payloads are opaque to first-token analysis.
 var destructiveCmds = map[string]bool{
 	"rm": true, "rmdir": true, "shred": true,
-	"mv":   true,
-	"dd":   true,
-	"sudo": true,
+	"mv":   true, // may silently overwrite the destination
+	"dd":   true, // raw I/O, almost always destructive
+	"sudo": true, // privilege escalation — always gate
 	"kill": true, "pkill": true, "killall": true, "sigkill": true,
 	"mkfs": true, "fdisk": true, "parted": true,
 	"truncate": true,
-	"sh":       true, "bash": true, "zsh": true,
+	// Shell wrappers: the payload is opaque; gate all invocations.
+	"sh": true, "bash": true, "zsh": true,
+	// xargs executes arbitrary commands on its input; gate unconditionally.
 	"xargs": true,
-	"tee":   true,
+	// tee writes its stdin to one or more files while passing it through.
+	"tee": true,
 }
 
 // isDestructiveShell reports whether cmd contains an operation that must always
 // require user confirmation, even when AutoApprove is enabled.
+//
+// Strategy: split on shell sequence operators (&&, ||, |, ;, &, newline) using
+// splitShellSegments, then for each segment tokenize and match the FIRST token
+// (after skipping leading VAR=value env assignments, same as IsReadOnlyShell).
+// This avoids false positives like `echo "rm is a command"` (first token: echo)
+// while still catching `safe-cmd && rm -rf x` (second segment first token: rm).
+// Redirection (>, >>, 2>, &>) and command substitution ($(...), backticks) make
+// a segment destructive because they can hide writes or arbitrary commands.
 func IsDestructiveShell(cmd string) bool {
 	c := strings.TrimSpace(cmd)
 	if c == "" {
@@ -148,66 +188,79 @@ func IsDestructiveShell(cmd string) bool {
 // writes to a file (>, >>, or a numbered prefix thereof that targets a
 // real path). It returns false for fd duplication (2>&1, >&2, 1>&2,
 // 2>&-) and for redirects to /dev/null (>/dev/null, 2>/dev/null,
-// &>/dev/null) — those only discard or copy existing output and do not
+// &>/dev/null) — those only copy or discard existing output and do not
 // create or truncate a file.
+//
+// fd duplication requires an explicit "&" after the ">" (N>&M, >&M, &>M).
+// "2>1" is a file write (to a file named "1"), not fd duplication — only
+// "2>&1" copies fd 1 to fd 2. /dev/null must match as an exact token
+// (followed by end-of-string, whitespace, or a shell separator) so
+// ">/dev/nullfoo" is a file write, not a discard.
 func hasDestructiveRedirect(cmd string) bool {
 	for i := 0; i < len(cmd); i++ {
 		if cmd[i] != '>' {
 			continue
 		}
-		left := byte(0)
-		if i > 0 {
-			left = cmd[i-1]
+		// Skip the second '>' of '>>' (append) — it is handled by
+		// the next iteration as a single '>'.
+		if i > 0 && cmd[i-1] == '>' {
+			continue
 		}
-		right := ""
+		// Skip whitespace after the '>' (or '>>').
 		j := i + 1
 		if j < len(cmd) && cmd[j] == '>' {
-			j++
+			j++ // append redirect ('>>')
 		}
 		for j < len(cmd) && (cmd[j] == ' ' || cmd[j] == '\t') {
 			j++
 		}
+		right := ""
 		if j < len(cmd) {
 			right = cmd[j:]
 		}
 
-		// fd duplication: N>&M, N>&-, &>M, >&M (any > followed by &,
-		// digit, or - is fd duplication, not a file write). Also N> with
-		// N a digit followed by &/digit/-.
+		// fd duplication: N>&M, N>&-, >&M, &>M — requires an explicit
+		// '&' immediately after the '>'. Without '&', "2>1" writes to
+		// a file named "1".
 		if len(right) > 0 && right[0] == '&' {
-			// &> followed by /dev/null is a discard, not a write.
-			if strings.HasPrefix(right, "&>/dev/null") {
+			// &> followed by /dev/null (exact token) is a discard.
+			if isDevNull(right) {
 				continue
 			}
-			// &> followed by &, digit, or - is fd duplication.
-			if len(right) > 1 && (right[1] == '&' || right[1] == '-' ||
+			// &>M or >&M with M a digit or '-' is fd duplication.
+			if len(right) > 1 && (right[1] == '-' ||
 				(right[1] >= '0' && right[1] <= '9')) {
 				continue
 			}
 			// &> followed by a file path is a write — destructive.
 			return true
 		}
-		// &> /dev/null (space between &> and /dev/null).
-		if left == '&' && strings.HasPrefix(right, ">/dev/null") {
-			continue
-		}
-		// >& /dev/null (space between >& and /dev/null): >& is fd dup.
-		if left == '>' && i >= 2 && cmd[i-2] == '&' && strings.HasPrefix(right, "/dev/null") {
-			continue
-		}
-		if left == '&' || (left >= '0' && left <= '9') {
-			if len(right) > 0 && (right[0] == '&' || right[0] == '-' ||
-				(right[0] >= '0' && right[0] <= '9')) {
-				continue
-			}
-		}
 
-		// Redirect to /dev/null: discard output, not a file write.
-		if strings.HasPrefix(right, "/dev/null") {
+		// Redirect to /dev/null (exact token): discard, not a write.
+		if isDevNull(right) {
 			continue
 		}
 
 		// Any other '>' or '>>' is a redirect to a file — destructive.
+		return true
+	}
+	return false
+}
+
+// isDevNull reports whether right begins with "/dev/null" as an exact
+// token — followed by end-of-string, whitespace, or a shell separator
+// (|, ;, &, newline). "/dev/nullfoo" is NOT /dev/null.
+func isDevNull(right string) bool {
+	const token = "/dev/null"
+	if !strings.HasPrefix(right, token) {
+		return false
+	}
+	rest := right[len(token):]
+	if rest == "" {
+		return true
+	}
+	switch rest[0] {
+	case ' ', '\t', '|', ';', '&', '\n':
 		return true
 	}
 	return false
@@ -254,6 +307,11 @@ func dangerousEnvPrefix(name string) bool {
 }
 
 // isReadOnlyShell reports whether a shell command is safe to treat as read-only.
+// It checks the same redirect and substitution guards as IsDestructiveShell,
+// then walks each segment (split by splitShellSegments) and verifies the
+// binary is in readOnlyCmds and its flags pass readFlagsOK. Env-var prefixes
+// are checked for dangerous overrides (PATH, LD_*, GIT_*, etc.) so a wrapper
+// like `GIT_CONFIG_COUNT=1 cat file` is not treated as read-only.
 func IsReadOnlyShell(cmd string) bool {
 	c := strings.TrimSpace(cmd)
 	if c == "" {
@@ -312,19 +370,65 @@ func IsReadOnlyShell(cmd string) bool {
 }
 
 // splitShellSegments breaks a command on the operators that sequence or connect
-// commands.
+// commands. Redirections (2>&1, &>, etc.) are protected from splitting on '&':
+// the splitter skips a '&' that immediately follows a '>' (fd duplication like
+// 2>&1) or precedes one (&>). A standalone '&' backgrounds a command and is a
+// separator; the '&&' form is handled first (replaced before the single-'&'
+// pass sees it).
 func splitShellSegments(c string) []string {
-	r := strings.NewReplacer("&&", "\x00", "||", "\x00", "|", "\x00", "&", "\x00", ";", "\x00", "\n", "\x00")
+	// First pass: replace && and || with the sentinel so the single-&
+	// pass below does not split fd-dup redirections like 2>&1.
+	r := strings.NewReplacer("&&", "\x00", "||", "\x00", "|", "\x00", ";", "\x00", "\n", "\x00")
+	replaced := r.Replace(c)
+	// Second pass: split on '\x00' but keep single '&' as a separator
+	// only when it is NOT part of a redirection (i.e. not preceded by
+	// '>' and not followed by '>'). A standalone '&' backgrounds the
+	// preceding command, so it is a separator.
 	var out []string
-	for _, p := range strings.Split(r.Replace(c), "\x00") {
-		if s := strings.TrimSpace(p); s != "" {
-			out = append(out, s)
+	for _, p := range strings.Split(replaced, "\x00") {
+		// Within this segment, split on '&' that is not part of >& or &>.
+		for _, sub := range splitOnAmpersand(p) {
+			if s := strings.TrimSpace(sub); s != "" {
+				out = append(out, s)
+			}
 		}
 	}
 	return out
 }
 
+// splitOnAmpersand splits s on '&' characters that are NOT part of a
+// redirection. A '&' is a separator (background operator) when it is
+// standalone — not immediately preceded by '>' and not immediately
+// followed by '>'. "2>&1" stays as one segment; "cmd &" splits into
+// "cmd " and "".
+func splitOnAmpersand(s string) []string {
+	var result []string
+	var buf strings.Builder
+	for i := 0; i < len(s); i++ {
+		if s[i] == '&' {
+			// Check if this '&' is part of a redirection.
+			// >& (fd duplication): '&' preceded by '>' — not a separator.
+			// &> (combined redirect): '&' followed by '>' — not a separator.
+			prevGT := i > 0 && s[i-1] == '>'
+			nextGT := i+1 < len(s) && s[i+1] == '>'
+			if prevGT || nextGT {
+				buf.WriteByte(s[i])
+				continue
+			}
+			// Standalone '&' — background operator, split here.
+			result = append(result, buf.String())
+			buf.Reset()
+		} else {
+			buf.WriteByte(s[i])
+		}
+	}
+	result = append(result, buf.String())
+	return result
+}
+
 // readFlagsOK rejects flags that turn an otherwise-read command into a writer.
+// It is the second gate for readOnlyCmds: even when a binary is allowlisted,
+// flags like --output, -i (in-place), -O (pager), or -delete can write files.
 func readFlagsOK(bin string, args []string) bool {
 	switch bin {
 	case "git":
