@@ -403,7 +403,7 @@ run_one() {
         # the binary reported. check.sh lives in the task dir (never in the
         # work folder) and runs in the work folder.
         set +e
-        ( cd "$workdir" && "$tdir/check.sh" ) >/dev/null 2>&1
+        { printf '\n--- check.sh (%s) ---\n' "$task"; ( cd "$workdir" && "$tdir/check.sh" ) 2>&1; } >>"$log_file" 2>&1
         chk_rc=$?
         set -e
         if [ "$chk_rc" -eq 0 ]; then
@@ -741,6 +741,59 @@ EOF
         exit 1
     fi
     echo "  declined+check.sh OK (--allow-destructive passed; result from check.sh, exit_reason preserved)"
+
+    echo "== self-test: agent-written test code must not fake a pass (expect fail) =="
+    # A fake agent that leaves the bug in place and writes code that makes
+    # "go test" succeed without the hidden test running: a TestMain that
+    # exits 0, and a package-level init() that prints a PASS line and exits.
+    # Each must be scored "fail" by the task's own check.sh.
+    stub_cheat="$tmpdir/wakil-cheat"
+    cat > "$stub_cheat" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-cheat/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    d="$workdir/$BENCH_CHEAT_DIR"
+    case "$BENCH_CHEAT" in
+      testmain)
+        printf 'package %s\nimport ("os"; "testing")\nfunc TestMain(m *testing.M) { os.Exit(0) }\n' "$BENCH_CHEAT_PKG" > "$d/zz_test.go" ;;
+      init)
+        printf 'package %s\nimport ("fmt"; "os")\nfunc init() { fmt.Println("--- PASS: %s (0.00s)"); fmt.Println("PASS"); os.Exit(0) }\n' "$BENCH_CHEAT_PKG" "$BENCH_CHEAT_TEST" > "$d/zz_init.go" ;;
+    esac
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-cheat/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+JSON
+    exit 0 ;;
+esac
+EOF
+    chmod +x "$stub_cheat"
+    for _c in "fix-test wordcount wordcount TestCountCaseInsensitive" "rename shared shared TestBehaviour"; do
+        # shellcheck disable=SC2086 # word splitting is the point: a fixed 4-field record
+        set -- $_c
+        _ct=$1; _cdir=$2; _cpkg=$3; _ctest=$4
+        [ -d "$tasks_dir/$_ct" ] || continue
+        for _how in testmain init; do
+            task_idx=1
+            BENCH_CHEAT="$_how" BENCH_CHEAT_DIR="$_cdir" BENCH_CHEAT_PKG="$_cpkg" BENCH_CHEAT_TEST="$_ctest" \
+                BENCH_TASK_DIR="" run_one "$_ct" "self-cheat-$_how" "$stub_cheat"
+            _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+            if [ "$_row_result" != "fail" ]; then
+                echo "self-test FAILED: $_ct with a $_how cheat: expected fail, got $_row_result" >&2
+                rm -rf "$tmpdir" "$_self_work_root"
+                exit 1
+            fi
+        done
+    done
+    echo "  TestMain-exit-0 and init()-prints-PASS cheats scored fail"
 
     echo "== self-test: stub that sleeps past the timeout (expect timeout) =="
     # Use the harness's own timeout path with a short per-run timeout so

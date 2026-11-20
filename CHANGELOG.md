@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Bench: agent-written test code can no longer fake a pass on `fix-test` and `rename`.** `check.sh` now works on a clean copy of the work folder (no `.git`, no `.wakil`): the agent's `*_test.go` files and `testdata/` are dropped, the task's `go.mod` is restored, and a `go.work`, `vendor/`, a symlink, assembly/cgo files or a non-test package importing outside a small allow-list fail the check. The hidden tests are restored and must report `--- PASS: <name>`. A `TestMain` that exits 0, or an `init()` that prints a PASS line and exits, now scores `fail` (self-test cases for both). `rename` also gets a hidden behaviour test, so defining `NewName` without keeping the behaviour no longer passes. The output of `check.sh` goes into the run log instead of `/dev/null`.
+
 - **Mashūra's OpenRouter credential: a no-credential endpoint no longer hides a usable one.** When the active endpoint is not OpenRouter, Mashūra now uses the first OpenRouter endpoint (sorted by name) that has a credential of its own, instead of failing on the first one without; it fails closed only when OpenRouter endpoints exist and none has a credential, and the `openrouter_api_key_env` variable is used only when none exists. A non-active OpenRouter endpoint no longer picks up the global `api_key` (meant for the main route). The active OpenRouter endpoint is unchanged.
 
 - **Mid-turn collapse runs once per request and never re-archives a covered range.** A mid-turn collapse now fires at most once per request; a second collapse in the same request finds the already-archived range and skips it instead of archiving the same content twice.
