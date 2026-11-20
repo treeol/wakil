@@ -33,6 +33,21 @@ func TestIsReadOnlyShell(t *testing.T) {
 		"echo x 2>/dev/null", // /dev/null redirect
 		"echo x &>/dev/null", // combined /dev/null redirect
 		"cat a 2>&1",         // cat with fd dup
+		// sed print/address forms (read-only): no -i, only p/P/=/n/l/q/b/N/# or s/// (no w)
+		"sed -n '5p' file",    // sed print line 5
+		"sed -n '1,10p' file", // sed print range
+		"sed '5p' file",       // sed print (no -n)
+		"sed '1,10p' file",    // sed print range (no -n)
+		"sed 's/a/b/' file",   // sed substitute (no write flag)
+		// for/while loops (read-only when every command in header and body is read-only)
+		"for f in *.go; do echo $f; done",  // for + echo
+		"for f in *.go; do cat $f; done",   // for + cat
+		"for x in 1 2 3; do echo $x; done", // for + echo
+		"while true; do echo hi; done",     // while + echo (infinite but read-only)
+		// $(...) (read-only when inner command is read-only)
+		"echo $(cat file)",           // $(cat)
+		"echo $(ls -la)",             // $(ls)
+		"result=$(grep needle file)", // $(grep)
 	}
 	for _, c := range readOnly {
 		if !agent.IsReadOnlyShell(c) {
@@ -47,7 +62,6 @@ func TestIsReadOnlyShell(t *testing.T) {
 		"find . -delete",
 		"find . -exec rm {} ;",
 		"sort -o out.txt in.txt", // sort not allowlisted (positional output)
-		"cat $(echo file)",       // command substitution
 		"ls `whoami`",            // backtick substitution
 		"ls; rm x",               // chained write
 		"cat a | tee b",          // tee writes
@@ -85,6 +99,22 @@ func TestIsReadOnlyShell(t *testing.T) {
 		// redirect classification: &>file (combined redirect to a file)
 		"echo x &> /tmp/out", // &> with a space then a file — destructive
 		"echo x &>/tmp/out",  // &>file (no space) — destructive
+		// sed classification: -i is destructive (already caught by IsDestructiveShell)
+		"sed -i s/a/b/ f", // sed in-place edit — destructive
+		// sed classification: w/e/r/a/i/c/d/D commands are destructive
+		"sed 'w out.txt' file",   // sed write to file — destructive
+		"sed 'r other.txt' file", // sed read file — destructive (inserts content)
+		"sed 'a text' file",      // sed append — destructive
+		"sed 'd' file",           // sed delete — destructive
+		"sed 's/a/b/w' file",     // sed substitute + write flag — destructive
+		// for/while classification: loop is destructive when any command is destructive
+		"for f in *; do rm $f; done",                 // for + rm — destructive
+		"for f in *.txt; do sed -i s/a/b/ $f; done",  // for + sed -i — destructive
+		"while read line; do echo $line > out; done", // while + redirect — destructive
+		// $(...) classification: destructive when inner command is destructive
+		"echo $(rm -rf /tmp/x)",               // $(rm) — destructive
+		"cat $(find . -name '*.tmp' -delete)", // $(find -delete) — destructive
+		"result=$(sed -i s/a/b/ file)",        // $(sed -i) — destructive
 	}
 	for _, c := range writes {
 		if agent.IsReadOnlyShell(c) {
@@ -123,6 +153,24 @@ func TestIsDestructiveShell(t *testing.T) {
 		// &>file (combined redirect to a file, not /dev/null).
 		{"echo x &> /tmp/out", "&> file (with space) — destructive"},
 		{"echo x &>/tmp/out", "&>file (no space) — destructive"},
+		// sed -i is destructive (in-place edit).
+		{"sed -i s/a/b/ f", "sed in-place edit"},
+		{"cat `whoami`", "backtick substitution"},
+		// sed w/e/r/a/i/c/d/D commands are destructive.
+		{"sed 'w out.txt' file", "sed write to file"},
+		{"sed 'r other.txt' file", "sed read file (inserts content)"},
+		{"sed 'a text' file", "sed append"},
+		{"sed 'd' file", "sed delete"},
+		{"sed 's/a/b/w' file", "sed substitute + write flag"},
+		{"sed -i s/a/b/ f", "sed in-place edit"},
+		// for/while loop is destructive when any command is destructive.
+		{"for f in *; do rm $f; done", "for + rm body"},
+		{"for f in *.txt; do sed -i s/a/b/ $f; done", "for + sed -i body"},
+		{"while read line; do echo $line > out; done", "while + redirect body"},
+		// $(...) is destructive when the inner command is.
+		{"echo $(rm -rf /tmp/x)", "$(rm) inner"},
+		{"cat $(find . -name '*.tmp' -delete)", "$(find -delete) inner"},
+		{"result=$(sed -i s/a/b/ file)", "$(sed -i) inner"},
 		// Quoted ">" inside arguments — conservative: classified as
 		// destructive because hasDestructiveRedirect does not track quotes.
 		{`echo "a > b"`, "quoted > inside arguments (conservative)"},
@@ -173,6 +221,20 @@ func TestIsDestructiveShell(t *testing.T) {
 		{"cat a 2>&1", "cat with fd dup"},
 		{"go test ./... 2>&1", "go test with fd dup"},
 		{"go vet ./... 2>/dev/null", "go vet with /dev/null redirect"},
+		// sed print/address forms are read-only (not destructive).
+		{"sed -n '5p' file", "sed print line (read-only)"},
+		{"sed -n '1,10p' file", "sed print range (read-only)"},
+		{"sed '5p' file", "sed print (no -n, read-only)"},
+		{"sed 's/a/b/' file", "sed substitute (no write flag, read-only)"},
+		// for/while loops are read-only when every command is read-only.
+		{"for f in *.go; do echo $f; done", "for + echo (read-only)"},
+		{"for f in *.go; do cat $f; done", "for + cat (read-only)"},
+		{"for x in 1 2 3; do echo $x; done", "for + echo (read-only)"},
+		{"while true; do echo hi; done", "while + echo (read-only)"},
+		// $(...) is read-only when the inner command is read-only.
+		{"echo $(cat file)", "$(cat) read-only"},
+		{"echo $(ls -la)", "$(ls) read-only"},
+		{"result=$(grep needle file)", "$(grep) read-only"},
 	}
 	for _, tc := range shouldNotGate {
 		if agent.IsDestructiveShell(tc.cmd) {

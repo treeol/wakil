@@ -44,6 +44,7 @@ var readOnlyCmds = map[string]bool{
 	"od": true, "xxd": true, "hexdump": true, "strings": true, "ps": true,
 	"less": true, "more": true, "seq": true, "true": true, "false": true,
 	"test": true, "jq": true, "yq": true,
+	"sed": true, // read-only when no -i and only print/address forms (readFlagsOK gates w/e/-i)
 	"git": true,
 }
 
@@ -67,6 +68,159 @@ var destructiveCmds = map[string]bool{
 	"tee": true,
 }
 
+// extractBacktickInner returns the content of the first backtick pair in s,
+// or "" when there is none or it's unbalanced.
+func extractBacktickInner(s string) string {
+	start := strings.IndexByte(s, '`')
+	if start < 0 {
+		return ""
+	}
+	end := strings.IndexByte(s[start+1:], '`')
+	if end < 0 {
+		return ""
+	}
+	return s[start+1 : start+1+end]
+}
+
+// extractDollarParenInners returns the content of every $(...) pair in s.
+// Returns nil when there is none. Unbalanced $( is ignored (returns what
+// was found so far).
+func extractDollarParenInners(s string) []string {
+	var result []string
+	i := 0
+	for {
+		j := strings.Index(s[i:], "$(")
+		if j < 0 {
+			break
+		}
+		start := i + j + 2
+		depth := 1
+		k := start
+		for k < len(s) && depth > 0 {
+			switch s[k] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			k++
+		}
+		if depth == 0 {
+			result = append(result, s[start:k-1])
+		}
+		i = k
+	}
+	return result
+}
+
+// isLoopConstruct reports whether cmd begins with a for/while/until loop or
+// a case statement — control structures whose read-only/destructive
+// classification depends on every command in the header and body.
+func isLoopConstruct(cmd string) (kind string, ok bool) {
+	c := strings.TrimSpace(cmd)
+	if strings.HasPrefix(c, "for ") || strings.HasPrefix(c, "for\t") {
+		return "for", true
+	}
+	if strings.HasPrefix(c, "while ") || strings.HasPrefix(c, "while\t") {
+		return "while", true
+	}
+	if strings.HasPrefix(c, "until ") || strings.HasPrefix(c, "until\t") {
+		return "until", true
+	}
+	if strings.HasPrefix(c, "case ") || strings.HasPrefix(c, "case\t") {
+		return "case", true
+	}
+	return "", false
+}
+
+// loopBodyCommands extracts the body commands from a for/while/until loop
+// or case statement. For loops it returns everything after "do". For case
+// it returns every command after each ")". Conservative: on parse
+// failure returns nil (the caller treats the construct as destructive
+// / not read-only).
+func loopBodyCommands(cmd string) []string {
+	c := strings.TrimSpace(cmd)
+	// Find "do" keyword (for/while/until) or extract case branches.
+	if strings.HasPrefix(c, "case ") || strings.HasPrefix(c, "case\t") {
+		// case: extract commands after each ")". Conservative: return
+		// nil on unparseable.
+		var cmds []string
+		i := strings.Index(c, " in ")
+		if i < 0 {
+			return nil
+		}
+		rest := c[i+4:]
+		for {
+			j := strings.Index(rest, ")")
+			if j < 0 {
+				break
+			}
+			rest = rest[j+1:]
+			// Everything up to the next ";;" or "esac" is the command.
+			k := strings.Index(rest, ";;")
+			if k < 0 {
+				cmds = append(cmds, strings.TrimSpace(rest))
+				break
+			}
+			cmds = append(cmds, strings.TrimSpace(rest[:k]))
+			rest = rest[k+2:]
+		}
+		return cmds
+	}
+	// for/while/until: find "do" keyword, return everything after it.
+	j := strings.Index(c, " do")
+	if j < 0 {
+		j = strings.Index(c, "\tdo")
+	}
+	if j < 0 {
+		return nil
+	}
+	body := strings.TrimSpace(c[j+3:])
+	// Strip trailing "done".
+	if k := strings.LastIndex(body, "done"); k >= 0 {
+		body = strings.TrimSpace(body[:k])
+	}
+	// Split on ; and && to get individual commands.
+	var cmds []string
+	for _, p := range strings.Split(body, ";") {
+		for _, q := range strings.Split(p, "&&") {
+			if s := strings.TrimSpace(q); s != "" {
+				cmds = append(cmds, s)
+			}
+		}
+	}
+	return cmds
+}
+
+// loopHeaderCommands extracts the header commands from a for/while/until
+// loop (everything between the keyword and "do"). For `for x in $(...)` the
+// inner $(...) is a header command. For `while cmd` / `until cmd` the cmd
+// itself is the header command. For `for x in list` the list is NOT a
+// command — it's a file list or literal — so it returns nil (the list is
+// checked separately by the destructive redirect / $() checks). Returns
+// nil on parse failure.
+func loopHeaderCommands(cmd string) []string {
+	c := strings.TrimSpace(cmd)
+	end := strings.Index(c, " do")
+	if end < 0 {
+		end = strings.Index(c, "\tdo")
+	}
+	if end < 0 {
+		return nil
+	}
+	header := strings.TrimSpace(c[:end])
+	// For "while cmd" / "until cmd": return cmd.
+	if strings.HasPrefix(header, "while ") || strings.HasPrefix(header, "until ") {
+		return []string{strings.TrimSpace(header[6:])}
+	}
+	// For "for x in list": the list is not a command unless it contains
+	// $(...) — a file glob or literal list is not a command. Return nil
+	// so the caller only checks the body. The $(...) check at the top of
+	// IsReadOnlyShell/IsDestructiveShell catches command substitution in
+	// the header.
+	return nil
+}
+
 // isDestructiveShell reports whether cmd contains an operation that must always
 // require user confirmation, even when AutoApprove is enabled.
 //
@@ -82,11 +236,35 @@ func IsDestructiveShell(cmd string) bool {
 	if c == "" {
 		return false
 	}
+	// for/while/until/case: destructive when any command in the header or
+	// body is destructive.
+	if _, ok := isLoopConstruct(c); ok {
+		for _, hc := range loopHeaderCommands(c) {
+			if IsDestructiveShell(hc) {
+				return true
+			}
+		}
+		for _, bc := range loopBodyCommands(c) {
+			if IsDestructiveShell(bc) {
+				return true
+			}
+		}
+		return false
+	}
 	if strings.Contains(c, "`") {
-		return true
+		return true // backtick substitution — always destructive (opaque inner)
 	}
 	if strings.Contains(c, "$(") || strings.Contains(c, "<(") {
-		return true
+		// Process substitution <(...) always creates a temp fifo — destructive.
+		if strings.Contains(c, "<(") {
+			return true
+		}
+		// $(...) is destructive when any inner command is destructive.
+		for _, inner := range extractDollarParenInners(c) {
+			if IsDestructiveShell(inner) {
+				return true
+			}
+		}
 	}
 	if hasDestructiveRedirect(c) {
 		return true
@@ -151,7 +329,9 @@ func IsDestructiveShell(cmd string) bool {
 			}
 		case "find":
 			for _, a := range args {
-				if a == "-delete" || a == "-exec" || a == "-execdir" {
+				// Shell treats \X as literal X — strip backslashes for matching.
+				aa := strings.ReplaceAll(a, "\\", "")
+				if aa == "-delete" || aa == "-exec" || aa == "-execdir" {
 					return true
 				}
 			}
@@ -162,9 +342,28 @@ func IsDestructiveShell(cmd string) bool {
 				}
 			}
 		case "sed":
+			hasScript := false
 			for _, a := range args {
-				if a == "-i" || strings.HasPrefix(a, "-i") && len(a) > 2 {
+				// Shell treats \X as literal X — strip backslashes for matching.
+				aa := strings.ReplaceAll(a, "\\", "")
+				if aa == "-i" || strings.HasPrefix(aa, "-i") {
 					return true
+				}
+				// Check sed script for destructive commands (w, e, r, a, i, c,
+				// d, D, s///w). -e adds a script; non-flag arg is the script.
+				if aa == "-e" || strings.HasPrefix(aa, "-e") {
+					script := strings.TrimPrefix(aa, "-e")
+					script = strings.TrimPrefix(script, " ")
+					if sedScriptIsDestructive(script) {
+						return true
+					}
+					hasScript = true
+				} else if !strings.HasPrefix(aa, "-") {
+					// First non-flag arg is the script (or a file if -e was used).
+					if !hasScript && sedScriptIsDestructive(a) {
+						return true
+					}
+					hasScript = true
 				}
 			}
 		case "chmod":
@@ -278,9 +477,31 @@ func unquoteShellArg(s string) string {
 }
 
 // hasExpansionOrEscape reports whether a token contains shell constructs this
-// first-token classifier cannot model.
+// first-token classifier cannot model. A bare $ followed by a letter or
+// underscore is a variable reference (safe); $(, ${, backtick, and quote
+// characters are dangerous.
 func hasExpansionOrEscape(tok string) bool {
-	return strings.ContainsAny(tok, `$\'"{}`+"`")
+	for i := 0; i < len(tok); i++ {
+		switch tok[i] {
+		case '$':
+			// $ followed by ( or { is command/parameter substitution — dangerous.
+			if i+1 < len(tok) && (tok[i+1] == '(' || tok[i+1] == '{') {
+				return true
+			}
+			// $ followed by a letter or _ is a variable reference — safe.
+			// $ at end of string or followed by non-alnum is ambiguous — conservative.
+			if i+1 >= len(tok) {
+				return true
+			}
+			c := tok[i+1]
+			if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_') {
+				return true
+			}
+		case '`', '\'', '"', '{', '}':
+			return true
+		}
+	}
+	return false
 }
 
 // envPrefixName extracts the variable name from a leading VAR=value token.
@@ -311,17 +532,48 @@ func dangerousEnvPrefix(name string) bool {
 // then walks each segment (split by splitShellSegments) and verifies the
 // binary is in readOnlyCmds and its flags pass readFlagsOK. Env-var prefixes
 // are checked for dangerous overrides (PATH, LD_*, GIT_*, etc.) so a wrapper
-// like `GIT_CONFIG_COUNT=1 cat file` is not treated as read-only.
+// like `GIT_CONFIG_COUNT=1 cat file` is not treated as read-only. Command
+// substitution ($(...), backticks) is read-only when the inner command is
+// read-only; a for/while loop is read-only when every command in the header
+// and body is read-only.
 func IsReadOnlyShell(cmd string) bool {
 	c := strings.TrimSpace(cmd)
 	if c == "" {
 		return false
 	}
+	// for/while/until/case: read-only when every command in the header
+	// and body is read-only.
+	if _, ok := isLoopConstruct(c); ok {
+		for _, hc := range loopHeaderCommands(c) {
+			if !IsReadOnlyShell(hc) {
+				return false
+			}
+		}
+		for _, bc := range loopBodyCommands(c) {
+			if !IsReadOnlyShell(bc) {
+				return false
+			}
+		}
+		return true
+	}
 	if strings.Contains(c, "`") {
+		// Backtick substitution — always non-read-only (opaque inner).
 		return false
 	}
 	if strings.Contains(c, "$(") || strings.Contains(c, "<(") {
-		return false
+		// Command/process substitution: read-only when every inner command
+		// is read-only. Process substitution <(...) is always destructive
+		// (it creates a temp fifo).
+		if strings.Contains(c, "<(") {
+			return false
+		}
+		for _, inner := range extractDollarParenInners(c) {
+			if !IsReadOnlyShell(inner) {
+				return false
+			}
+		}
+		// All inner commands are read-only → the substitution is read-only.
+		return true
 	}
 	if hasDestructiveRedirect(c) {
 		return false
@@ -424,6 +676,142 @@ func splitOnAmpersand(s string) []string {
 	}
 	result = append(result, buf.String())
 	return result
+}
+
+// sedScriptIsDestructive reports whether a sed script fragment contains a
+// command that writes, edits, or deletes — anything beyond print and address
+// forms. It scans for the destructive command letters: w (write), e (exec),
+// r (read file), a/i/c (append/insert/change), d/D (delete), and s with a
+// write flag (s///w). A bare address or print (p, P, =, n, l, q, b, N) is
+// read-only. Conservative: if the script is ambiguous or unparseable,
+// returns true (gate it).
+func sedScriptIsDestructive(script string) bool { // Strip leading address (digits, $, /regex/, \X, ,step). We only need
+	// to find the command letter after the address.
+	s := strings.TrimSpace(script)
+	if s == "" {
+		return false
+	}
+	// Skip a leading address: digits, $, /.../ or \c, optionally
+	// followed by a comma and another address.
+	i := 0
+	skipAddr := func() {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i < len(s) && s[i] == '$' {
+			i++
+		} else if i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+				i++
+			}
+		} else if i < len(s) && s[i] == '/' {
+			i++
+			for i < len(s) && s[i] != '/' {
+				if s[i] == '\\' && i+1 < len(s) {
+					i++
+				}
+				i++
+			}
+			if i < len(s) {
+				i++ // skip closing /
+			}
+		} else if i < len(s) && s[i] == '\\' {
+			i++
+			if i < len(s) {
+				i++
+			}
+		}
+		// Skip optional comma + second address.
+		if i < len(s) && s[i] == ',' {
+			i++
+			skipAddr2 := func() {
+				for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+					i++
+				}
+				if i < len(s) && s[i] == '$' {
+					i++
+				} else if i < len(s) && s[i] >= '0' && s[i] <= '9' {
+					for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+						i++
+					}
+				} else if i < len(s) && s[i] == '/' {
+					i++
+					for i < len(s) && s[i] != '/' {
+						if s[i] == '\\' && i+1 < len(s) {
+							i++
+						}
+						i++
+					}
+					if i < len(s) {
+						i++
+					}
+				}
+			}
+			skipAddr2()
+		}
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+	}
+	skipAddr()
+	if i >= len(s) {
+		// Address-only (no command) — read-only.
+		return false
+	}
+	switch s[i] {
+	case 'p', 'P', '=', 'n', 'l', 'q', 'b', 'N', '#':
+		return false
+	case 'd', 'D':
+		return true
+	case 'a', 'i', 'c':
+		return true
+	case 'r':
+		return true
+	case 'w':
+		return true
+	case 'e':
+		return true
+	case 's':
+		// s is destructive when it has a write flag (w) in the flags
+		// after the delimiter. e.g. s/a/b/w or s|a|b|gw
+		// Find the delimiter, skip the pattern and replacement, check flags.
+		if i+1 >= len(s) {
+			return true // s with no delimiter — conservative
+		}
+		delim := s[i+1]
+		j := i + 2
+		for j < len(s) && s[j] != delim {
+			if s[j] == '\\' && j+1 < len(s) {
+				j++
+			}
+			j++
+		}
+		if j >= len(s) {
+			return true // no closing delimiter — conservative
+		}
+		j++ // skip closing delimiter (end of pattern)
+		for j < len(s) && s[j] != delim {
+			if s[j] == '\\' && j+1 < len(s) {
+				j++
+			}
+			j++
+		}
+		if j >= len(s) {
+			return true // no second closing delimiter — conservative
+		}
+		j++ // skip second closing delimiter (end of replacement)
+		// Check flags for w (write).
+		for j < len(s) && s[j] != ' ' && s[j] != '\t' && s[j] != ';' && s[j] != '\n' {
+			if s[j] == 'w' {
+				return true
+			}
+			j++
+		}
+		return false
+	default:
+		// Unknown command letter — conservative: gate it.
+		return true
+	}
 }
 
 // readFlagsOK rejects flags that turn an otherwise-read command into a writer.
@@ -531,7 +919,11 @@ func readFlagsOK(bin string, args []string) bool {
 		}
 	case "find", "fd":
 		for _, a := range args {
-			switch a {
+			// Shell treats \X as literal X (backslash before non-special char).
+			// Strip ALL backslashes for flag matching (the shell would have
+			// removed them before the binary saw the arg).
+			aa := strings.ReplaceAll(a, "\\", "")
+			switch aa {
 			case "-delete", "-exec", "-execdir", "-ok", "-okdir",
 				"-fprint", "-fprintf", "-fls", "-fprint0", "--exec", "-x",
 				"-X", "--exec-batch":
@@ -542,6 +934,41 @@ func readFlagsOK(bin string, args []string) bool {
 		for _, a := range args {
 			if a == "-i" || a == "--inplace" || a == "-s" || strings.HasPrefix(a, "--split-exp") {
 				return false
+			}
+		}
+	case "sed":
+		// sed is read-only only when its script consists solely of print
+		// and address forms (e.g. -n '5p', -n '1,10p', 5p, 1,10p). Any
+		// command that writes (w, a, i, c), edits (s///w, e), reads a
+		// file (r), or deletes (d, D) is destructive. -i is already
+		// caught by IsDestructiveShell.
+		hasScript := false
+		for _, a := range args {
+			// Shell treats \X as literal X — strip backslashes for matching.
+			aa := strings.ReplaceAll(a, "\\", "")
+			if strings.HasPrefix(aa, "-") {
+				if aa == "-i" || strings.HasPrefix(aa, "-i") {
+					return false // -i is destructive
+				}
+				// -n is fine (suppress auto-print). -e adds a script.
+				if aa == "-e" || strings.HasPrefix(aa, "-e") {
+					script := strings.TrimPrefix(aa, "-e")
+					script = strings.TrimPrefix(script, " ")
+					if sedScriptIsDestructive(script) {
+						return false
+					}
+					hasScript = true
+				}
+				continue
+			}
+			// Non-flag arg: this is the script (or a file when a script
+			// was already given via -e). If no -e was seen, the first
+			// non-flag arg is the script.
+			if !hasScript {
+				if sedScriptIsDestructive(a) {
+					return false
+				}
+				hasScript = true
 			}
 		}
 	case "date":
