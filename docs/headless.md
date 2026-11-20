@@ -39,7 +39,7 @@ in the TUI is decided by flags:
 | `--no-oracle` | skip Mashūra review entirely |
 | `--no-memory` | skip per-project memory: no memory tools, no memory store, no memory digest in the prompt |
 | `--transcript <file>` | write the JSON-lines events to this file instead of stdout |
-| `--result-json <file>` | write a machine-readable JSON summary at exit (tokens, cost, tool/collapse/mashura/declined counts); for bench harnesses |
+| `--result-json <file>` | write a machine-readable JSON summary at exit (tokens, cost, tool/collapse/mashura/declined counts, the executor's `workdir` and the resolved `sandbox_backend`: `workdir` is a host path for hisn and direct but a container path under docker); for bench harnesses |
 | `--attach-image <path>` | attach an image file to the first message (png, jpeg, gif, webp; comma-separate several) |
 | `--policy <path>` | load a policy JSON file (`default` plus `rules`) and install it for this run |
 | `--profile <name>` | use a built-in policy profile: `read-only`, `auto-safe`, `auto-destructive` or `ci`; `--policy` wins if both are given |
