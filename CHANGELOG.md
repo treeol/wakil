@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Mashūra's OpenRouter credential: a no-credential endpoint no longer hides a usable one.** When the active endpoint is not OpenRouter, Mashūra now uses the first OpenRouter endpoint (sorted by name) that has a credential of its own, instead of failing on the first one without; it fails closed only when OpenRouter endpoints exist and none has a credential, and the `openrouter_api_key_env` variable is used only when none exists. A non-active OpenRouter endpoint no longer picks up the global `api_key` (meant for the main route). The active OpenRouter endpoint is unchanged.
+
 - **Mid-turn collapse runs once per request and never re-archives a covered range.** A mid-turn collapse now fires at most once per request; a second collapse in the same request finds the already-archived range and skips it instead of archiving the same content twice.
 - **The kept tail after a mid-turn collapse is clamped to 30% of hardMax.** When the collapse ceiling exceeds the hard max, the retained tool-call/result pairs are clamped so the kept tail always fits under hardMax.
 - **The collapse notice is one line through the notice path, not the assistant stream.** A mid-turn collapse prints its one-line notice through the same status-notice path the turn-end collapse uses, so it no longer appears in the assistant message stream.

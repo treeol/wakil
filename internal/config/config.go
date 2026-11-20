@@ -2710,15 +2710,36 @@ func (r OpenRouterCredential) SourceLabel() string {
 	return string(r.Source)
 }
 
+// ownCredentialHeader returns the Authorization value an endpoint carries on
+// its own: its auth_header, else Bearer + the value of its api_key_env
+// variable. Unlike AuthHeaderFor it never falls back to the legacy global
+// api_key, which belongs to the main route and must not be sent to a
+// different OpenRouter endpoint.
+func ownCredentialHeader(ep EndpointConfig) string {
+	if ep.AuthHeader != "" {
+		return ep.AuthHeader
+	}
+	if ep.APIKeyEnv != "" {
+		if v := strings.TrimSpace(os.Getenv(ep.APIKeyEnv)); v != "" {
+			return "Bearer " + v
+		}
+	}
+	return ""
+}
+
 // ResolveOpenRouterCredential is the single credential resolver for OpenRouter
 // requests made by Mashūra (and its availability/fallback checks). Order:
 //  1. Active endpoint, if its base_url is an OpenRouter host. Uses AuthHeaderFor
 //     directly (same function a main request uses). If that endpoint has no
-//     credential, fails closed without falling back to the environment variable.
-//  2. First configured endpoint (sorted by name) whose base_url is an OpenRouter
-//     host. Same AuthHeaderFor call and same fail-closed rule.
-//  3. Environment variable named by OpenRouterAPIKeyEnv only when neither (1)
-//     nor (2) found an OpenRouter endpoint.
+//     credential, fails closed without falling back to any other endpoint or
+//     the environment variable.
+//  2. Otherwise the first configured OpenRouter endpoint, sorted by name, that
+//     has a credential of its own (auth_header or api_key_env; never the
+//     global api_key). OpenRouter endpoints without a credential are skipped.
+//     When OpenRouter endpoints exist and none has a credential, fails closed
+//     naming all of them, without falling back to the environment variable.
+//  3. Environment variable named by OpenRouterAPIKeyEnv only when no
+//     OpenRouter endpoint exists.
 //
 // An ilm-proxy endpoint with backend "openrouter" is not an OpenRouter host
 // endpoint (the proxy holds the OpenRouter key server-side), so it falls through
@@ -2742,6 +2763,7 @@ func (c Config) ResolveOpenRouterCredential() (OpenRouterCredential, error) {
 		return res, nil
 	}
 
+	var noCred []string
 	if len(c.Endpoints) > 0 {
 		names := make([]string, 0, len(c.Endpoints))
 		for name := range c.Endpoints {
@@ -2753,17 +2775,23 @@ func (c Config) ResolveOpenRouterCredential() (OpenRouterCredential, error) {
 			if !IsOpenRouterHost(ep.BaseURL) {
 				continue
 			}
-			hdr := c.AuthHeaderFor(ep)
-			res := OpenRouterCredential{
+			hdr := ownCredentialHeader(ep)
+			if hdr == "" {
+				noCred = append(noCred, name)
+				continue
+			}
+			return OpenRouterCredential{
 				AuthHeader:   hdr,
 				Source:       OpenRouterSourceBackendConfig,
 				EndpointName: name,
-			}
-			if hdr == "" {
-				return res, fmt.Errorf("no credential on endpoint %s", name)
-			}
-			return res, nil
+			}, nil
 		}
+	}
+	if len(noCred) > 0 {
+		return OpenRouterCredential{
+			Source:       OpenRouterSourceBackendConfig,
+			EndpointName: noCred[0],
+		}, fmt.Errorf("no credential on endpoint %s", strings.Join(noCred, ", "))
 	}
 
 	envName := c.OpenRouterAPIKeyEnv
