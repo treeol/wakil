@@ -731,3 +731,38 @@ func TestMashuraStatusShowsMemberRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestMashuraLevelWithoutBlock verifies that /mashura level without a
+// mashura block in the config says the level is ignored and shows what
+// to add.
+func TestMashuraLevelWithoutBlock(t *testing.T) {
+	app := mashuraCmdApp(t)
+	app.Cfg.OracleEnabled = true
+	app.Cfg.OpenRouterAPIKeyEnv = "OPENROUTER_API_KEY"
+
+	// /mashura level off without a block.
+	handled, _, cmd := handleMashuraCommand([]string{"/mashura", "off"}, app)
+	if !handled {
+		t.Fatal("command not handled")
+	}
+	msg := cmdNote(t, cmd)
+	if !strings.Contains(msg, "ignored") {
+		t.Errorf("level message should say 'ignored': %q", msg)
+	}
+	if !strings.Contains(msg, "no mashura block") {
+		t.Errorf("level message should mention 'no mashura block': %q", msg)
+	}
+	if !strings.Contains(msg, "mashura") || !strings.Contains(msg, "level") {
+		t.Errorf("level message should show what to add: %q", msg)
+	}
+
+	// /mashura status without a block should also mention it.
+	handled2, _, cmd2 := handleMashuraCommand([]string{"/mashura"}, app)
+	if !handled2 {
+		t.Fatal("status command not handled")
+	}
+	status := cmdNote(t, cmd2)
+	if !strings.Contains(status, "no mashura block") {
+		t.Errorf("status should mention 'no mashura block': %q", status)
+	}
+}

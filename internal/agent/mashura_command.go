@@ -142,6 +142,10 @@ func mashuraStatus(app *App) string {
 		sb.WriteString(fmt.Sprintf("max tokens:     %d\n", app.Cfg.OracleMaxTokens))
 		sb.WriteString(fmt.Sprintf("timeout:        %ds\n", app.Cfg.OracleTimeoutSeconds))
 		sb.WriteString(fmt.Sprintf("enabled:        %v\n", app.mashuraAvailable()))
+		if app.MashuraLevelOverride != "" {
+			sb.WriteString(fmt.Sprintf("level override: %s — ignored (no mashura block in config)\n", app.MashuraLevelOverride))
+		}
+		sb.WriteString("Add a \"mashura\" block to config.json to control the level and panels.\n")
 	}
 	cred, credErr := app.Cfg.ResolveOpenRouterCredential()
 	if credErr != nil {
@@ -508,7 +512,24 @@ func mashuraLevelStatus(app *App) string {
 // When the tool set changes in a session that has already sent a request,
 // the prompt-cache line is appended (A6). The tool set changes when the
 // effective level crosses the off boundary (tools appear/disappear).
+// When no mashura block is in the config, the level is ignored and the
+// message says so, with guidance on what to add.
 func mashuraLevelSetNote(app *App, prev, next string) string {
+	// Without a mashura block, the override is saved but effectiveMashura
+	// ignores it — the level is always the default (medium). Tell the user
+	// so they are not misled.
+	if app.Cfg.Mashura == nil {
+		var sb strings.Builder
+		if next == "" {
+			sb.WriteString("per-repo Mashūra level removed\n")
+		} else {
+			fmt.Fprintf(&sb, "per-repo Mashūra level set: %s — ignored (no mashura block in config)\n", next)
+		}
+		sb.WriteString("Add a \"mashura\" block to config.json with a \"level\" key to control Mashūra.\n")
+		sb.WriteString("Example: \"mashura\": { \"level\": \"" + next + "\", \"panels\": { \"default\": { \"models\": [\"openrouter:anthropic/claude-sonnet-4\"] } } }")
+		return sb.String()
+	}
+
 	effNext, membersNext, _ := app.effectiveMashura("review")
 	var sb strings.Builder
 	if next == "" {
@@ -519,9 +540,7 @@ func mashuraLevelSetNote(app *App, prev, next string) string {
 	// Tool set changes (tools appear or vanish) only when the effective level
 	// crosses the off boundary between the previous and next states.
 	var prevEffective string
-	if app.Cfg.Mashura == nil {
-		prevEffective = prev
-	} else if prev == "" {
+	if prev == "" {
 		// No override before: effective was the config level.
 		prevEffective, _, _ = app.Cfg.ResolveEffective("review", "")
 	} else {
