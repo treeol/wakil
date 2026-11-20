@@ -193,20 +193,29 @@ csv_row() {
 }
 
 # prep_workdir <task>: empty and refill the fixed work folder from the
-# task's repo/. A repo-local identity ("wakil-bench" / "bench@localhost")
-# is set after git init so the commit has an identity without reading any
-# host config file. The bench runs with the user's normal profile — no
-# GIT_CONFIG_GLOBAL override, no GIT_CONFIG_* unsetting, no
-# commit.gpgsign override.
+# task's repo/, preserving the .wakil/ directory (the user's approved
+# .wakil/sandbox.json lives there and the approval is keyed on its
+# content — sha256 of its raw bytes). A repo-local identity
+# ("wakil-bench" / "bench@localhost") is set after git init so the
+# commit has an identity without reading any host config file. The bench
+# runs with the user's normal profile — no GIT_CONFIG_GLOBAL override,
+# no GIT_CONFIG_* unsetting, no commit.gpgsign override.
 prep_workdir() {
     task=$1
     tdir="$tasks_dir/$task"
     workdir="$work_root/$task"
 
-    # Delete contents but keep the folder itself (the stable path is
-    # what the sandbox acknowledgement is keyed on — see --setup).
-    rm -rf "$workdir"
-    mkdir -p "$workdir"
+    # Delete everything inside the folder except .wakil/ (the stable
+    # path is what the sandbox acknowledgement is keyed on — see
+    # --setup; .wakil/sandbox.json is its content hash).
+    if [ -d "$workdir" ]; then
+        # Use find to delete everything except .wakil.
+        find "$workdir" -mindepth 1 -maxdepth 1 \
+            ! -name '.wakil' \
+            -exec rm -rf {} +
+    else
+        mkdir -p "$workdir"
+    fi
 
     # Fresh copy + git init + one commit with a repo-local identity.
     cp -R "$tdir/repo/." "$workdir/"
@@ -215,6 +224,9 @@ prep_workdir() {
         git init -q
         git config user.name "wakil-bench"
         git config user.email "bench@localhost"
+        # Exclude .wakil/ so it does not show up as untracked (it is
+        # the sandbox approval file, not part of the task repo).
+        printf '.wakil/\n' >> .git/info/exclude
         git add -A
         git commit -qm "bench task $task"
     ) 2>/dev/null || true
@@ -406,36 +418,8 @@ sum_cost() {
     awk -F, 'NR>1 && $11 != "n/a" && $11 != "" { s += $11 } END { printf "%.6f", s }' "$1"
 }
 
-# check_acknowledged <task>: returns 0 if the work folder's sandbox risk
-# is acknowledged (or the folder has no risk), 1 if not. Non-interactive:
-# runs 'wakil sandbox trust <path>' with stdin from /dev/null. When the
-# binary does not support a non-interactive trust check, this is a
-# best-effort probe — the post-run log scan catches the rest.
-check_acknowledged() {
-    _task=$1
-    _workdir="$work_root/$_task"
-    _output=$("$wakil_bin" sandbox trust "$_workdir" </dev/null 2>&1 || true)
-    case "$_output" in
-        *"not acknowledged"*) return 1 ;;
-        *) return 0 ;;
-    esac
-}
-
 # run_all <wakil-bin>: run every task `runs` times.
 run_all() {
-    # Pre-run check: if the binary offers a non-interactive way to detect
-    # an unacknowledged sandbox risk, check each selected folder before
-    # the first task. When the binary does not report the risk
-    # non-interactively, the post-run log scan catches it and stops the
-    # bench with the label, folder, and one command to run.
-    for task in $tasks; do
-        if ! check_acknowledged "$task"; then
-            echo "$prog: bench stopped — sandbox risk is not acknowledged in $work_root/$task" >&2
-            echo "  run 'wakil sandbox trust $work_root/$task' to review and acknowledge it" >&2
-            exit 1
-        fi
-    done
-
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         i=1
@@ -616,6 +600,32 @@ EOF
         exit 1
     fi
     echo "  freshness OK (marker gone after refill)"
+
+    echo "== self-test: .wakil/ preservation (sandbox.json byte-identical after refills) =="
+    # A .wakil/sandbox.json placed before a run must survive two
+    # refills byte-identical (the approval is keyed on its content
+    # hash — sha256 of its raw bytes). A marker file elsewhere must
+    # be gone.
+    _wakil_task="$(echo "$tasks" | awk '{print $1}')"
+    _wakil_workdir="$work_root/$_wakil_task"
+    prep_workdir "$_wakil_task"
+    mkdir -p "$_wakil_workdir/.wakil"
+    printf '{"hisn":{"risk_ack":"signing"}}' > "$_wakil_workdir/.wakil/sandbox.json"
+    _sandbox_hash_before=$(sha256sum "$_wakil_workdir/.wakil/sandbox.json" | awk '{print $1}')
+    touch "$_wakil_workdir/.bench-marker-from-run-1"
+    prep_workdir "$_wakil_task"
+    _sandbox_hash_after=$(sha256sum "$_wakil_workdir/.wakil/sandbox.json" 2>/dev/null | awk '{print $1}')
+    if [ "$_sandbox_hash_before" != "$_sandbox_hash_after" ]; then
+        echo "self-test FAILED: .wakil/sandbox.json not preserved (hash $_sandbox_hash_before -> $_sandbox_hash_after)" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    if [ -e "$_wakil_workdir/.bench-marker-from-run-1" ]; then
+        echo "self-test FAILED: marker file survived prep_workdir (folder not emptied)" >&2
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    echo "  .wakil/ preservation OK (sandbox.json byte-identical, marker gone)"
 
     echo "== self-test: fixed-path stability (expect same path across runs) =="
     _stab_task="$(echo "$tasks" | awk '{print $1}')"

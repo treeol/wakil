@@ -68,9 +68,13 @@ For each task and run number:
    `git init` + one commit with a repo-local identity
    (`user.name "wakil-bench"`, `user.email "bench@localhost"`), so every
    run starts from the same state and the stable path means the user's
-   one-time sandbox acknowledgement holds. The bench runs with the
-   user's normal profile — no `GIT_CONFIG_GLOBAL` override, no
-   `GIT_CONFIG_*` unsetting, no `commit.gpgsign` override.
+   one-time sandbox acknowledgement holds. The `.wakil/` directory is
+   preserved when the folder is emptied and refilled — the user's
+   approved `.wakil/sandbox.json` lives there and the approval is keyed
+   on its content hash (sha256 of its raw bytes). `.wakil/` is added to
+   `.git/info/exclude` so it does not show up as untracked. The bench
+   runs with the user's normal profile — no `GIT_CONFIG_GLOBAL` override,
+   no `GIT_CONFIG_*` unsetting, no `commit.gpgsign` override.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
 3. `wakil run --auto --no-memory [--auto-counsel] --result-json <file>
@@ -86,12 +90,12 @@ For each task and run number:
    field from the result JSON and compares it to the fixed folder. On
    mismatch the run is marked `error` with `exit_reason=wrong-workdir`
    and the whole bench stops at once.
-6. **Sandbox acknowledgement check.** Before the first task, the
-   harness checks each selected folder non-interactively (stdin from
-   `/dev/null`). When a run ends with the "not acknowledged" error, the
-   exit reason is `sandbox-not-acknowledged` and the bench stops with
-   the label, the folder, and the one `wakil sandbox trust` command to
-   run.
+6. **Post-run "not acknowledged" detection.** When a run ends with the
+   "not acknowledged" error, the exit reason is
+   `sandbox-not-acknowledged` and the bench stops with the label, the
+   folder, and the one `wakil sandbox trust` command to run. The
+   harness never runs `wakil sandbox trust` itself — only `--setup`
+   prints the commands for the user.
 
 The task's `check.sh`, `hidden/` files and `solution/` reference result
 are **never** copied into the work folder: the agent cannot pass by
