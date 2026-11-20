@@ -26,6 +26,13 @@ import _ "embed"
 //go:embed agent.txt
 var EmbeddedAgentPrompt string
 
+// PromptVersion is the current version of the embedded agent prompt. It
+// matches the "# prompt-version: <n>" first line of agent.txt. When a user's
+// override file has no version line or a lower one, a warning is printed at
+// start-up and in /prompt. The version line is stripped before the prompt is
+// used (both embedded and override).
+const PromptVersion = 1
+
 //go:embed core.txt
 var EmbeddedCorePrompt string
 

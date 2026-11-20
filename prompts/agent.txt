@@ -1,3 +1,4 @@
+# prompt-version: 1
 # Wakil — Agent Operating Instructions
 # Loaded once at startup. Static bytes — never assemble per turn; per-session
 # runtime facts (date, cwd, tool inventory, network mode) are appended at the

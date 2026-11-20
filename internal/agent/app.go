@@ -401,6 +401,12 @@ type App struct {
 	// /prompt full is active or a custom prompt path is configured.
 	AgentExtensionPrompt string
 
+	// PromptOverrideVersion is the parsed version from the user's
+	// agent_prompt_path file (0 when no version line or using the embedded
+	// prompt). Compared against prompts.PromptVersion to warn the user when
+	// their override is stale. Displayed in /prompt status.
+	PromptOverrideVersion int
+
 	// InjectDate keeps a day-stable system message (agent prompt + date + cwd
 	// + tool inventory) as Conv[0], so the model doesn't fall back to its
 	// training-era guess about "now". Enabled for the parent; off for

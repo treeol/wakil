@@ -277,8 +277,9 @@ func TestPrettyArgs(t *testing.T) {
 // --- main helpers ---
 
 func TestLoadAgentPromptFallbackAndFile(t *testing.T) {
-	// Missing path → embedded prompt.
-	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
+	// Missing path → embedded prompt (version line stripped by loadAgentPrompt).
+	embedded := strings.TrimPrefix(prompts.EmbeddedAgentPrompt, "# prompt-version: 1\n")
+	embedded = strings.TrimRight(embedded, "\n")
 	if got := loadAgentPrompt(config.Config{AgentPromptPath: ""}); got != embedded {
 		t.Errorf("empty path should yield the embedded prompt")
 	}
@@ -294,7 +295,7 @@ func TestLoadAgentPromptFallbackAndFile(t *testing.T) {
 	if got := loadAgentPrompt(config.Config{AgentPromptPath: emptyPath}); got != embedded {
 		t.Errorf("empty file should yield the embedded prompt, got len=%d", len(got))
 	}
-	// Real file → its contents (trailing newline trimmed).
+	// Real file → its contents (version line stripped, trailing newline trimmed).
 	p := filepath.Join(dir, "agent.txt")
 	if err := os.WriteFile(p, []byte("custom instructions\n"), 0o644); err != nil {
 		t.Fatal(err)

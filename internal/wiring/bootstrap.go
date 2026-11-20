@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -243,7 +244,7 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// available). Split prompts (core + extension) are loaded from the
 	// binary embed only when no custom file is used — a custom
 	// agent_prompt_path replaces the whole prompt, including in core mode.
-	promptForApp, usingEmbedded := loadAgentPrompt(cfg)
+	promptForApp, usingEmbedded, overrideVersion := loadAgentPrompt(cfg)
 
 	app := &agent.App{
 		Cfg:                          cfg,
@@ -352,6 +353,26 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// The sandbox's own risk statement (hisn: label + capabilities) is the first
 	// thing the user sees in the session.
 	appendStartupNote(app, SandboxBanner(exe))
+
+	// Stale prompt override warning (P3): when a custom agent_prompt_path
+	// file has no version line or a lower one than the embedded prompt,
+	// warn the user once at start-up. The warning is visible in the TUI
+	// via the startup note (not just stderr, which is hidden behind the
+	// alt-screen). No warning when using the embedded prompt or when the
+	// versions match.
+	if !usingEmbedded && overrideVersion < prompts.PromptVersion {
+		if overrideVersion == 0 {
+			appendStartupNote(app, fmt.Sprintf(
+				"your prompt override is older than the built-in prompt (override has no version, built-in v%d)",
+				prompts.PromptVersion))
+		} else {
+			appendStartupNote(app, fmt.Sprintf(
+				"your prompt override is older than the built-in prompt (override v%d, built-in v%d)",
+				overrideVersion, prompts.PromptVersion))
+		}
+	}
+	// Store the override version on the app for /prompt status display.
+	app.PromptOverrideVersion = overrideVersion
 
 	// Staging client
 	if planned := plannedKVR(exe); planned != "" {
@@ -589,22 +610,46 @@ func NewExecutor(cfg config.Config) (exec.Executor, error) {
 // (missing file, read error, empty file, or no path configured) it logs a
 // warning and returns the full embedded prompt from prompts/agent.txt so the
 // process always has a complete system prompt — the bare binary is self-contained.
-func LoadAgentPrompt(cfg config.Config) string { prompt, _ := loadAgentPrompt(cfg); return prompt }
+func LoadAgentPrompt(cfg config.Config) string { prompt, _, _ := loadAgentPrompt(cfg); return prompt }
+
+// promptVersionPrefix is the first-line marker that carries the prompt version.
+const promptVersionPrefix = "# prompt-version: "
+
+// stripPromptVersion removes a leading "# prompt-version: <n>" line from the
+// prompt and returns the stripped content plus the parsed version (0 when the
+// line is absent or malformed). The version line is metadata, not prompt
+// content, so it must never reach the model.
+func stripPromptVersion(prompt string) (stripped string, version int) {
+	lines := strings.SplitN(prompt, "\n", 2)
+	if len(lines) > 0 && strings.HasPrefix(lines[0], promptVersionPrefix) {
+		v, err := strconv.Atoi(strings.TrimSpace(lines[0][len(promptVersionPrefix):]))
+		if err == nil {
+			if len(lines) == 2 {
+				return strings.TrimRight(lines[1], "\n"), v
+			}
+			return "", v
+		}
+	}
+	return strings.TrimRight(prompt, "\n"), 0
+}
 
 // loadAgentPrompt reads the agent operating instructions from cfg.AgentPromptPath.
-// On success it logs the byte count and returns the content. On any failure
-// (missing file, read error, empty file, or no path configured) it logs a
-// warning and returns the full embedded prompt from prompts/agent.txt so the
-// process always has a complete system prompt — the bare binary is self-contained.
+// On success it logs the byte count and returns the content with the version
+// line stripped. On any failure (missing file, read error, empty file, or no
+// path configured) it logs a warning and returns the full embedded prompt from
+// prompts/agent.txt (also stripped) so the process always has a complete system
+// prompt — the bare binary is self-contained.
 // usingEmbedded reports whether the returned content came from the embedded
 // prompt (not a custom file). When true, the caller also loads the embedded
 // core/extension split prompts so /prompt core works even when AgentPromptPath
 // was auto-set to a non-existent file (the common case with a config.json).
-func loadAgentPrompt(cfg config.Config) (prompt string, usingEmbedded bool) {
-	embedded := strings.TrimRight(prompts.EmbeddedAgentPrompt, "\n")
+// overrideVersion is the parsed version from the override file (0 when absent
+// or using the embedded prompt).
+func loadAgentPrompt(cfg config.Config) (prompt string, usingEmbedded bool, overrideVersion int) {
+	embedded, _ := stripPromptVersion(prompts.EmbeddedAgentPrompt)
 	path := cfg.AgentPromptPath
 	if path == "" {
-		return embedded, true
+		return embedded, true, 0
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -613,15 +658,15 @@ func loadAgentPrompt(cfg config.Config) (prompt string, usingEmbedded bool) {
 		if !os.IsNotExist(err) {
 			fmt.Fprintf(os.Stderr, "agent prompt: warning: cannot read %s (%v) — using embedded prompt\n", path, err)
 		}
-		return embedded, true
+		return embedded, true, 0
 	}
 	if len(strings.TrimSpace(string(b))) == 0 {
 		fmt.Fprintf(os.Stderr, "agent prompt: warning: %s is empty — using embedded prompt\n", path)
-		return embedded, true
+		return embedded, true, 0
 	}
-	prompt = strings.TrimRight(string(b), "\n")
+	prompt, overrideVersion = stripPromptVersion(string(b))
 	fmt.Fprintf(os.Stderr, "agent prompt: loaded %d bytes from %s\n", len(b), path)
-	return prompt, false
+	return prompt, false, overrideVersion
 }
 
 var toolCacheSweep sync.Once

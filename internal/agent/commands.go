@@ -14,6 +14,7 @@ import (
 	"github.com/treeol/wakil/internal/proxy"
 	"github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/workflow"
+	"github.com/treeol/wakil/prompts"
 )
 
 // suspendAuto returns a human-readable reason string when auto mode must be
@@ -359,7 +360,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				coreLen := len(app.AgentCorePrompt)
 				extLen := len(app.AgentExtensionPrompt)
 				fullLen := len(app.AgentPrompt)
-				return true, false, note(fmt.Sprintf("prompt mode: %s · core=%d ext=%d full=%d", app.PromptMode(), coreLen, extLen, fullLen))
+				status := fmt.Sprintf("prompt mode: %s · core=%d ext=%d full=%d", app.PromptMode(), coreLen, extLen, fullLen)
+				if app.PromptOverrideVersion > 0 && app.PromptOverrideVersion < prompts.PromptVersion {
+					status += fmt.Sprintf(" · override v%d (built-in v%d)", app.PromptOverrideVersion, prompts.PromptVersion)
+				}
+				return true, false, note(status)
 			default:
 				return true, false, note("usage: /prompt [full|core|status]")
 			}

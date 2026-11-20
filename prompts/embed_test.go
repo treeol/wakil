@@ -1,6 +1,7 @@
 package prompts
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -122,6 +123,21 @@ func TestEmbeddedSplitPromptsParity(t *testing.T) {
 		if fullSec != extSec {
 			t.Errorf("section %q differs between agent.txt and extension.txt", h)
 		}
+	}
+}
+
+func TestPromptVersionMatches(t *testing.T) {
+	// The PromptVersion constant must match the first line of agent.txt.
+	firstLine := strings.SplitN(EmbeddedAgentPrompt, "\n", 2)[0]
+	if !strings.HasPrefix(firstLine, "# prompt-version: ") {
+		t.Fatalf("agent.txt first line is not a version line: %q", firstLine)
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(firstLine, "# prompt-version: ")))
+	if err != nil {
+		t.Fatalf("cannot parse version from %q: %v", firstLine, err)
+	}
+	if v != PromptVersion {
+		t.Errorf("agent.txt version %d != PromptVersion constant %d", v, PromptVersion)
 	}
 }
 
