@@ -45,6 +45,12 @@ USAGE
 }
 
 wakil_bin="wakil"
+# Seconds between the TERM that "timeout" sends at the deadline and the KILL
+# it sends to a process that ignored it (BENCH_KILL_GRACE; the self-test
+# shortens it).
+kill_grace="${BENCH_KILL_GRACE:-10}"
+case "$kill_grace" in *[!0-9]*|'') echo "${0##*/}: BENCH_KILL_GRACE must be a positive integer (got $kill_grace)" >&2; exit 2 ;; esac
+[ "$kill_grace" -ge 1 ] || { echo "${0##*/}: BENCH_KILL_GRACE must be >= 1" >&2; exit 2; }
 model_name=""
 only_task=""
 runs=1
@@ -368,10 +374,10 @@ run_one() {
     export WAKIL_HOST_WORKDIR="$workdir"
 
     if [ -n "$model_name" ]; then
-        WAKIL_MODEL="$model_name" timeout -k 10 "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+        WAKIL_MODEL="$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
             --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 &
     else
-        timeout -k 10 "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+        timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
             --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 &
     fi
     run_pid=$!
@@ -423,30 +429,42 @@ run_one() {
 
     exit_reason=$(json_field "$result_json" "exit_reason")
 
-    # Post-run "not acknowledged" / "has not been approved" detection: when
-    # the run did not succeed and the log mentions either sandbox approval
-    # error, the exit reason is sandbox-not-acknowledged and the bench stops
-    # with the folder and the one command to run, BEFORE any workdir guard
-    # message or check.sh.
-    if [ "$wak_rc" -ne 0 ]; then
-        if [ -z "$exit_reason" ] || [ "$exit_reason" = "error" ]; then
-            if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null || \
-               grep -q "has not been approved" "$log_file" 2>/dev/null; then
-                result="error"
-                exit_reason="sandbox-not-acknowledged"
-                csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
-                echo "$prog: bench stopped — task $task run $run: sandbox approval required for $workdir" >&2
-                echo "  run: WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust" >&2
-                return 1
-            fi
-        fi
-    fi
-
-    # Timeout: skip check.sh and workdir guard (killed mid-run).
-    if [ "$wak_rc" -eq 124 ]; then
+    # Timeout: "timeout" exits 124 when the command ended on the TERM it sent
+    # at the deadline, and 137 (128 + KILL) when the command ignored TERM and
+    # was killed after the grace period. Both are a timeout: the run was cut
+    # off mid-way, so the result JSON it may have written before hanging
+    # (exit_reason "pass", workdir) is stale, the log is not looked at (it is
+    # agent-controlled text), and neither the workdir guard nor check.sh runs.
+    # A 137 that arrives well before the deadline is a kill from outside
+    # (e.g. the OOM killer); it is still no completed run, so it is also
+    # "timeout", but the exit_reason says "killed".
+    if [ "$wak_rc" -eq 124 ] || [ "$wak_rc" -eq 137 ]; then
         result="timeout"
+        exit_reason="timeout"
+        if [ "$wak_rc" -eq 137 ] && [ "$secs" -lt "$timeout_sec" ]; then
+            exit_reason="killed"
+        fi
         csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
     else
+        # Post-run "not acknowledged" / "has not been approved" detection: when
+        # the run did not succeed and the log mentions either sandbox approval
+        # error, the exit reason is sandbox-not-acknowledged and the bench stops
+        # with the folder and the one command to run, BEFORE any workdir guard
+        # message or check.sh.
+        if [ "$wak_rc" -ne 0 ]; then
+            if [ -z "$exit_reason" ] || [ "$exit_reason" = "error" ]; then
+                if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null || \
+                   grep -q "has not been approved" "$log_file" 2>/dev/null; then
+                    result="error"
+                    exit_reason="sandbox-not-acknowledged"
+                    csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+                    echo "$prog: bench stopped — task $task run $run: sandbox approval required for $workdir" >&2
+                    echo "  run: WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust" >&2
+                    return 1
+                fi
+            fi
+        fi
+
         # Workdir guard: verify the agent ran in the fixed folder we set
         # up, not in the user's configured work_dir. The result JSON carries
         # the resolved workdir from the binary; a missing value or mismatch
@@ -960,16 +978,79 @@ EOF
     grep -q 'changed files under .*/.wakil' "$_plant_err" || { echo "self-test FAILED: a change under .wakil/ was not reported" >&2; cat "$_plant_err" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  planted solution/ -> error leak-detected; .wakil/ change reported"
 
-    echo "== self-test: stub that sleeps past the timeout (expect timeout) =="
+    echo "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
     # Use the harness's own timeout path with a short per-run timeout so
     # the whole self-test stays fast: the slow stub is killed at 2s.
     _saved_timeout="$timeout_sec"
     timeout_sec=2
     task_idx=1
-    BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-slow" "$stub_slow"
+    _slow_task="$(echo "$tasks" | awk '{print $1}')"
+    BENCH_TASK_DIR="" run_one "$_slow_task" "self-slow" "$stub_slow"
     timeout_sec="$_saved_timeout"
     _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
-    [ "$_row_result" = "timeout" ] || { echo "self-test FAILED: slow stub: expected timeout, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    if [ "$_row_result" != "timeout" ] || [ "$_row_reason" != "timeout" ]; then
+        echo "self-test FAILED: slow stub: got result=$_row_result exit_reason=$_row_reason, want timeout/timeout" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+
+    echo "== self-test: stub that ignores TERM (expect timeout via exit 137, check.sh not run) =="
+    # A stub that traps TERM and keeps running: timeout sends TERM at the
+    # deadline, waits the grace period, then KILLs it, and exits 137. The
+    # stub has already written a result JSON saying "pass" with the right
+    # workdir, and it leaves a fully correct solution in the folder, so a
+    # harness that ran the guard or check.sh on a killed run would score it
+    # "pass". Its transcript also carries a sandbox-approval message, which
+    # must not turn the timeout into sandbox-not-acknowledged.
+    stub_deaf="$tmpdir/wakil-deaf"
+    cat > "$stub_deaf" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-deaf/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) workdir=$(dirname "$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
+      cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    fi
+    cat > "$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+JSON
+    echo "executor error: sandbox risk is not acknowledged (label signing)" >&2
+    trap '' TERM
+    while :; do sleep 1; done ;;
+esac
+EOF
+    chmod +x "$stub_deaf"
+    _saved_timeout="$timeout_sec"; _saved_grace="$kill_grace"
+    timeout_sec=2; kill_grace=1
+    task_idx=1
+    _rc=0
+    BENCH_TASK_DIR="$tasks_dir/$_slow_task" run_one "$_slow_task" "self-deaf" "$stub_deaf" || _rc=$?
+    timeout_sec="$_saved_timeout"; kill_grace="$_saved_grace"
+    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    _row_secs=$(tail -1 "$csv_file" | awk -F, '{ print $8 }')
+    if [ "$_rc" -ne 0 ] || [ "$_row_result" != "timeout" ] || [ "$_row_reason" != "timeout" ]; then
+        echo "self-test FAILED: TERM-ignoring stub: rc=$_rc result=$_row_result exit_reason=$_row_reason, want 0/timeout/timeout" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    if [ "$_row_secs" -lt 3 ]; then
+        echo "self-test FAILED: TERM-ignoring stub ended after ${_row_secs}s; the KILL path (timeout 2s + grace 1s) was not exercised" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    if grep -q 'check.sh (' "$results_dir"/"$_slow_task"-self-deaf-*.log 2>/dev/null; then
+        echo "self-test FAILED: check.sh ran after a timeout" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    echo "  TERM-ignoring run -> timeout (exit 137 after ${_row_secs}s), no check.sh, no sandbox-not-acknowledged"
 
     echo "== self-test: stub that reports a wrong workdir (expect error + stop) =="
     _saved_timeout="$timeout_sec"
