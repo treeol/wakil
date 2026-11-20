@@ -97,7 +97,8 @@ repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
 bench_dir="$repo_root/bench"
 tasks_dir="$bench_dir/tasks"
 results_dir="$bench_dir/results"
-mkdir -p "$results_dir"
+# bench/results is created by a real run only (main); --setup and --self-test
+# never write into the repo.
 
 # Fixed work folders: stable paths so the user's one-time sandbox
 # acknowledgement holds across runs. Each task runs in
@@ -645,9 +646,8 @@ run_one_locked() {
 
 # find_prev_csv: the most recent bench CSV whose model matches the
 # resolved model (not this run's, not a self-test). Echoes path.
-# Self-test CSVs live in $results_dir/selftest/ and are excluded by
-# the top-level glob (results_dir/20*-bench.csv matches direct children
-# only, not the selftest/ subdir).
+# Self-test CSVs live in the cache (wakil-bench/selftest), never under
+# results_dir.
 find_prev_csv() {
     _want_model="${1:-}"
     last=""
@@ -760,10 +760,14 @@ do_setup() {
 
 # ---- self-test -------------------------------------------------------------
 self_test() {
-    # Self-test CSVs go to a separate subdir so find_prev_csv never
-    # picks them up as an earlier run.
-    selftest_dir="$results_dir/selftest"
-    mkdir -p "$selftest_dir"
+    # Self-test CSVs and logs go to the cache, never into the repo, and never
+    # where find_prev_csv looks for an earlier run. A marker file lets the end
+    # of the self-test assert that nothing under bench/results changed.
+    selftest_dir="$cache_home/wakil-bench/selftest"
+    mkdir -p "$selftest_dir" || { echo "$prog: cannot create $selftest_dir" >&2; exit 1; }
+    _st_marker=$(mktemp "${TMPDIR:-/tmp}/bench-selftest-marker.XXXXXX")
+    _saved_results_dir="$results_dir"
+    results_dir="$selftest_dir"
     _saved_csv_file="$csv_file"
     _saved_work_root="$work_root"
     csv_file="$selftest_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
@@ -1453,6 +1457,15 @@ EOF
     fi
     echo "  cached-% (75%) and 4-decimal cost (\$0.0012) OK"
 
+    echo "== self-test: nothing written into the repo's bench/results =="
+    if [ -d "$_saved_results_dir" ] && [ -n "$(find "$_saved_results_dir" -newer "$_st_marker" 2>/dev/null | head -n 1)" ]; then
+        echo "self-test FAILED: the self-test wrote under $_saved_results_dir:" >&2
+        find "$_saved_results_dir" -newer "$_st_marker" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    case "$csv_file" in "$cache_home"/wakil-bench/selftest/*) ;; *) echo "self-test FAILED: CSV not in the cache selftest dir: $csv_file" >&2; exit 1 ;; esac
+    echo "  CSV and logs under $selftest_dir; bench/results untouched"
+
     echo
     echo "== self-test summary =="
     echo "CSV: $csv_file"
@@ -1461,9 +1474,10 @@ EOF
     echo
     echo "self-test done (harness worked)"
 
-    rm -rf "$tmpdir" "$_self_work_root"
-    # Restore the real-run work root and CSV so main() and find_prev_csv
-    # see them.
+    rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"
+    # Restore the real-run work root, results dir and CSV so main() and
+    # find_prev_csv see them.
+    results_dir="$_saved_results_dir"
     work_root="$_saved_work_root"
     lock_root="$_saved_lock_root"
     csv_file="$_saved_csv_file"
@@ -1487,6 +1501,7 @@ main() {
     # Create the real-run CSV only now (--setup and --self-test return
     # above, so they never create a real-run CSV that find_prev_csv
     # would pick up).
+    mkdir -p "$results_dir" || { echo "$prog: cannot create $results_dir" >&2; exit 1; }
     csv_file="$results_dir/$(date +%Y%m%dT%H%M%S)-bench.csv"
     printf '%s\n' "$csv_header" > "$csv_file"
 
