@@ -268,6 +268,12 @@ type App struct {
 	// outcome was suspended (for collapse rule 6).
 	turnSeq int
 	curTurn int
+	// declinedCalls counts tool calls whose result was declined by the user
+	// or by policy (the "[declined by user]" marker). Incremented in
+	// finalizeToolResult, the single bookkeeping path for tool results.
+	// Turn-goroutine only — no lock needed. Read by writeResultJSON for the
+	// --result-json summary.
+	declinedCalls int
 	// lastPanelVoid is set by a synchronous mashūra panel when any reply was
 	// VOID (truncated / empty / wrong last-section citation). Turn goroutine
 	// only. Auto-counsel reads it to refund the round counter.

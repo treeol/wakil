@@ -37,6 +37,7 @@ type ResultJSON struct {
 	Collapses        *int     `json:"collapses"`
 	CollapsesTurnEnd *int     `json:"collapses_turn_end"`
 	MashuraRounds    *int     `json:"mashura_rounds"`
+	DeclinedCalls    *int     `json:"declined_calls"`
 }
 
 // exitReasonName maps a headless exit code to the bench-facing reason
@@ -115,6 +116,11 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 		// plus automatic rounds fired by Wakil itself (countAutoRounds rule).
 		rounds := mashuraTools + agent.AutoRoundsInConv(app.Conv)
 		res.MashuraRounds = &rounds
+		// Declined calls: count of tool calls whose result was declined by the
+		// user or by policy. Uses a dedicated counter on App (not Conv scanning
+		// — collapsed/compacted turns would undercount).
+		declined := app.DeclinedCallCount()
+		res.DeclinedCalls = &declined
 	}
 	b, err := json.Marshal(res)
 	if err != nil {

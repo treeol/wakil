@@ -482,6 +482,13 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 				Status:     toolResultStatus(result),
 			})
 
+			// Count declined calls for the --result-json summary. A decline
+			// is a result whose status is "declined" (the "[declined by
+			// user]" marker), distinct from errors and successes.
+			if toolResultStatus(result) == "declined" {
+				a.declinedCalls++
+			}
+
 			// Check the RAW result (before CapOrStub can touch it) against the
 			// path-confinement breaker — ConfinePath error text is short and
 			// never capped, so this ordering is only for clarity/robustness.

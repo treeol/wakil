@@ -150,6 +150,24 @@ func TestExecuteToolCall_DeclinedGate(t *testing.T) {
 	if !strings.Contains(res.text, "declined") {
 		t.Errorf("declined write_file should say 'declined': %s", res.text)
 	}
+	// Verify the declined result is classified as "declined" by toolResultStatus.
+	if got := toolResultStatus(res); got != "declined" {
+		t.Errorf("toolResultStatus for declined gate = %q, want %q", got, "declined")
+	}
+}
+
+// TestDeclinedCallCount verifies that DeclinedCallCount/SetDeclinedCallCount
+// round-trip the counter used by --result-json's declined_calls field.
+func TestDeclinedCallCount(t *testing.T) {
+	fe := newFakeExecutor()
+	app := newTestApp("", fe, func(_, _, _ string, _ bool) bool { return true })
+	if got := app.DeclinedCallCount(); got != 0 {
+		t.Errorf("initial DeclinedCallCount = %d, want 0", got)
+	}
+	app.SetDeclinedCallCount(5)
+	if got := app.DeclinedCallCount(); got != 5 {
+		t.Errorf("after SetDeclinedCallCount(5) = %d, want 5", got)
+	}
 }
 
 // TestExecuteToolCall_InvalidArgs verifies that malformed JSON arguments

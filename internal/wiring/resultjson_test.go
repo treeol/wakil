@@ -181,3 +181,48 @@ func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
 		t.Errorf("tokens_cached must be omitted when provider reported none; got %s", string(data2))
 	}
 }
+
+func TestResultJSON_DeclinedCalls(t *testing.T) {
+	app := fakeApp("http://unused.invalid")
+	app.Client.Model = "openrouter/test"
+	app.Costs = &proxy.CostTracker{}
+	// Simulate 3 declined tool calls by setting the counter directly via
+	// the exported test helper.
+	app.SetDeclinedCallCount(3)
+
+	p := filepath.Join(t.TempDir(), "r.json")
+	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+		t.Fatalf("writeResultJSON: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res ResultJSON
+	if err := json.Unmarshal(data, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.DeclinedCalls == nil || *res.DeclinedCalls != 3 {
+		t.Errorf("declined_calls = %v, want 3", res.DeclinedCalls)
+	}
+
+	// Zero declines: the field is present (pointer to 0), not nil.
+	app2 := fakeApp("http://unused.invalid")
+	app2.Client.Model = "openrouter/test"
+	app2.Costs = &proxy.CostTracker{}
+	p2 := filepath.Join(t.TempDir(), "r2.json")
+	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws"); err != nil {
+		t.Fatal(err)
+	}
+	data2, err := os.ReadFile(p2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res2 ResultJSON
+	if err := json.Unmarshal(data2, &res2); err != nil {
+		t.Fatal(err)
+	}
+	if res2.DeclinedCalls == nil || *res2.DeclinedCalls != 0 {
+		t.Errorf("declined_calls = %v, want 0 (present, not nil)", res2.DeclinedCalls)
+	}
+}

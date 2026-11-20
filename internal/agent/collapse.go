@@ -2080,6 +2080,25 @@ func (a *App) CollapseCounts() (midTurn, turnEnd int) {
 	return midTurn, turnEnd
 }
 
+// DeclinedCallCount returns the session-cumulative count of tool calls whose
+// result was declined by the user or by policy (the "[declined by user]"
+// marker). Turn-goroutine only in practice, but the read here is safe from
+// any goroutine since declinedCalls is a plain int written on the turn
+// goroutine. Guarded by stateMu to match CollapseCounts' locking convention.
+func (a *App) DeclinedCallCount() int {
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	return a.declinedCalls
+}
+
+// SetDeclinedCallCount sets the declined-call counter. Test helper for
+// wiring-package tests that cannot access the unexported field directly.
+func (a *App) SetDeclinedCallCount(n int) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.declinedCalls = n
+}
+
 // AutoRoundsInConv counts automatic Mashura rounds in a conversation
 // (same rule as countAutoRounds): a user-role message carrying the
 // auto-counsel header, or a legacy auto-counsel tool call id.
