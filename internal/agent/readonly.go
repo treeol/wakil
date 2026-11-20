@@ -116,6 +116,17 @@ var shellKeywords = map[string]bool{
 	"{": true, "}": true,
 }
 
+// wrapperCmds run another command given as an argument. They are gated in
+// IsDestructiveShell and never allowlisted, because the payload would need
+// its own classification (and "time", "env" and "nice" take options).
+var wrapperCmds = map[string]bool{
+	"env": true, "command": true, "nice": true, "time": true, "nohup": true,
+	"timeout": true, "exec": true, "eval": true, "doas": true, "su": true,
+	"source": true, ".": true, "builtin": true, "ionice": true, "stdbuf": true,
+	"setsid": true, "chroot": true, "strace": true, "ltrace": true, "watch": true,
+	"busybox": true, "flock": true, "unbuffer": true, "script": true,
+}
+
 // varSafeCmds are the read-only binaries that may receive $VAR (or a $(...)
 // result) as an argument. For every other allowlisted binary a variable could
 // expand to a write flag (find -delete, git diff --output=, date -s, sed -i),
@@ -270,6 +281,16 @@ func IsDestructiveShell(cmd string) bool {
 		if strings.ContainsAny(rawBin, "$`") || strings.HasPrefix(rawBin, "(") || shellKeywords[rawBin] {
 			return true
 		}
+		// Quotes or a backslash in the command word hide its name ("r\"\"m",
+		// "\rm"), so the word cannot be judged: gate it.
+		if strings.ContainsAny(fields[i], "'\"\\") {
+			return true
+		}
+		// Wrappers run another command; their payload is judged by its own
+		// rules, so gate them rather than unwrapping.
+		if wrapperCmds[rawBin] {
+			return true
+		}
 
 		bin := rawBin
 		if j := strings.LastIndex(bin, "/"); j >= 0 {
@@ -285,6 +306,13 @@ func IsDestructiveShell(cmd string) bool {
 		}
 		switch bin {
 		case "git":
+			// Global options before the subcommand: "-C <dir>" is skipped;
+			// any other option ("-c", "--git-dir", ...) gates the command.
+			sub, ok := gitGlobalOptsOK(args)
+			if !ok {
+				return true
+			}
+			args = args[sub:]
 			if len(args) == 0 {
 				continue
 			}
@@ -390,6 +418,107 @@ func startsRedirect(tok string) bool {
 		return true
 	}
 	return j < len(tok) && (tok[j] == '>' || tok[j] == '<')
+}
+
+// gitArgRunsOrWrites reports whether one argument to a read-only git
+// subcommand can execute a program or write a file. It covers grep's -O
+// (also attached, "-O./p.sh"), and the long options that name an output file
+// or a program: --output, --open-files(-in-pager), --upload-pack,
+// --receive-pack, --exec, --ext-diff, --textconv, --exec-path, --config-env,
+// --paginate and --pager. Abbreviated long options are matched by prefix
+// (min 3 chars), so "--outp=" and "--open-" are caught too.
+func gitArgRunsOrWrites(a string) bool {
+	if a == "-O" || (strings.HasPrefix(a, "-O") && !strings.HasPrefix(a, "--")) {
+		return true
+	}
+	if !strings.HasPrefix(a, "-") {
+		return false
+	}
+	name := strings.TrimLeft(a, "-")
+	// "--ext-diff=false", "--textconv=false" and "--no-ext-diff" switch the
+	// feature off; only the enabling forms run a program.
+	if strings.HasPrefix(name, "no-ext-diff") || strings.HasPrefix(name, "no-textconv") ||
+		strings.HasPrefix(name, "no-pager") || strings.HasSuffix(a, "=false") {
+		return false
+	}
+	if j := strings.Index(name, "="); j >= 0 {
+		name = name[:j]
+	}
+	if len(name) < 3 {
+		return false
+	}
+	for _, long := range []string{"output", "open-files", "upload-pack", "receive-pack",
+		"exec", "ext-diff", "textconv", "no-textconv", "config-env", "exec-path",
+		"paginate", "no-pager", "pager"} {
+		// Abbreviation ("--outp") or the full name followed by more text
+		// ("--open-files-in-pager"): either way the option names the hook.
+		if strings.HasPrefix(long, name) || strings.HasPrefix(name, long) {
+			return true
+		}
+	}
+	return false
+}
+
+// gitConfigReadOnly reports whether "git config" arguments are a pure read:
+// exactly one of --get, --get-all, --list or -l, plus at most the options that
+// only select a file for reading. Any "--", any other positional word, or any
+// unknown option gates the command.
+func gitConfigReadOnly(args []string) bool {
+	read := false
+	positional := 0
+	for _, a := range args {
+		switch {
+		case a == "--get", a == "--get-all", a == "--list", a == "-l":
+			read = true
+		case a == "--global", a == "--system", a == "--local", a == "--show-origin",
+			a == "--show-scope", a == "--includes", a == "--no-includes", a == "-z", a == "--null":
+		case strings.HasPrefix(a, "-"):
+			return false // "--" and any other option
+		default:
+			positional++ // the key to read: a second word would be a value (a write)
+		}
+	}
+	// "--get KEY" and "--list" are reads; "KEY VALUE" is a write, so at most one
+	// positional name, and only with a get form.
+	if positional > 1 {
+		return false
+	}
+	if positional == 1 && hasListFlag(args) {
+		return false
+	}
+	return read
+}
+
+// hasListFlag reports whether a "git config" argument list selects --list or -l,
+// which takes no key. Used to reject "--list KEY".
+func hasListFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--list" || a == "-l" {
+			return true
+		}
+	}
+	return false
+}
+
+// gitGlobalOptsOK reports whether the tokens before a git subcommand contain
+// only "-C <dir>" (the subcommand is then judged by its own rules). Any other
+// global option ("-c", "--git-dir", "--exec-path", ...) changes what runs.
+func gitGlobalOptsOK(args []string) (sub int, ok bool) {
+	for k := 0; k < len(args); k++ {
+		a := args[k]
+		if a == "-C" {
+			if k+1 >= len(args) {
+				return 0, false
+			}
+			k++
+			continue
+		}
+		if strings.HasPrefix(a, "-") {
+			return 0, false
+		}
+		return k, true
+	}
+	return len(args), true
 }
 
 // leadingRedirectOK reports whether a token that starts a segment is a
@@ -499,7 +628,11 @@ func hasDestructiveRedirect(cmd string) bool {
 
 		// fd duplication: N>&M, N>&-, >&M, &>M — requires an explicit
 		// '&' immediately after the '>'. Without '&', "2>1" writes to
-		// a file named "1".
+		// a file named "1". ">>&1" is not fd duplication (bash rejects it),
+		// so an append operator never reaches the fd-dup branch.
+		if j > i+1 && len(right) > 0 && right[0] == '&' {
+			return true // ">>&N" is not fd duplication
+		}
 		if len(right) > 0 && right[0] == '&' {
 			// &> followed by /dev/null (exact token) is a discard.
 			if isDevNull(right) {
@@ -798,6 +931,12 @@ func sedArgsDestructive(args []string) bool {
 	endOpts := false
 	for k := 0; k < len(args); k++ {
 		a := strip(args[k])
+		// "--" ends the options, so a following "-i" is read as a file or a
+		// script, not a flag. The option-free forms are not an intended
+		// relaxation: gate the whole "--" form (stricter).
+		if a == "--" {
+			return true
+		}
 		switch {
 		case endOpts || a == "-" || !strings.HasPrefix(a, "-"):
 			// First non-option word is the script unless -e/--expression gave one.
@@ -1031,17 +1170,18 @@ func sedScriptIsDestructive(script string) bool {
 func readFlagsOK(bin string, args []string) bool {
 	switch bin {
 	case "git":
-		if len(args) == 0 {
+		sub, ok := gitGlobalOptsOK(args)
+		if !ok || sub >= len(args) {
 			return false
 		}
+		args = args[sub:]
 		switch args[0] {
 		case "diff", "status", "log", "show", "blame", "shortlog",
 			"ls-files", "ls-tree", "rev-parse", "describe", "name-rev",
 			"diff-tree", "cat-file", "ls-remote", "for-each-ref",
 			"rev-list", "range-diff", "merge-base", "cherry":
 			for _, a := range args[1:] {
-				if strings.HasPrefix(a, "--output") || a == "--ext-diff" ||
-					a == "--no-textconv" || a == "--textconv" {
+				if gitArgRunsOrWrites(a) {
 					return false
 				}
 			}
@@ -1074,7 +1214,7 @@ func readFlagsOK(bin string, args []string) bool {
 			return true
 		case "grep":
 			for _, a := range args[1:] {
-				if a == "-O" || strings.HasPrefix(a, "--open-files-in-pager") {
+				if gitArgRunsOrWrites(a) {
 					return false
 				}
 			}
@@ -1090,18 +1230,18 @@ func readFlagsOK(bin string, args []string) bool {
 			}
 			return true
 		case "config":
-			for _, a := range args[1:] {
-				if a == "--get" || a == "--get-all" || a == "--list" || a == "-l" {
-					return true
-				}
-			}
-			return false
+			// Only the listing and get forms, with no "--" and no other
+			// positional argument: "git config k v" and "git config -- k --list"
+			// (which writes "k = --list") are writes.
+			return gitConfigReadOnly(args[1:])
 		}
 		return false
 	case "xxd":
+		// A lone "-" is a stdin operand, not an option; with a second
+		// positional word, xxd writes the output file.
 		pos := 0
 		for _, a := range args {
-			if !strings.HasPrefix(a, "-") {
+			if a == "-" || !strings.HasPrefix(a, "-") {
 				pos++
 			}
 		}
@@ -1109,11 +1249,21 @@ func readFlagsOK(bin string, args []string) bool {
 			return false
 		}
 	case "less", "more", "tree":
+		// Any short option that is not a known read-only switch gates the
+		// command: -o/-O/-a/-k/-P... can write a file, run a program or read a
+		// key file, and clusters ("-ao out") hide the letter after the first.
 		for _, a := range args {
-			switch {
-			case strings.HasPrefix(a, "-o"), strings.HasPrefix(a, "-O"),
-				strings.HasPrefix(a, "--log-file"):
+			if strings.HasPrefix(a, "--") {
+				if strings.HasPrefix(a, "--log-file") || strings.HasPrefix(a, "--output") {
+					return false
+				}
+				continue
+			}
+			if strings.HasPrefix(a, "-") && a != "-" {
 				return false
+			}
+			if strings.HasPrefix(a, "+") {
+				return false // less +CMD runs a command
 			}
 		}
 	case "rg":
@@ -1140,10 +1290,24 @@ func readFlagsOK(bin string, args []string) bool {
 				"-X", "--exec-batch":
 				return false
 			}
+			// Attached and clustered forms ("-xrm", "--exec=rm", "-Hx", "-HIx",
+			// "-fprint=out"): fd and find take these as one argument.
+			if strings.HasPrefix(aa, "--exec") || strings.HasPrefix(aa, "--ok") ||
+				strings.HasPrefix(aa, "-fprint") || strings.HasPrefix(aa, "-fls") {
+				return false
+			}
+			if strings.HasPrefix(aa, "-") && !strings.HasPrefix(aa, "--") && strings.ContainsAny(aa, "xX") {
+				return false // short cluster with an exec letter
+			}
 		}
 	case "yq":
 		for _, a := range args {
-			if a == "-i" || a == "--inplace" || a == "-s" || strings.HasPrefix(a, "--split-exp") {
+			if a == "--inplace" || strings.HasPrefix(a, "--inplace=") || strings.HasPrefix(a, "--split-exp") {
+				return false
+			}
+			// -i in a cluster ("-Pi", "-ie") or -s/-i attached: any short
+			// option letter i or s makes yq write files.
+			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.ContainsAny(a, "is") {
 				return false
 			}
 		}
@@ -1155,14 +1319,30 @@ func readFlagsOK(bin string, args []string) bool {
 			return false
 		}
 	case "date":
+		// -s/--set changes the system clock, also attached ("-s2020", "-us x")
+		// and with "=". Any positional date is refused, because "date 2030..."
+		// is a set form on some implementations.
 		for _, a := range args {
-			if a == "-s" || a == "--set" || strings.HasPrefix(a, "--set=") {
+			if a == "--set" || strings.HasPrefix(a, "--set=") || strings.HasPrefix(a, "--s") {
+				return false
+			}
+			if strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "s") {
+				return false
+			}
+			// A "+FORMAT" word only formats output; any other positional
+			// word is a date to set on some implementations.
+			if !strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "+") {
 				return false
 			}
 		}
 	case "hostname":
+		// Any positional word sets the name; -F/--file reads it from a file.
 		for _, a := range args {
 			if !strings.HasPrefix(a, "-") {
+				return false
+			}
+			if strings.HasPrefix(a, "--file") || strings.HasPrefix(a, "-F") ||
+				(strings.HasPrefix(a, "-") && !strings.HasPrefix(a, "--") && strings.Contains(a, "F")) {
 				return false
 			}
 		}
