@@ -203,12 +203,74 @@ fmt_cost() {
     esac
 }
 
+# csv_field <value>: one CSV cell. Every cell of the results file goes
+# through this function. A CR or LF in the value becomes a space (a result
+# row is one physical line, so line-based readers and "tail -1" stay valid),
+# then RFC 4180 quoting: a value with a comma or a double quote is wrapped in
+# double quotes and its quotes are doubled. The values come from outside (a
+# model name from the config, a version line from the binary, a reason from
+# the result JSON), so none is trusted to be plain.
+csv_field() {
+    _cf=$(printf '%s' "$1" | tr '\r\n' '  ')
+    case "$_cf" in
+        *,*|*\"*)
+            _cf=$(printf '%s' "$_cf" | sed 's/"/""/g')
+            printf '"%s"' "$_cf" ;;
+        *) printf '%s' "$_cf" ;;
+    esac
+}
+
+# csv_line <value>...: the cells joined by commas, one line.
+csv_line() {
+    _cl_first=1
+    for _cl_v in "$@"; do
+        [ "$_cl_first" -eq 1 ] || printf ','
+        _cl_first=0
+        csv_field "$_cl_v"
+    done
+    printf '\n'
+}
+
+# CSV_AWK_LIB: a quote-aware splitter shared by every reader of the results
+# file (POSIX awk only, no gawk extensions). csvsplit(line, arr) fills
+# arr[1..n] with the cells of one line and returns n.
+CSV_AWK_LIB='
+function csvsplit(line, a,    n, i, c, field, inq, L) {
+    n = 0; field = ""; inq = 0; L = length(line)
+    for (i = 1; i <= L; i++) {
+        c = substr(line, i, 1)
+        if (inq) {
+            if (c == "\"") {
+                if (substr(line, i + 1, 1) == "\"") { field = field "\""; i++ }
+                else inq = 0
+            } else field = field c
+        } else if (c == "\"") inq = 1
+        else if (c == ",") { a[++n] = field; field = "" }
+        else field = field c
+    }
+    a[++n] = field
+    return n
+}
+'
+
+# csv_cell <file> <row|last> <col>: one cell of one row (rows count from 1,
+# the header is row 1).
+csv_cell() {
+    awk -v want="$2" -v col="$3" "$CSV_AWK_LIB"'
+        { rows[NR] = $0 }
+        END {
+            r = (want == "last") ? NR : want + 0
+            if (r < 1 || r > NR) exit
+            csvsplit(rows[r], a)
+            print a[col]
+        }' "$1"
+}
+
 # csv_row <task> <run> <result> <exit_reason> <seconds> <result-json>
 # Appends one row to the CSV.
 csv_row() {
     task=$1; run=$2; result=$3; exit_reason=$4; secs=$5; rj=$6
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
-        "$(date +%Y-%m-%d)" "$wakil_version" "$resolved_model" "$task" "$run" "$result" \
+    csv_line "$(date +%Y-%m-%d)" "$wakil_version" "$resolved_model" "$task" "$run" "$result" \
         "$(na "$exit_reason")" "$secs" \
         "$(na "$(json_field "$rj" "tokens_in")")" "$(na "$(json_field "$rj" "tokens_out")")" \
         "$(na "$(json_field "$rj" "tokens_cached")")" \
@@ -550,7 +612,7 @@ find_prev_csv() {
         [ -f "$f" ] || continue
         [ "$f" = "$csv_file" ] && continue
         # Filter by model: the CSV's model is in column 3 ($3).
-        _f_model=$(awk -F, 'NR==2 { print $3 }' "$f" 2>/dev/null)
+        _f_model=$(csv_cell "$f" 2 3 2>/dev/null)
         [ -n "$_want_model" ] && [ "$_f_model" != "$_want_model" ] && continue
         last="$f"
     done
@@ -567,23 +629,25 @@ print_table() {
         printf '  model: %s\n' "$_model"
     fi
     printf '  %-12s %-8s %-12s %-7s %-16s %-8s %-9s %s\n' "task" "result" "exit_reason" "seconds" "tokens in/out" "cached-%" "cost" "tools collapses mashura"
-    awk -F, '
+    awk "$CSV_AWK_LIB"'
         NR == 1 {
-            for (i = 1; i <= NF; i++) col[$i] = i
+            n = csvsplit($0, f)
+            for (i = 1; i <= n; i++) col[f[i]] = i
             next
         }
         {
-            task  = col["task"]        ? $(col["task"])        : "n/a"
-            res   = col["result"]      ? $(col["result"])      : "n/a"
-            ereas = col["exit_reason"] ? $(col["exit_reason"]) : "n/a"
-            secs  = col["seconds"]     ? $(col["seconds"])     : "n/a"
-            tin   = col["tokens_in"]   ? $(col["tokens_in"])   : "n/a"
-            tout  = col["tokens_out"]  ? $(col["tokens_out"])  : "n/a"
-            tcach = col["tokens_cached"] ? $(col["tokens_cached"]) : "n/a"
-            cost  = col["cost_usd"]    ? $(col["cost_usd"])    : "n/a"
-            tools = col["tool_calls"]  ? $(col["tool_calls"])  : "n/a"
-            coll  = col["collapses"]   ? $(col["collapses"])   : "n/a"
-            mash  = col["mashura_rounds"] ? $(col["mashura_rounds"]) : "n/a"
+            csvsplit($0, f)
+            task  = col["task"]        ? f[col["task"]]        : "n/a"
+            res   = col["result"]      ? f[col["result"]]      : "n/a"
+            ereas = col["exit_reason"] ? f[col["exit_reason"]] : "n/a"
+            secs  = col["seconds"]     ? f[col["seconds"]]     : "n/a"
+            tin   = col["tokens_in"]   ? f[col["tokens_in"]]   : "n/a"
+            tout  = col["tokens_out"]  ? f[col["tokens_out"]]  : "n/a"
+            tcach = col["tokens_cached"] ? f[col["tokens_cached"]] : "n/a"
+            cost  = col["cost_usd"]    ? f[col["cost_usd"]]    : "n/a"
+            tools = col["tool_calls"]  ? f[col["tool_calls"]]  : "n/a"
+            coll  = col["collapses"]   ? f[col["collapses"]]   : "n/a"
+            mash  = col["mashura_rounds"] ? f[col["mashura_rounds"]] : "n/a"
 
             cpct = "n/a"
             if (tin != "" && tin != "n/a" && tcach != "" && tcach != "n/a" && (tin + 0) > 0) {
@@ -602,12 +666,14 @@ print_table() {
 # sum_cost <csv>: total cost_usd formatted to 4 decimals (n/a and empty
 # cells contribute 0). Reads cost_usd by header name.
 sum_cost() {
-    awk -F, '
+    awk "$CSV_AWK_LIB"'
         NR == 1 {
-            for (i = 1; i <= NF; i++) if ($i == "cost_usd") c = i
+            n = csvsplit($0, f)
+            for (i = 1; i <= n; i++) if (f[i] == "cost_usd") c = i
             next
         }
-        c > 0 && $c != "n/a" && $c != "" { s += $c }
+        { csvsplit($0, f) }
+        c > 0 && f[c] != "n/a" && f[c] != "" { s += f[c] }
         END { printf "%.4f", s }
     ' "$1"
 }
@@ -770,7 +836,7 @@ EOF
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="" run_one "$task" "self-noop" "$stub_noop"
-        _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+        _row_result=$(csv_cell "$csv_file" last 6)
         [ "$_row_result" = "fail" ] || { echo "self-test FAILED: noop $task: expected fail, got $_row_result" >&2; _fail_count=$((_fail_count + 1)); }
     done
     [ "$_fail_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
@@ -781,7 +847,7 @@ EOF
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="$tasks_dir/$task" run_one "$task" "self-solve" "$stub_solve"
-        _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+        _row_result=$(csv_cell "$csv_file" last 6)
         [ "$_row_result" = "pass" ] || { echo "self-test FAILED: solve $task: expected pass, got $_row_result" >&2; _pass_count=$((_pass_count + 1)); }
     done
     [ "$_pass_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
@@ -822,8 +888,8 @@ EOF
     _dec_task="$(echo "$tasks" | awk '{print $1}')"
     task_idx=1
     BENCH_TASK_DIR="$tasks_dir/$_dec_task" run_one "$_dec_task" "self-declined-pass" "$stub_declined"
-    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
-    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    _row_result=$(csv_cell "$csv_file" last 6)
+    _row_reason=$(csv_cell "$csv_file" last 7)
     if [ "$_row_result" != "pass" ] || [ "$_row_reason" != "declined" ]; then
         echo "self-test FAILED: declined-solve: got result=$_row_result exit_reason=$_row_reason, want pass/declined" >&2
         rm -rf "$tmpdir" "$_self_work_root"
@@ -831,8 +897,8 @@ EOF
     fi
     # Same declined stub WITHOUT copying solution → check.sh must run and record fail + exit_reason=declined.
     BENCH_TASK_DIR="" run_one "$_dec_task" "self-declined-fail" "$stub_declined"
-    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
-    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    _row_result=$(csv_cell "$csv_file" last 6)
+    _row_reason=$(csv_cell "$csv_file" last 7)
     if [ "$_row_result" != "fail" ] || [ "$_row_reason" != "declined" ]; then
         echo "self-test FAILED: declined-noop: got result=$_row_result exit_reason=$_row_reason, want fail/declined" >&2
         rm -rf "$tmpdir" "$_self_work_root"
@@ -883,7 +949,7 @@ EOF
             task_idx=1
             BENCH_CHEAT="$_how" BENCH_CHEAT_DIR="$_cdir" BENCH_CHEAT_PKG="$_cpkg" BENCH_CHEAT_TEST="$_ctest" \
                 BENCH_TASK_DIR="" run_one "$_ct" "self-cheat-$_how" "$stub_cheat"
-            _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
+            _row_result=$(csv_cell "$csv_file" last 6)
             if [ "$_row_result" != "fail" ]; then
                 echo "self-test FAILED: $_ct with a $_how cheat: expected fail, got $_row_result" >&2
                 rm -rf "$tmpdir" "$_self_work_root"
@@ -969,14 +1035,54 @@ EOF
     _rc=0
     _plant_err="$tmpdir/plant.err"
     ( set +e; BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-plant" "$stub_plant" ) 2>"$_plant_err" || _rc=$?
-    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
-    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    _row_result=$(csv_cell "$csv_file" last 6)
+    _row_reason=$(csv_cell "$csv_file" last 7)
     if [ "$_rc" -ne 1 ] || [ "$_row_result" != "error" ] || [ "$_row_reason" != "leak-detected" ]; then
         echo "self-test FAILED: planted solution dir: rc=$_rc result=$_row_result reason=$_row_reason, want 1/error/leak-detected" >&2
         rm -rf "$tmpdir" "$_self_work_root"; exit 1
     fi
     grep -q 'changed files under .*/.wakil' "$_plant_err" || { echo "self-test FAILED: a change under .wakil/ was not reported" >&2; cat "$_plant_err" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  planted solution/ -> error leak-detected; .wakil/ change reported"
+
+    echo "== self-test: CSV cells with a comma, a quote and a newline (model, version) =="
+    # csv_field itself.
+    _nl='
+'
+    for _cse in 'plain|plain' 'a,b|"a,b"' 'say "hi"|"say ""hi"""' 'gpt,"x"|"gpt,""x"""'; do
+        _in=${_cse%%|*}; _want=${_cse#*|}
+        _got=$(csv_field "$_in")
+        [ "$_got" = "$_want" ] || { echo "self-test FAILED: csv_field '$_in' = '$_got', want '$_want'" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    done
+    _got=$(csv_field "line1${_nl}line2")
+    [ "$_got" = "line1 line2" ] || { echo "self-test FAILED: csv_field with a newline = '$_got'" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # A whole row through run_one: the model name carries a comma, a quote and
+    # a newline, the binary's version line a comma and a quote.
+    _saved_model="$model_name"; _saved_resolved="$resolved_model"; _saved_version="$wakil_version"
+    model_name="gpt,\"x\"${_nl}beta"; resolved_model="$model_name"; wakil_version='v1,"rc"'
+    task_idx=1
+    _csv_task="$(echo "$tasks" | awk '{print $1}')"
+    _lines_before=$(wc -l < "$csv_file")
+    BENCH_TASK_DIR="" run_one "$_csv_task" "self-csv" "$stub_noop"
+    model_name="$_saved_model"; resolved_model="$_saved_resolved"; wakil_version="$_saved_version"
+    _lines_after=$(wc -l < "$csv_file")
+    if [ "$((_lines_after - _lines_before))" -ne 1 ]; then
+        echo "self-test FAILED: one run added $((_lines_after - _lines_before)) lines to the CSV, want 1" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    _c_ver=$(csv_cell "$csv_file" last 2); _c_model=$(csv_cell "$csv_file" last 3)
+    _c_task=$(csv_cell "$csv_file" last 4); _c_res=$(csv_cell "$csv_file" last 6)
+    if [ "$_c_ver" != 'v1,"rc"' ] || [ "$_c_model" != 'gpt,"x" beta' ] || [ "$_c_task" != "$_csv_task" ] || [ "$_c_res" != "fail" ]; then
+        echo "self-test FAILED: awkward CSV row read back as version='$_c_ver' model='$_c_model' task='$_c_task' result='$_c_res'" >&2
+        tail -1 "$csv_file" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    if [ "$(tail -1 "$csv_file" | awk -F, '{ print NF }')" -eq 16 ]; then
+        echo "self-test FAILED: the awkward row still splits into 16 plain cells (nothing was quoted)" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    _tbl=$(print_table "$csv_file" "x")
+    printf '%s\n' "$_tbl" | grep -q "$_csv_task" || { echo "self-test FAILED: print_table cannot read the quoted row" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  csv_field and a full row with comma/quote/newline read back intact (16 cells, one line)"
 
     echo "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
     # Use the harness's own timeout path with a short per-run timeout so
@@ -987,8 +1093,8 @@ EOF
     _slow_task="$(echo "$tasks" | awk '{print $1}')"
     BENCH_TASK_DIR="" run_one "$_slow_task" "self-slow" "$stub_slow"
     timeout_sec="$_saved_timeout"
-    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
-    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+    _row_result=$(csv_cell "$csv_file" last 6)
+    _row_reason=$(csv_cell "$csv_file" last 7)
     if [ "$_row_result" != "timeout" ] || [ "$_row_reason" != "timeout" ]; then
         echo "self-test FAILED: slow stub: got result=$_row_result exit_reason=$_row_reason, want timeout/timeout" >&2
         rm -rf "$tmpdir" "$_self_work_root"; exit 1
@@ -1035,9 +1141,9 @@ EOF
     _rc=0
     BENCH_TASK_DIR="$tasks_dir/$_slow_task" run_one "$_slow_task" "self-deaf" "$stub_deaf" || _rc=$?
     timeout_sec="$_saved_timeout"; kill_grace="$_saved_grace"
-    _row_result=$(tail -1 "$csv_file" | awk -F, '{ print $6 }')
-    _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
-    _row_secs=$(tail -1 "$csv_file" | awk -F, '{ print $8 }')
+    _row_result=$(csv_cell "$csv_file" last 6)
+    _row_reason=$(csv_cell "$csv_file" last 7)
+    _row_secs=$(csv_cell "$csv_file" last 8)
     if [ "$_rc" -ne 0 ] || [ "$_row_result" != "timeout" ] || [ "$_row_reason" != "timeout" ]; then
         echo "self-test FAILED: TERM-ignoring stub: rc=$_rc result=$_row_result exit_reason=$_row_reason, want 0/timeout/timeout" >&2
         rm -rf "$tmpdir" "$_self_work_root"; exit 1
@@ -1143,7 +1249,7 @@ EOF
             rm -rf "$tmpdir" "$_self_work_root"
             exit 1
         fi
-        _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+        _row_reason=$(csv_cell "$csv_file" last 7)
         if [ "$_row_reason" != "sandbox-not-acknowledged" ]; then
             echo "self-test FAILED: $_case_name exit_reason=$_row_reason, want sandbox-not-acknowledged" >&2
             rm -rf "$tmpdir" "$_self_work_root"
