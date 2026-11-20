@@ -75,7 +75,12 @@ For each task and run number:
    approved `.wakil/sandbox.json` is never copied or re-created. `.wakil/`
    is added to `.git/info/exclude` so it does not show up as untracked.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
-   agent.
+   agent and before the folder's one commit, so nothing it generates from
+   (a generator, a seed) lands in the folder's git history. A failing
+   `setup.sh` aborts the run (it is not scored as a model failure).
+   Right after the refill a leak guard checks that no `check.sh`,
+   `hidden`, `solution`, `gen`, `setup.sh`, `cmd/gen` or seeded generator
+   is in the folder or in its history; a hit aborts the bench.
 3. `wakil run --auto --allow-destructive --no-memory [--auto-counsel]
    --result-json <file> --transcript <log>` runs with the task text as
    the final argument, under a `timeout` guard (with stdin from
@@ -90,12 +95,22 @@ For each task and run number:
 4. `check.sh` from the task folder runs in the work folder after every
    run that ended (`pass`, `declined`, or `error`); `result` is `pass`
    or `fail` from `check.sh`, and `exit_reason` keeps what the run
-   reported. Only `timeout`, `wrong-workdir` / `missing-workdir`, and
+   reported. `timeout`, `wrong-workdir` / `missing-workdir` /
+   `workdir-not-verifiable`, `leak-detected` and
    `sandbox-not-acknowledged` skip `check.sh`.
-5. **Workdir guard.** After each run, the harness reads the `workdir`
-   field from the result JSON and compares it to the fixed folder. On
-   mismatch the run is marked `error` with `exit_reason=wrong-workdir`
-   and the whole bench stops at once.
+5. **Workdir guard.** After each run, the harness reads `workdir` and
+   `sandbox_backend` from the result JSON (a file under
+   `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/run/<task>.json`, outside
+   the folder the agent can write to) and compares `workdir` to the fixed
+   folder or its `pwd -P` form (hisn reports the symlink-resolved path).
+   A mismatch is `error` / `wrong-workdir`; no `workdir` is `error` /
+   `missing-workdir`. Under the **docker** backend the binary reports a
+   container path (`/mnt/<name>`), which cannot be compared with the host
+   folder: the run is `error` / `workdir-not-verifiable` (the line says
+   `workdir not verifiable (docker)`), so docker cannot be benched until
+   the binary reports a host path. A binary without `sandbox_backend`
+   (older, or a stub) gets the plain comparison. Every guard stop skips
+   `check.sh` and stops the bench at once.
 6. **Post-run "not acknowledged" / "has not been approved" detection.**
    When a run ends with either sandbox approval error, the exit reason is
    `sandbox-not-acknowledged` and the bench stops with the folder and the
@@ -103,21 +118,56 @@ For each task and run number:
    before any workdir guard message. The harness never runs `wakil sandbox
    trust` itself — only `--setup` prints the commands for the user.
 
-The task's `check.sh`, `hidden/` files and `solution/` reference result
-are **never** copied into the work folder: the agent cannot pass by
-reading or editing the check. After each run the harness also verifies
-the work folder does not contain any of them and reports a leak if it
-does.
+The task's `check.sh`, `hidden/` files, `solution/` reference result and
+`setup.sh` are **never** copied into the work folder: the agent cannot pass
+by reading or editing the check. After each run the harness also verifies
+(by file existence only; the folder's `.git` is agent-controlled after the
+run) that the work folder does not contain `check.sh`, `hidden` or
+`solution`, and reports `leak-detected` if it does.
 
-Model selection follows what `wakil run` offers (see Part 1 of the task
-spec): there is no per-run `--model` flag, so `--model` sets `WAKIL_MODEL`
-in the subprocess environment only — `WAKIL_MODEL` overrides the config
-file's model (`internal/config/endpoint_test.go: TestWakilModelEnvOverridesEndpointModel`).
+**Timeouts.** `timeout -k` ends a run that ignores TERM with exit 137 after
+a grace period (`BENCH_KILL_GRACE`, default 10 seconds). Exit 124 and exit
+137 are both `result=timeout`; the result JSON and transcript of such a run
+are not trusted (they are agent-controlled, and a hung run may have left a
+`pass` in them), and neither the workdir guard nor `check.sh` runs. A 137
+that arrives before the deadline is a kill from outside (for example the OOM
+killer); it is also `timeout`, with `exit_reason=killed`.
 
-Mashura level: `off` passes no counsel flag; `low`, `medium` and `high`
-pass `--auto-counsel` (the only per-run counsel flag `wakil run` has).
-`--no-oracle` is plan-mode-only in the current driver, so it is not
-used here.
+**Parallel runs.** One `flock` per task
+(`${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/locks/<task>.lock`, outside the
+work folder) is held from before the folder is emptied until the run ends.
+A second bench on the same task prints `task <t> is already being run by
+another bench`, exits 75, writes no CSV row and leaves the folder alone.
+Different tasks can run in parallel. The harness refuses to run without
+`flock`; it also requires `jq`, `timeout`, `sha256sum` and `git`.
+
+**Fake passes.** The Go tasks (`fix-test`, `rename`) never run the agent's
+tree. `check.sh` (via `bench/lib/gocheck.sh`) works on a clean copy of the
+work folder (no `.git`, no `.wakil`): it refuses symlinks, `go.work` and
+`vendor/`; deletes every `*_test.go` and `testdata/` (the agent's tests are
+ignored, not penalised); restores the task's reference `go.mod` and drops
+`go.sum`; refuses any non-test package that imports outside a per-task
+allow-list of standard-library packages (so agent code cannot reach `os`,
+`syscall`, `runtime`, `unsafe`, `embed` or cgo, and cannot call `os.Exit`) or
+that carries assembly, C or cgo files; copies the task's `hidden/` tests in
+and runs them with a fixed Go environment (`GOFLAGS=-buildvcs=false`,
+`GOWORK=off`, `GOENV=off`, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`,
+`GOPROXY=off`). The test run must exit 0, print no `--- FAIL`, and print a
+`--- PASS: <name>` line for every named hidden test. The self-test covers a
+`TestMain` that exits 0 and an `init()` that prints a `PASS` line and exits,
+on both Go tasks (each must score `fail`).
+
+Every CSV cell is written by one quoting function (RFC 4180: a value with a
+comma or a double quote is quoted and its quotes doubled; a CR or LF becomes
+a space so a row stays one line), and the table, cost and "earlier run"
+readers use a quote-aware reader, so a model name such as `a,"b"` is safe.
+
+The `seconds` column is the wall-clock time of the whole `wakil` process
+(bootstrap included), measured by the harness around the process; it has
+been so since the harness was written. The `seconds` field of
+`--result-json` also includes bootstrap since `44fa662` (before that it
+started after bootstrap); the CSV never used it, so CSVs from before
+`44fa662` are comparable on time with later ones.
 
 Each run's CSV row carries the *resolved* model from the run's
 `--result-json` when the binary reports one, so the CSV names the model
@@ -140,16 +190,47 @@ are `n/a`: the harness also works with a binary that lacks
 scripts/bench.sh --self-test
 ```
 
-Runs every task against stub `wakil` binaries (no model involved):
-a stub that changes nothing (every task must report `fail`), a stub that
-copies the task's `solution/` into the work folder (every task must
-report `pass`), a stub that sleeps past the timeout (reported as
-`timeout`), a stub that reports a wrong workdir (must stop the bench
-with `wrong-workdir`), a freshness check (a marker file left by run 1
-is gone after the folder is emptied and refilled), and a path-stability
-check (the work folder path is identical across runs). The same run
-also asserts that `check.sh`, `hidden/` and `solution` never exist in
-the work folder during the run.
+Runs every task against stub `wakil` binaries. It needs no model, no
+sandbox and no network (only the local Go toolchain, for the Go task
+checks). Output (CSV and logs) goes to
+`${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/selftest/`, never into the
+repo, and the run asserts that nothing under `bench/results/` changed.
+Cases: a stub that changes nothing (every task must report `fail`); a
+stub that copies the task's `solution/` into the work folder (every task
+must report `pass`); declined runs; agent-written test code that tries to
+fake a pass; no generator, seed or check in the `long-read` folder or its
+history, and `leak_check` refusing every leak kind; a planted `solution/`
+(`leak-detected`); a model name and version with a comma, quote and newline
+(CSV); a held task lock (exit 75, folder untouched); a stub that sleeps past
+the timeout and one that ignores TERM (both `timeout`, no `check.sh`); the
+workdir guard for docker, hisn (plain and symlinked), direct and a binary
+without `sandbox_backend`; wrong and missing workdir; the two sandbox
+approval wordings; folder freshness, `.wakil/` preservation and path
+stability.
+
+CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
+`bench/tasks/*/*.sh` and `bench/lib/*.sh` (job `bench-harness`);
+`scripts/host_verify.sh` runs both as `bench-selftest` and
+`bench-shellcheck` (a visible `SKIP` line when shellcheck is not installed).
+
+## Known limits
+
+- `long-read` can be solved by writing a script that scans the files
+  instead of reading them. The task is not redesigned for that: it measures
+  how the agent handles a lot of text, and a script is a legitimate way to
+  do it. Its generator and seed stay outside the work folder, so the
+  expected answer cannot be derived from anything the agent can read.
+- `check.sh` runs on the host, unsandboxed, and executes the agent's
+  non-test code when the hidden test imports the package. The static checks
+  above stop the known ways to fake a pass; code that reads the hidden test
+  source at runtime is not stopped.
+- With the `direct` backend the agent can read `bench/tasks/*/check.sh` by
+  absolute path. With hisn or docker the repo is not mounted.
+- `.wakil/` in a work folder is preserved between runs (the approval lives
+  there) and the agent can write to it. The harness never writes into it; it
+  prints a warning when a run changed a file under it.
+- Agent processes that survive a KILL are not hunted down.
+- Docker cannot be benched (`workdir-not-verifiable`, see above).
 
 ## Adding a task
 
