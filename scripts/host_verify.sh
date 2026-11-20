@@ -207,6 +207,17 @@ else
   skip=$((skip+1))
 fi
 
+# --- 8b. bench harness: shellcheck + self-test ---
+# The self-test runs against stub binaries only (no model, no sandbox, no
+# network) and writes into a temp XDG_CACHE_HOME, never the user's cache.
+if command -v shellcheck >/dev/null 2>&1; then
+  check bench-shellcheck sh -c 'shellcheck -s sh scripts/bench.sh bench/tasks/*/*.sh bench/lib/*.sh'
+else
+  echo "SKIP  bench-shellcheck (shellcheck not installed)"
+  skip=$((skip+1))
+fi
+check bench-selftest sh -c 'mkdir -p "$TMPROOT/bench-cache" && XDG_CACHE_HOME="$TMPROOT/bench-cache" sh scripts/bench.sh --self-test'
+
 # --- 9. DefaultConfig diff ---
 check default-config-diff sh -c '
   git show "$base_ref":internal/config/config.go > "$TMPROOT/master_config.go"

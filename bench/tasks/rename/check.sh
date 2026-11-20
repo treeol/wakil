@@ -4,7 +4,7 @@
 # tests are dropped, go.mod restored, imports restricted) — see
 # bench/lib/gocheck.sh.
 set -eu
-tdir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+tdir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=../../lib/gocheck.sh
 . "$tdir/../../lib/gocheck.sh"
 gocheck_prepare "$tdir" "errors fmt math strconv"

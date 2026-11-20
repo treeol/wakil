@@ -226,6 +226,36 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  # Bench harness (scripts/bench.sh, bench/): shellcheck on every script, then
+  # the self-test. The self-test runs against stub "wakil" binaries only: no
+  # model, no sandbox, no network (the local Go toolchain runs the task checks).
+  # shellcheck ships on ubuntu-latest; the job fails when it does not.
+  bench-harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+
+      - name: shellcheck is installed
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            echo "shellcheck is required for the bench harness check but is not installed"
+            exit 1
+          fi
+          shellcheck --version
+
+      - name: shellcheck scripts/bench.sh and bench/
+        run: shellcheck -s sh scripts/bench.sh bench/tasks/*/*.sh bench/lib/*.sh
+
+      - name: bench self-test
+        run: scripts/bench.sh --self-test
+
   hisn-integration:
     name: real-hisn integration (skips cleanly without hisn)
     runs-on: ubuntu-latest

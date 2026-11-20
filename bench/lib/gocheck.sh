@@ -27,9 +27,8 @@ gocheck_fail() {
 
 # gocheck_prepare <task-dir> "<allowed stdlib imports, space separated>"
 gocheck_prepare() {
-    GC_TDIR=$(CDPATH= cd -- "$1" && pwd) || exit 1
+    GC_TDIR=$(CDPATH='' cd -- "$1" && pwd) || exit 1
     GC_ALLOW=$2
-    GC_SRC=$(pwd)
     GC_TMP=$(mktemp -d "${TMPDIR:-/tmp}/bench-check.XXXXXX") || exit 1
     trap 'rm -rf "$GC_TMP"' EXIT
 

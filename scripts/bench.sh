@@ -92,8 +92,8 @@ while [ $# -gt 0 ]; do
 done
 
 # Repo root (the directory containing this script's parent).
-script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
-repo_root=$(CDPATH= cd -- "$script_dir/.." && pwd)
+script_dir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(CDPATH='' cd -- "$script_dir/.." && pwd)
 bench_dir="$repo_root/bench"
 tasks_dir="$bench_dir/tasks"
 results_dir="$bench_dir/results"
@@ -113,10 +113,18 @@ lock_root="$cache_home/wakil-bench/locks"
 # exit_reason) or replaced by a symlink the host-side wakil would then follow.
 run_root="$cache_home/wakil-bench/run"
 
-# Metric columns come from jq parsing of the per-run result JSON; without
-# jq they are honestly n/a, but say so once rather than per row.
-if ! command -v jq >/dev/null 2>&1; then
-    echo "$prog: warning: jq not found — metric columns (tokens, cost, counts) will be n/a" >&2
+# Tools the harness cannot work without. jq reads the result JSON (without it
+# the workdir guard sees no workdir and every run would stop as
+# "missing-workdir"), flock guards the work folders, timeout bounds each run,
+# sha256sum digests .wakil/, git builds the work folder's commit. Checked up
+# front so the failure names the tool instead of surfacing run by run.
+missing_tools=""
+for _t in jq flock timeout sha256sum git; do
+    command -v "$_t" >/dev/null 2>&1 || missing_tools="$missing_tools $_t"
+done
+if [ -n "$missing_tools" ]; then
+    echo "$prog: required tool(s) not found:$missing_tools" >&2
+    exit 1
 fi
 
 csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds'
@@ -168,6 +176,7 @@ fi
 [ -n "$tasks" ] || { echo "$prog: no tasks found in $tasks_dir" >&2; exit 1; }
 
 # Total task count for progress lines ([i/N]).
+# shellcheck disable=SC2086 # word splitting is the point: $tasks is a space-separated list of task names
 set -- $tasks
 total_tasks=$#
 task_idx=0
@@ -1556,6 +1565,7 @@ EOF
         rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
+    # shellcheck disable=SC2016 # the pattern is a literal "$0.0012" for grep, not a shell expansion
     if ! printf '%s\n' "$_tbl_out" | grep -q '\$0\.0012'; then
         echo "self-test FAILED: print_table cost not formatted with 4 decimals (\$0.0012)" >&2
         printf '%s\n' "$_tbl_out" >&2
