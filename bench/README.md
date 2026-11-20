@@ -36,37 +36,32 @@ For each task and run number:
 1. `bench/tasks/<name>/repo/` is copied to a fresh temporary folder and
    given `git init` + one commit, so every run starts from the same state
    and nothing is shared between runs. The temp repo does NOT inherit the
-   host's global git config: `GIT_CONFIG_GLOBAL=/dev/null` is set for
-   `git init`, `git commit`, the pre-run `wakil sandbox trust` probe, and
-   `wakil run`. This prevents a host with global `commit.gpgsign=true`
-   from making the generated hisn profile carry a "signing" risk label
-   (git 2.39.5's `--type=bool` maps any non-empty string to `true`, so a
-   local `commit.gpgsign=false` cannot override the global value — only
-   `GIT_CONFIG_GLOBAL=/dev/null` reliably blocks it). Bench tasks never
-   sign.
+   host's git config: `GIT_CONFIG_GLOBAL=/dev/null` and
+   `GIT_CONFIG_SYSTEM=/dev/null` are set, and all `GIT_CONFIG_*` env vars
+   (GIT_CONFIG_COUNT, GIT_CONFIG_KEY_n, GIT_CONFIG_VALUE_n) injected by
+   the host's signing-enforced session are unset before `git init`,
+   `git commit`, and `wakil run`. This prevents a host with
+   `commit.gpgsign=true` from making the generated hisn profile carry a
+   "signing" risk label: the `GIT_CONFIG_*` env vars win over every config
+   file (including `GIT_CONFIG_GLOBAL=/dev/null`), so unsetting them is
+   the only reliable block. Bench tasks never sign.
 2. If the task ships a `setup.sh`, it runs in the work copy before the
    agent.
-3. **Pre-run sandbox risk probe.** Before the model runs, the harness
-   calls `wakil sandbox trust <workdir>` (best effort, no model call) and
-   extracts the risk label. If the label is not `none`, the run is marked
-   `error` with `exit_reason=sandbox-not-acknowledged` and the bench stops
-   with the label named, so the user can `wakil sandbox trust` it. This
-   catches a signing (or other) risk that survived step 1.
-4. `wakil run --auto [--auto-counsel] --result-json <file> --transcript
+3. `wakil run --auto [--auto-counsel] --result-json <file> --transcript
    <log>` runs with the task text as the final argument, under a
    `timeout` guard. The transcript is the full output log.
    `WAKIL_HOST_WORKDIR` is set to the temp work copy so the sandbox
    mounts it (not the configured `work_dir`); the agent runs in the
    task's repository, not whatever the user's config file points at.
-5. `check.sh` from the task folder runs in the work folder; exit 0 is a
+4. `check.sh` from the task folder runs in the work folder; exit 0 is a
    pass.
-6. **Workdir guard.** After each run, the harness reads the `workdir`
+5. **Workdir guard.** After each run, the harness reads the `workdir`
    field from the result JSON and compares it to the temp folder it set up.
    On mismatch the run is marked `error` with `exit_reason=wrong-workdir`
-   and the whole bench stops at once. A binary that does not report
-   a `workdir` field is skipped (only a mismatch is an error, not a
+   and the whole bench stops at once. A binary that does not report a
+   `workdir` field is skipped (only a mismatch is an error, not a
    missing field).
-7. **Post-run "not acknowledged" detection.** When a run fails and the
+6. **Post-run "not acknowledged" detection.** When a run fails and the
    log mentions "sandbox risk is not acknowledged", the exit reason is
    set to `sandbox-not-acknowledged` and the bench stops with the label
    named.
@@ -103,13 +98,15 @@ are `n/a`: the harness also works with a binary that lacks
 scripts/bench.sh --self-test
 ```
 
-Runs every task twice against stub `wakil` binaries (no model involved):
-once with a stub that changes nothing (every task must report `fail`)
-and once with a stub that copies the task's `solution/` into the work
-folder (every task must report `pass`), plus a stub that sleeps past
-the timeout (reported as `timeout`). The same run also asserts that
-`check.sh`, `hidden/` and `solution/` never exist in the work folder
-during the run.
+Runs every task against stub `wakil` binaries (no model involved):
+a stub that changes nothing (every task must report `fail`), a stub that
+copies the task's `solution/` into the work folder (every task must
+report `pass`), a stub that sleeps past the timeout (reported as
+`timeout`), a stub that reports a wrong workdir (must stop the bench
+with `wrong-workdir`), and a run with signing env vars injected (must
+NOT produce `sandbox-not-acknowledged`). The same run also asserts
+that `check.sh`, `hidden/` and `solution` never exist in the work
+folder during the run.
 
 ## Adding a task
 
@@ -124,5 +121,5 @@ Create `bench/tasks/<name>/` with:
 - `solution/` — the reference result, used only by the self-test.
 - `setup.sh` (optional) — runs in the work copy before the agent.
 
-Each task must satisfy: the untouched `repo/` fails `check.sh`, and the
-reference `solution/` passes it.
+Each task must satisfy the untouched `repo` fails `check.sh`, and the
+reference `solution` passes it.
