@@ -72,6 +72,7 @@ while [ $# -gt 0 ]; do
         --timeout)
             [ $# -ge 2 ] || { echo "$prog: --timeout requires a number" >&2; exit 2; }
             case "$2" in *[!0-9]*|'') echo "$prog: --timeout must be a positive integer (got $2)" >&2; exit 2 ;; esac
+            [ "$2" -ge 1 ] || { echo "$prog: --timeout must be >= 1" >&2; exit 2; }
             timeout_sec="$2"; shift 2 ;;
         --mashura)
             [ $# -ge 2 ] || { echo "$prog: --mashura requires a level" >&2; exit 2; }
@@ -129,6 +130,12 @@ wakil_version="$("$wakil_bin" version 2>/dev/null | head -n 1 | tr -d '\r' || ec
 
 # Task list.
 if [ -n "$only_task" ]; then
+    # Validate --task against the list of task folder names so a typo
+    # cannot make do_setup or prep_workdir run rm -rf on an arbitrary path.
+    if [ ! -d "$tasks_dir/$only_task" ]; then
+        echo "$prog: --task: no task named '$only_task' in $tasks_dir" >&2
+        exit 2
+    fi
     tasks="$only_task"
 else
     tasks=""
@@ -229,7 +236,12 @@ prep_workdir() {
         printf '.wakil/\n' >> .git/info/exclude
         git add -A
         git commit -qm "bench task $task"
-    ) 2>/dev/null || true
+    ) 2>/dev/null
+    _prep_rc=$?
+    if [ "$_prep_rc" -ne 0 ]; then
+        echo "$prog: prep_workdir: git init or commit failed for $task in $workdir (exit $_prep_rc) — aborting" >&2
+        return 1
+    fi
 
     # Optional setup hook (task-level setup.sh, runs in the work copy
     # before the agent). The hook's own location is the task dir; it
@@ -249,7 +261,7 @@ run_one() {
     tdir="$tasks_dir/$task"
     workdir="$work_root/$task"
 
-    prep_workdir "$task"
+    prep_workdir "$task" || return 1
 
     task_text=$(cat "$tdir/task.txt")
     result_json="$workdir/.bench-result.json"
@@ -278,20 +290,32 @@ run_one() {
     # elapsed time every 30s (only when stdout is a terminal), so a long
     # task does not look hung. Nothing extra when output is piped or
     # redirected. Skipped when the timeout is too short for a heartbeat.
+    # The heartbeat runs in the background so it does not inflate the
+    # recorded duration; wait in the foreground captures the real exit
+    # code and the real elapsed time.
     if [ "$is_tty" -eq 1 ] && [ "$timeout_sec" -gt 30 ]; then
-        while :; do
-            sleep 30
-            kill -0 "$run_pid" 2>/dev/null || break
-            now=$(date +%s)
-            elapsed=$((now - start_epoch))
-            printf '[%d/%d] %s (run %s/%d) … %ds elapsed\n' \
-                "$task_idx" "$total_tasks" "$task" "$run" "$runs" "$elapsed"
-        done
+        (
+            while kill -0 "$run_pid" 2>/dev/null; do
+                sleep 30
+                kill -0 "$run_pid" 2>/dev/null || break
+                now=$(date +%s)
+                elapsed=$((now - start_epoch))
+                printf '[%d/%d] %s (run %s/%d) … %ds elapsed\n' \
+                    "$task_idx" "$total_tasks" "$task" "$run" "$runs" "$elapsed"
+            done
+        ) &
+        hb_pid=$!
     fi
 
     wait "$run_pid"
     wak_rc=$?
     set -e
+    # Kill the heartbeat if it is still running (timeout may have killed
+    # the run before the heartbeat's kill -0 saw it).
+    if [ -n "${hb_pid:-}" ]; then
+        kill "$hb_pid" 2>/dev/null || true
+        wait "$hb_pid" 2>/dev/null || true
+    fi
     end_epoch=$(date +%s)
     secs=$((end_epoch - start_epoch))
     cat "$log_file.out" >> "$log_file" 2>/dev/null || true
@@ -329,10 +353,15 @@ run_one() {
     # Post-run "not acknowledged" detection: when the run failed and the
     # log mentions the sandbox risk error, the exit reason is
     # sandbox-not-acknowledged and the bench stops with the label named.
-    if [ "$result" != "pass" ] && [ -z "$exit_reason" ]; then
-        if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null; then
-            result="error"
-            exit_reason="sandbox-not-acknowledged"
+    # The gate also fires when exit_reason is "error" (the binary writes
+    # "error" on bootstrap failure, which overwrites the empty-string
+    # gate and suppresses the scan).
+    if [ "$result" != "pass" ]; then
+        if [ -z "$exit_reason" ] || [ "$exit_reason" = "error" ]; then
+            if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null; then
+                result="error"
+                exit_reason="sandbox-not-acknowledged"
+            fi
         fi
     fi
 
@@ -439,20 +468,7 @@ do_setup() {
     for task in $tasks; do
         tdir="$tasks_dir/$task"
         workdir="$work_root/$task"
-        rm -rf "$workdir"
-        mkdir -p "$workdir"
-        cp -R "$tdir/repo/." "$workdir/"
-        (
-            cd "$workdir"
-            git init -q
-            git config user.name "wakil-bench"
-            git config user.email "bench@localhost"
-            git add -A
-            git commit -qm "bench task $task"
-        ) 2>/dev/null || true
-        if [ -x "$tdir/setup.sh" ]; then
-            ( cd "$workdir" && "$tdir/setup.sh" ) >/dev/null 2>&1 || true
-        fi
+        prep_workdir "$task" || return 1
         echo "wakil sandbox trust $workdir"
     done
     echo
