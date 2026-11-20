@@ -100,7 +100,7 @@ func TestMidTurnCollapseFiresInsideLongTurn(t *testing.T) {
 // the case where the repeat guard used to compare the wrong index.
 func buildRepeatCollapseApp(t *testing.T, rounds int) (*App, *strings.Builder) {
 	t.Helper()
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	isolateToolCache(t)
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.SetContextMode("long-session")
 	app.curTurn, app.turnSeq = 1, 1
@@ -113,7 +113,7 @@ func buildRepeatCollapseApp(t *testing.T, rounds int) (*App, *strings.Builder) {
 	for i := 1; i <= rounds; i++ {
 		id := fmt.Sprintf("c%d", i)
 		app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: id, Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}})
-		app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("small\n", 50))})
+		app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("small line of tool output\n", 60))})
 	}
 	return app, out
 }
@@ -166,11 +166,12 @@ func TestMidTurnCollapseTwoRealAdvancesGiveTwo(t *testing.T) {
 	if got := app.midTurnCollapses; got != 1 {
 		t.Fatalf("first collapse: midTurnCollapses = %d, want 1", got)
 	}
-	// One new completed round moves the boundary once. Each further pass
-	// with no new round must add nothing.
-	id := "c7"
+	// One new completed round moves the boundary once. A further pass with
+	// no new round must add nothing. The new call ID must be unique in the
+	// conversation: the record resolves its anchor by ID.
+	id := "c13"
 	app.appendConv(proxy.Message{Role: "assistant", ToolCalls: []proxy.ToolCall{{ID: id, Function: proxy.FunctionCall{Name: "read_file", Arguments: `{"path":"a.go"}`}}}})
-	app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("small\n", 50))})
+	app.appendConv(proxy.Message{Role: "tool", ToolCallID: id, Name: "read_file", Content: StrPtr(strings.Repeat("small line of tool output\n", 60))})
 	app.collapseMidTurnPrefix()
 	app.collapseMidTurnPrefix()
 	if got := app.midTurnCollapses; got != 2 {
