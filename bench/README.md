@@ -36,9 +36,9 @@ scripts/bench.sh --setup
 ```
 
 Creates all task work folders and prints, per folder, the exact
-`wakil sandbox trust <path>` command the user must run once. The
-harness itself never runs that command and never reads from the
-terminal. The acknowledgement is keyed on:
+`WAKIL_HOST_WORKDIR=<path> wakil sandbox trust` command the user must
+run once. The harness itself never runs that command and never reads
+from the terminal. The acknowledgement is keyed on:
 
 1. **Path** — `sha256(canonicalWorkspace(path))` in
    `internal/agent/workspace.go:44` (`workspaceKey`). A stable path
@@ -58,7 +58,7 @@ the harness deletes everything inside the folder except `.wakil/` —
 so the approved `.wakil/sandbox.json` stays in place and its hash is
 stable. If the risk label changes (different hisn version, different
 config), the content changes, the hash changes, and the approval is
-invalid — the user must re-acknowledge with `wakil sandbox trust <path>`.
+invalid — the user must re-acknowledge with `WAKIL_HOST_WORKDIR=<path> wakil sandbox trust`.
 
 ## How a run works
 
@@ -89,12 +89,12 @@ For each task and run number:
    field from the result JSON and compares it to the fixed folder. On
    mismatch the run is marked `error` with `exit_reason=wrong-workdir`
    and the whole bench stops at once.
-6. **Post-run "not acknowledged" detection.** When a run ends with the
-   "not acknowledged" error, the exit reason is
-   `sandbox-not-acknowledged` and the bench stops with the label, the
-   folder, and the one `wakil sandbox trust` command to run. The
-   harness never runs `wakil sandbox trust` itself — only `--setup`
-   prints the commands for the user.
+6. **Post-run "not acknowledged" / "has not been approved" detection.**
+   When a run ends with either sandbox approval error, the exit reason is
+   `sandbox-not-acknowledged` and the bench stops with the folder and the
+   one `WAKIL_HOST_WORKDIR=<path> wakil sandbox trust` command to run,
+   before any workdir guard message. The harness never runs `wakil sandbox
+   trust` itself — only `--setup` prints the commands for the user.
 
 The task's `check.sh`, `hidden/` files and `solution/` reference result
 are **never** copied into the work folder: the agent cannot pass by

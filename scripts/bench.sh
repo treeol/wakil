@@ -40,7 +40,7 @@ usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
   --mashura LEVEL   auto-counsel: off|low|medium|high (default: off)
   --self-test       run every task against stub wakil binaries
   --setup           create all task work folders and print the one
-                    'wakil sandbox trust <path>' command per folder
+                    'WAKIL_HOST_WORKDIR=<path> wakil sandbox trust' command per folder
 USAGE
 }
 
@@ -361,15 +361,16 @@ run_one() {
     fi
     exit_reason=$(json_field "$result_json" "exit_reason")
 
-    # Post-run "not acknowledged" detection: when the run failed and the
-    # log mentions the sandbox risk error, the exit reason is
-    # sandbox-not-acknowledged and the bench stops with the label named.
+    # Post-run "not acknowledged" / "has not been approved" detection: when
+    # the run failed and the log mentions either sandbox approval error, the
+    # exit reason is sandbox-not-acknowledged and the bench stops with the
+    # folder and the one command to run, BEFORE any workdir guard message.
     # The gate also fires when exit_reason is "error" (the binary writes
-    # "error" on bootstrap failure, which overwrites the empty-string
-    # gate and suppresses the scan).
+    # "error" on bootstrap failure).
     if [ "$result" != "pass" ]; then
         if [ -z "$exit_reason" ] || [ "$exit_reason" = "error" ]; then
-            if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null; then
+            if grep -q "sandbox risk is not acknowledged" "$log_file" 2>/dev/null || \
+               grep -q "has not been approved" "$log_file" 2>/dev/null; then
                 result="error"
                 exit_reason="sandbox-not-acknowledged"
             fi
@@ -379,13 +380,12 @@ run_one() {
     csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
 
     # A sandbox-not-acknowledged result is a harness-level error, not a
-    # model failure: stop the whole bench and name the label and the
-    # one command to run. The label was detected by the post-run log
-    # scan above. This check runs before the workdir guard so the
-    # "not acknowledged" message prints first.
+    # model failure: stop the whole bench and name the folder and the one
+    # command to run. This check runs before the workdir guard so the
+    # "not approved / not acknowledged" message prints first.
     if [ "$exit_reason" = "sandbox-not-acknowledged" ]; then
-        echo "$prog: bench stopped — task $task run $run: sandbox risk is not acknowledged in $workdir" >&2
-        echo "  run 'wakil sandbox trust $workdir' to review and acknowledge it" >&2
+        echo "$prog: bench stopped — task $task run $run: sandbox approval required for $workdir" >&2
+        echo "  run: WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust" >&2
         return 1
     fi
 
@@ -487,15 +487,16 @@ run_all() {
 
 # ---- --setup ---------------------------------------------------------------
 # Creates all task work folders and prints, per folder, the exact
-# 'wakil sandbox trust <path>' command the user must run once. The
-# harness itself never runs that command and never reads from the
-# terminal.
+# 'WAKIL_HOST_WORKDIR=<path> wakil sandbox trust' command the user must run
+# once (works with any binary, including older ones where positional <path>
+# did not override config host_work_dir). The harness itself never runs that
+# command and never reads from the terminal.
 do_setup() {
     for task in $tasks; do
         tdir="$tasks_dir/$task"
         workdir="$work_root/$task"
         prep_workdir "$task" || return 1
-        echo "wakil sandbox trust $workdir"
+        echo "WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust"
     done
     echo
     echo "Run each command above once. The acknowledgement is keyed on the"
@@ -708,6 +709,66 @@ EOF
         exit 1
     fi
     echo "  missing-workdir guard fired correctly (bench stopped with exit 1)"
+
+    echo "== self-test: sandbox approval error detection (both wordings, before workdir guard) =="
+    for _msg_case in "not-ack:sandbox risk is not acknowledged (label signing)" "not-approved:.wakil/sandbox.json has not been approved (or changed since)"; do
+        _case_name=${_msg_case%%:*}
+        _case_msg=${_msg_case#*:}
+        stub_unapproved="$tmpdir/wakil-$_case_name"
+        cat > "$stub_unapproved" <<EOF
+#!/bin/sh
+case "\$1" in
+  version) echo "stub-$_case_name/0.0.0" ;;
+  run)
+    shift
+    workdir=""
+    while [ \$# -gt 0 ]; do
+      case "\$1" in
+        --result-json) workdir=\$(dirname "\$2"); shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    echo "executor error: $_case_msg" >&2
+    cat > "\$workdir/.bench-result.json" <<JSON
+{"wakil_version":"stub-$_case_name/0.0.0","model":"stub","exit_reason":"error","seconds":0.0}
+JSON
+    exit 3 ;;
+esac
+EOF
+        chmod +x "$stub_unapproved"
+        _saved_timeout="$timeout_sec"
+        timeout_sec=5
+        task_idx=1
+        _err_out="$tmpdir/unapproved-$_case_name.err"
+        _rc=0
+        ( set +e; BENCH_TASK_DIR="" run_one "$(echo "$tasks" | awk '{print $1}')" "self-$_case_name" "$stub_unapproved" ) 2>"$_err_out" || _rc=$?
+        timeout_sec="$_saved_timeout"
+        if [ "$_rc" -ne 1 ]; then
+            echo "self-test FAILED: $_case_name did not stop the bench (exit=$_rc)" >&2
+            rm -rf "$tmpdir" "$_self_work_root"
+            exit 1
+        fi
+        _row_reason=$(tail -1 "$csv_file" | awk -F, '{ print $7 }')
+        if [ "$_row_reason" != "sandbox-not-acknowledged" ]; then
+            echo "self-test FAILED: $_case_name exit_reason=$_row_reason, want sandbox-not-acknowledged" >&2
+            rm -rf "$tmpdir" "$_self_work_root"
+            exit 1
+        fi
+        if ! grep -q "WAKIL_HOST_WORKDIR=.* wakil sandbox trust" "$_err_out"; then
+            echo "self-test FAILED: $_case_name did not print WAKIL_HOST_WORKDIR=<path> wakil sandbox trust" >&2
+            cat "$_err_out" >&2
+            rm -rf "$tmpdir" "$_self_work_root"
+            exit 1
+        fi
+        if grep -q "MISSING WORKDIR" "$_err_out"; then
+            echo "self-test FAILED: $_case_name printed MISSING WORKDIR before sandbox approval stop" >&2
+            cat "$_err_out" >&2
+            rm -rf "$tmpdir" "$_self_work_root"
+            exit 1
+        fi
+    done
+    echo "  sandbox approval stop OK (both wordings caught before workdir guard)"
 
     echo "== self-test: fixed-path freshness (expect marker gone in run 2) =="
     # Run 1 leaves a marker file; run 2 must not see it (the folder is
