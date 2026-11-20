@@ -266,15 +266,17 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// the model never sees them and cannot read or write per-project
 	// memory (bench: no carry-over between runs). MemoryStore is also
 	// nil (see below), so the preamble skips the memory digest and
-	// retrieveMemoryContext returns "".
+	// retrieveMemoryContext returns "". The tool names are derived
+	// from wtools.MemoryTools() (the single source) so the filter
+	// cannot drift if tools are renamed.
 	if opts.NoMemory {
+		memNames := make(map[string]bool)
+		for _, t := range wtools.MemoryTools() {
+			memNames[t.Function.Name] = true
+		}
 		filtered := app.Tools[:0]
 		for _, t := range app.Tools {
-			name := t.Function.Name
-			if name == "memory_put" || name == "memory_get" || name == "memory_search" ||
-				name == "memory_list" || name == "memory_forget" ||
-				name == "memory_promote" || name == "memory_reject" ||
-				name == "memory_promote_from_staging" {
+			if memNames[t.Function.Name] {
 				continue
 			}
 			filtered = append(filtered, t)
