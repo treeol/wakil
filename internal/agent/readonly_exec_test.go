@@ -178,3 +178,51 @@ func TestShellClassifierReadOnlyCorpusDoesNotWrite(t *testing.T) {
 	}
 	t.Logf("ran %d read-only corpus commands, skipped %d", ran, skipped)
 }
+
+// TestSedBracketReadOnlyFormsDoNotWrite runs, under real bash in a seeded temp
+// directory, every sed form the classifier calls read-only that holds a
+// bracket expression, and asserts the directory is unchanged. It also asserts
+// the classifier agrees these forms are read-only, so the list cannot rot.
+func TestSedBracketReadOnlyFormsDoNotWrite(t *testing.T) {
+	if testing.Short() {
+		t.Skip("runs real commands; skipped in -short")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not found")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("refusing to run commands as root")
+	}
+	for _, cmd := range []string{
+		`sed -n '/[a-z]/p' f`,
+		`sed 's/[0-9]//' f`,
+		`sed -n '/[^a-z]/p' f`,
+		`sed 's/a/[/' f`,
+		`sed -n '/x/,/[y]/p' f`,
+		`sed -n -e '/[a]/p' f`,
+		`sed 's/a/b/' 'f[1]'`,
+		`sed 's/[/]/X/' f`,
+	} {
+		ro := IsReadOnlyShell(cmd)
+		if cmd == `sed 's/[/]/X/' f` {
+			// Refused by the classifier (delimiter inside a bracket); run
+			// only to show the form is harmless here, never as read-only.
+			if ro {
+				t.Errorf("%q must not be read-only", cmd)
+			}
+			continue
+		}
+		if !ro {
+			t.Errorf("%q should be read-only", cmd)
+			continue
+		}
+		dir := t.TempDir()
+		seedDir(t, dir)
+		before := snapshot(t, dir)
+		runSandboxed(t, bash, dir, cmd)
+		if after := snapshot(t, dir); before != after {
+			t.Errorf("read-only %q changed the directory\nbefore:\n%s\nafter:\n%s", cmd, before, after)
+		}
+	}
+}

@@ -129,6 +129,52 @@ var classifyTable = []classifyRow{
 	// G3 / R8: the leading-redirect test row the CHANGELOG describes.
 	{"2>&1 cat f", true, false, "G3 leading fd dup with a read-only command"},
 	{"2>/dev/null ls", true, false, "G3 leading /dev/null with a read-only command"},
+	// Block 5: sed scripts with bracket expressions. A plain bracket expression
+	// in an address or in the pattern of s/// does not make a script
+	// destructive when the script is one single-quoted word.
+	{"sed -n '/[a-z]/p' file", true, false, "bracket in an address"},
+	{"sed 's/[0-9]//' file", true, false, "bracket in the pattern of s///"},
+	{"sed -n '/[^a-z]/p' f", true, false, "negated bracket"},
+	{"sed 's/a/[/' f", true, false, "bracket in the replacement"},
+	{"sed -n '/x/,/[y]/p' f", true, false, "bracket in the second address"},
+	{"sed -n -e '/[a]/p' f", true, false, "bracket in a separate -e script"},
+	{"sed -n '\\#[a]#p' f", false, true, "custom-delimiter address with a bracket is refused"},
+	{"sed 's/a/b/' 'f[1]'", true, false, "bracket in a quoted file argument"},
+	// Still gated, with brackets next to the forbidden form.
+	{"sed 's/[a]/b/w out' f", false, true, "w flag after a bracket pattern"},
+	{"sed '/[x]/w out' f", false, true, "w command after a bracket address"},
+	{"sed 's/a/b/e' f", false, true, "e flag"},
+	{"sed 's/[a]/b/e' f", false, true, "e flag after a bracket pattern"},
+	{"sed -n '/[a]/{p;w out}' f", false, true, "w inside a group after a bracket address"},
+	{"sed -n '/[a]/W out' f", false, true, "W command"},
+	{"sed -n '/[a]/r f' f", false, true, "r command after a bracket address"},
+	{"sed -n '/[a]/R f' f", false, true, "R command after a bracket address"},
+	{"sed -n '/[a]/e id' f", false, true, "e command after a bracket address"},
+	{"sed -i 's/[a]/b/' f", false, true, "-i with a bracket"},
+	{"sed --in-place 's/[a]/b/' f", false, true, "--in-place with a bracket"},
+	{"sed -f 's[a].sed' f", false, true, "-f script file"},
+	{"sed -n -f script.sed f", false, true, "-f without brackets"},
+	{"sed 'y/[a]/b/' f", false, true, "y command is not understood"},
+	{"sed 'b[x]' f", false, true, "bracket in a branch label is not a bracket expression"},
+	// Forms the parser must not trust: leading ], POSIX classes, a delimiter
+	// inside the bracket, unterminated, bracket as delimiter.
+	{"sed 's/[]/]/p#x/w pwn' f", false, true, "leading ] makes [] / ] one class in real sed"},
+	{"sed -n '/[]/]/p;#x/w pwn' f", false, true, "leading ] in an address"},
+	{"sed 's/[[:alpha:]/]/p#x/w pwn' f", false, true, "POSIX class inside a bracket"},
+	{"sed 's/[/]/X/' f", false, true, "delimiter inside a bracket"},
+	{"sed -n '/[a/p' f", false, true, "unterminated bracket"},
+	{"sed -n '/[a/]/p' f", false, true, "delimiter inside a bracket in an address"},
+	{"sed 's[a[b[p' f", false, true, "bracket as the s delimiter"},
+	{"sed 's/a\\/;#/w out' f", false, true, "escaped delimiter then a comment hides w"},
+	// The script is not one single-quoted word: the shell can change it.
+	{"sed -n /[a-z]/p file", false, true, "unquoted script: a glob"},
+	{"sed -n \"/[a-z]/p\" file", false, true, "double-quoted script"},
+	{"sed -e'/[a]/p' f", false, true, "script glued to -e"},
+	{"sed --expression='/[a]/p' f", false, true, "script glued to --expression"},
+	{"sed -n p [-]i", false, true, "unquoted glob file argument can expand to the -i option"},
+	{"sed -n p f[1]", false, true, "unquoted glob file argument"},
+	{"sed -n 'p;p' f", false, true, "a ; in a script is split by the shell segment splitter: unchanged, with or without brackets"},
+	{"sed -n '/[a]/p;/[b]/p' f", false, true, "same, with brackets: unchanged"},
 	// Loops and other shell forms: gated when not one complete read-only loop.
 	{"while read l; do echo $l; done < f", false, true, "input redirect loop"},
 	{"(cd sub && make)", false, true, "subshell group"},

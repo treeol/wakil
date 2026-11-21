@@ -377,7 +377,7 @@ func IsDestructiveShell(cmd string) bool {
 				}
 			}
 		case "sed":
-			if sedArgsDestructive(args) {
+			if sedArgsDestructive(args, rawArgs) {
 				return true
 			}
 		case "chmod":
@@ -887,7 +887,7 @@ func IsReadOnlyShell(cmd string) bool {
 				return false
 			}
 		}
-		if !readFlagsOK(bin, args) {
+		if !readFlagsOK(bin, args, rawArgs) {
 			return false
 		}
 	}
@@ -958,7 +958,33 @@ func splitOnAmpersand(s string) []string {
 // sedScriptIsDestructive rejects. Every script is checked, including the one
 // that follows a separate "-e" argument. Backslashes are stripped first, as
 // the shell would, so "-\i" is "-i".
-func sedArgsDestructive(args []string) bool {
+//
+// rawArgs are the same words before unquoting. A script that holds a "[" is
+// accepted only as one whole word that is single-quoted with no backslash:
+// unquoted (or double-quoted, or glued to an option as -eSCRIPT or
+// --expression=SCRIPT) the shell can expand it as a glob or substitute into
+// it, so what sed sees is not what was written. The same holds for file
+// arguments (an unquoted "[-]i" is a glob that can become the -i option).
+func sedArgsDestructive(args, rawArgs []string) bool {
+	if len(args) != len(rawArgs) {
+		return true
+	}
+	// Any word with a "[" must be one plain single-quoted word. This covers
+	// file arguments too: an unquoted "[-]i" is a glob the shell can expand to
+	// an existing file named "-i", which sed would then read as an option.
+	for _, r := range rawArgs {
+		if strings.Contains(r, "[") && !isPlainSingleQuoted(r) {
+			return true
+		}
+	}
+	// scriptBad judges one script. raw is the original word when the script
+	// is a whole word (positional or the value of a separate -e), else "".
+	scriptBad := func(script, raw string) bool {
+		if strings.Contains(script, "[") && !isPlainSingleQuoted(raw) {
+			return true
+		}
+		return sedScriptIsDestructive(script)
+	}
 	strip := func(s string) string { return strings.ReplaceAll(s, "\\", "") }
 	hasScript := false
 	endOpts := false
@@ -974,7 +1000,7 @@ func sedArgsDestructive(args []string) bool {
 		case endOpts || a == "-" || !strings.HasPrefix(a, "-"):
 			// First non-option word is the script unless -e/--expression gave one.
 			if !hasScript {
-				if sedScriptIsDestructive(a) {
+				if scriptBad(a, rawArgs[k]) {
 					return true
 				}
 				hasScript = true
@@ -992,14 +1018,16 @@ func sedArgsDestructive(args []string) bool {
 					k++ // its value is the next word
 				}
 			case "--expression":
+				raw := ""
 				if !hasVal {
 					k++
 					if k >= len(args) {
 						return true
 					}
 					val = strip(args[k])
+					raw = rawArgs[k]
 				}
-				if sedScriptIsDestructive(val) {
+				if scriptBad(val, raw) {
 					return true
 				}
 				hasScript = true
@@ -1014,14 +1042,16 @@ func sedArgsDestructive(args []string) bool {
 				case 'n', 'E', 'r', 's', 'u', 'z', 'b':
 				case 'e':
 					script := cluster[ci+1:]
+					raw := ""
 					if script == "" {
 						k++
 						if k >= len(args) {
 							return true
 						}
 						script = strip(args[k])
+						raw = rawArgs[k]
 					}
-					if sedScriptIsDestructive(script) {
+					if scriptBad(script, raw) {
 						return true
 					}
 					hasScript = true
@@ -1044,11 +1074,27 @@ func sedArgsDestructive(args []string) bool {
 // Everything else — w W r R e a i c d D y and anything unrecognised — is
 // destructive (gated). Unparseable input is destructive.
 func sedScriptIsDestructive(script string) bool {
-	// The parser below does not model bracket expressions, so "[/]" can hide
-	// a delimiter, a "#" or a "w" from it. Gate any script with a bracket.
-	if strings.Contains(script, "[") {
+	// Every "[" must be accounted for: either a plain bracket expression the
+	// parser placed in an address or in the pattern of s///, or a literal in
+	// a replacement. A "[" anywhere else (a label, an unparsed command, a
+	// shape the bracket rules refuse) leaves the counts unequal: destructive.
+	seen := 0
+	if sedParseDestructive(script, &seen) {
 		return true
 	}
+	return seen != strings.Count(script, "[")
+}
+
+// isPlainSingleQuoted reports whether w is one single-quoted word: it starts
+// and ends with ' and holds no other ' and no backslash.
+func isPlainSingleQuoted(w string) bool {
+	return len(w) >= 2 && w[0] == '\'' && w[len(w)-1] == '\'' &&
+		!strings.ContainsAny(w[1:len(w)-1], "'\\")
+}
+
+// sedParseDestructive is the parser behind sedScriptIsDestructive; seen counts
+// the "[" it consumed.
+func sedParseDestructive(script string, seen *int) bool {
 	s := script
 	n := len(s)
 	i := 0
@@ -1066,12 +1112,61 @@ func sedScriptIsDestructive(script string) bool {
 			i++
 		}
 	}
-	// skipDelimited moves past the closing delim (i is just after the
-	// opening one); false when the delimiter is never closed.
-	skipDelimited := func(delim byte) bool {
+	// skipRegex moves past the closing delim (i is just after the opening
+	// one); false when the delimiter is never closed. It also steps over plain
+	// bracket expressions as one unit (counting them in seen). A plain
+	// one starts "[" or "[^", has no "]" first, no "[", backslash, newline or
+	// delimiter in its body, and ends at the next "]"; sed implementations
+	// disagree about everything else (a leading "]", "[:alpha:]", a delimiter
+	// inside), so anything else is refused (false: malformed).
+	skipRegex := func(delim byte) bool {
 		for i < n && s[i] != delim {
-			if s[i] == '\\' {
+			switch s[i] {
+			case '\\':
+				i += 2
+				continue
+			case '[':
+				if delim == '[' || delim == ']' {
+					return false
+				}
+				j := i + 1
+				if j < n && s[j] == '^' {
+					j++
+				}
+				if j < n && s[j] == ']' {
+					return false
+				}
+				k := j
+				for k < n && s[k] != ']' {
+					if c := s[k]; c == '[' || c == '\\' || c == delim || c == '\n' {
+						return false
+					}
+					k++
+				}
+				if k >= n {
+					return false
+				}
+				*seen++
+				i = k + 1
+				continue
+			}
+			i++
+		}
+		if i >= n {
+			return false
+		}
+		i++
+		return true
+	}
+	// skipReplacement is skipRegex for the replacement of s///: a "[" is
+	// a literal there in every sed; it is counted so the total stays exact.
+	skipReplacement := func(delim byte) bool {
+		for i < n && s[i] != delim {
+			switch s[i] {
+			case '\\':
 				i++
+			case '[':
+				*seen++
 			}
 			i++
 		}
@@ -1103,7 +1198,7 @@ func sedScriptIsDestructive(script string) bool {
 			}
 		case s[i] == '/':
 			i++
-			if !skipDelimited('/') {
+			if !skipRegex('/') {
 				return false
 			}
 			skipRegexFlags()
@@ -1114,7 +1209,7 @@ func sedScriptIsDestructive(script string) bool {
 			}
 			d := s[i]
 			i++
-			if !skipDelimited(d) {
+			if !skipRegex(d) {
 				return false
 			}
 			skipRegexFlags()
@@ -1177,10 +1272,10 @@ func sedScriptIsDestructive(script string) bool {
 			i++
 			// Pattern, then replacement: each call consumes through its
 			// closing delimiter.
-			if !skipDelimited(delim) {
+			if !skipRegex(delim) {
 				return true
 			}
-			if !skipDelimited(delim) {
+			if !skipReplacement(delim) {
 				return true
 			}
 			for i < n && !isEnd(s[i]) {
@@ -1205,7 +1300,7 @@ func sedScriptIsDestructive(script string) bool {
 // readFlagsOK rejects flags that turn an otherwise-read command into a writer.
 // It is the second gate for readOnlyCmds: even when a binary is allowlisted,
 // flags like --output, -i (in-place), -O (pager), or -delete can write files.
-func readFlagsOK(bin string, args []string) bool {
+func readFlagsOK(bin string, args, rawArgs []string) bool {
 	switch bin {
 	case "git":
 		sub, ok := gitGlobalOptsOK(args)
@@ -1367,7 +1462,7 @@ func readFlagsOK(bin string, args []string) bool {
 		// sed is read-only only when no option or script element can write,
 		// execute or read a script file (-i, -f, w/e/r commands, ...); see
 		// sedArgsDestructive.
-		if sedArgsDestructive(args) {
+		if sedArgsDestructive(args, rawArgs) {
 			return false
 		}
 	case "date":
