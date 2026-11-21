@@ -1201,6 +1201,23 @@ VEOF
     fi
     echo "  status 0/1 map to pass/fail, every other status to error; an unannounced status 1 becomes 99; the preflight accepts the real Go"
 
+    echo "== self-test: stub go (host Go too old): preflight-stops, preflight-stops-on-check, check-error-not-fail =="
+    # A black-box driver runs a copy of this bench.sh with a stub go that
+    # prints "go: go.mod requires go >= 1.26 (running go 1.25.1;
+    # GOTOOLCHAIN=local)". Needs no Go itself beyond building nothing: it only
+    # needs the fix-test task to exist.
+    if [ -d "$tasks_dir/fix-test" ] && [ -f "$bench_dir/lib/toolchain_cases.sh" ]; then
+        _tc_out="$tmpdir/toolchain-cases.out"
+        if ! sh "$bench_dir/lib/toolchain_cases.sh" "$repo_root" >"$_tc_out" 2>&1; then
+            echo "self-test FAILED: toolchain cases:" >&2
+            cat "$_tc_out" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        grep -E '^  PASS' "$_tc_out"
+    else
+        echo "  skipped (no fix-test task)"
+    fi
+
     echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
     # Also asserts that bench.sh passes --allow-destructive to `wakil run`.
     stub_declined="$tmpdir/wakil-declined"
