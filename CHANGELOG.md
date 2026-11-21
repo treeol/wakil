@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Corrections to the 0.8.8 notes
+
+- Exit code 5 maps to `"incomplete"` in `--result-json` (`exit_reason`), not `"exit_5"`. The 0.8.8 notes do not mention this mapping.
+- The bench harness (`scripts/bench.sh`) is new in 0.8.8. The 0.8.8 notes describe bench harness fixes and improvements but do not say the harness itself is new.
+
 ## [0.8.8] - 2026-11-21
 
 **Breaking:** for Mashūra, an OpenRouter endpoint that is not the active route no longer falls back to the global `api_key`; it needs its own `api_key_env` or `auth_header`, otherwise Mashūra skips it (and fails closed when none of the OpenRouter endpoints has one). `/mashura` names the endpoint in use (`credential: backend config (<endpoint>)`). If you relied on the global `api_key` for a non-active OpenRouter endpoint, add `api_key_env` or `auth_header` to that endpoint before upgrading. The active OpenRouter endpoint is unchanged.
