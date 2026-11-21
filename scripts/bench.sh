@@ -137,8 +137,9 @@ fi
 # BENCH_TEST_SKIP_PREFLIGHT is a self-test-only switch (lets the toolchain
 # cases drive a check through a broken go). In a normal run it is ignored:
 # print one warning line so the user knows it was not honoured, then unset
-# it so the preflight runs as intended. The self-test and its children keep
-# the variable (self_test=1 is set before the toolchain cases run).
+# it so the preflight runs as intended. The toolchain-case children pass
+# BENCH_ALLOW_SKIP_PREFLIGHT=1 (set in bench/lib/toolchain_cases.sh) so the
+# gate does not fire on them.
 if [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" = 1 ] && [ "$self_test" -ne 1 ] && [ "${BENCH_ALLOW_SKIP_PREFLIGHT:-}" != 1 ]; then
     echo "$prog: warning: BENCH_TEST_SKIP_PREFLIGHT is a self-test-only variable — ignored in this run" >&2
     unset BENCH_TEST_SKIP_PREFLIGHT
@@ -2067,9 +2068,7 @@ EOF
     echo "== self-test: tar in the required-tools list =="
     # The harness checks for tar up front. A PATH without tar must produce
     # the "required tool(s) not found: tar" line and exit 1. We build a
-    # minimal PATH that has everything except tar.
-    _tar_path=$(command -v tar)
-    # A minimal PATH that has everything except tar. The real /usr/bin has
+    # minimal PATH that has everything except tar. The real /usr/bin has
     # tar, so we symlink sh separately into the temp dir and use only that.
     _no_tar_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-no-tar.XXXXXX")
     for _bt in jq flock timeout sha256sum git sh; do
