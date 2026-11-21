@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.8] - 2026-11-21
+
+**Breaking:** for Mashūra, an OpenRouter endpoint that is not the active route no longer falls back to the global `api_key`; it needs its own `api_key_env` or `auth_header`, otherwise Mashūra skips it (and fails closed when none of the OpenRouter endpoints has one). `/mashura` names the endpoint in use (`credential: backend config (<endpoint>)`). If you relied on the global `api_key` for a non-active OpenRouter endpoint, add `api_key_env` or `auth_header` to that endpoint before upgrading. The active OpenRouter endpoint is unchanged.
+
 ### Added
 
 - **`wakil run --result-json <file>` writes one JSON object at exit** with `wakil_version`, `model`, `exit_reason`, `workdir`, `seconds`, `tokens_in`, `tokens_out`, `tokens_cached` (omitted when the provider reports none), `cost_usd`, `tool_calls`, `collapses` (mid-turn collapses only), `collapses_turn_end` (full turn-end collapses), `mashura_rounds`, and `declined_calls` (count of tool calls declined by the user or policy). Pointer fields are null when the value was not observed; non-pointer fields are empty strings or zero (`model` is `""`, `workdir` is omitted via `omitempty`, `seconds` is 0). The `workdir` field records the resolved workspace folder the session actually ran in, so a bench harness can verify the agent used the expected temp folder. For a bench harness that needs per-run numbers without parsing the JSONL transcript.
