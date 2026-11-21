@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Async and collapse_context notices no longer appear in the streamed reasoning.** The "async results delivered" status text and the collapse_context notice now go through the notice path (the same path as the collapse notice), so they appear on their own line after the tool line they belong to, never written into the assistant or reasoning stream.
+- **Flaky screen test no longer uses a fixed sleep.** The e2e collapse notice test's 300 ms `time.Sleep` is replaced with a `waitScreen` that polls for the notice text (5 s deadline), so the assertions read a settled screen on a loaded runner.
+
+### Changed
+
+- **`BENCH_TEST_SKIP_PREFLIGHT` is a self-test-only switch.** In a normal run the variable is ignored and one warning line says so; toolchain-case children keep it through `BENCH_ALLOW_SKIP_PREFLIGHT`.
+- **Bench `prep_workdir` recovers `.wakil/` after an interrupted prep.** The `.wakil/` directory is saved to a sibling under `$work_root` (same filesystem, atomic rename) and the save `mv` aborts before the wipe if it fails. At the start of `prep_workdir`, a saved copy from an interrupted prior prep is moved back before anything else; if both saved and active copies exist, the function aborts. The saved copy is never deleted by the harness.
+
 ### Corrections to the 0.8.8 notes
 
 - Exit code 5 maps to `"incomplete"` in `--result-json` (`exit_reason`), not `"exit_5"`. The 0.8.8 notes do not mention this mapping.
