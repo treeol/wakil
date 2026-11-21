@@ -47,7 +47,12 @@ func TestE2EMidTurnCollapseNoticeOneLineOnScreen(t *testing.T) {
 	e2eAnswerApprovals(t, e, 1)
 	// The event log is ahead of the screen: wait for the final answer.
 	e.waitScreen("all files written", 30*time.Second)
-	time.Sleep(300 * time.Millisecond)
+	// Wait for the mid-turn collapse notice to render on the screen (it
+	// carries "[mid-turn]") instead of a fixed sleep. The notice arrives
+	// after the turn-end answer text; a fixed sleep can race on a loaded
+	// runner, and polling for the content means the assertions below read
+	// a settled screen.
+	e.waitScreen("[mid-turn]", 5*time.Second)
 
 	// Collapses that happened, from the requests the model received.
 	drops, prev := 0, 0
