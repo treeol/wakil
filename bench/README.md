@@ -60,6 +60,30 @@ stable. If the risk label changes (different hisn version, different
 config), the content changes, the hash changes, and the approval is
 invalid — the user must re-acknowledge with `WAKIL_HOST_WORKDIR=<path> wakil sandbox trust`.
 
+## Go requirement
+
+The Go tasks (`add-flag`, `fix-test`, `rename`, and `long-read`'s setup) need the
+toolchain their `go.mod` names (the same as the repo's `go.mod`) in the
+**local cache**. `scripts/bench.sh` resolves it once at start, in the repo
+root with your environment (`GOPROXY=off go env GOVERSION`; the host's own Go
+may be older, it then uses the toolchain it already downloaded), and every
+check and `setup.sh` runs with `GOTOOLCHAIN` set to that exact version and
+`GOPROXY=off`, with the Go cache locations resolved the same way. **A check
+never downloads a toolchain or a module.** Run `go version` once inside the
+repo while online to fetch the toolchain; a host with `GOSUMDB=off` cannot
+switch toolchains (Go verifies the cached one against the checksum database).
+
+Before the first run, and so before any model request, the harness runs
+`setup.sh` and every Go check once on each task's reference solution. If that
+cannot work it prints one line and exits 1 without writing a CSV row:
+
+```
+bench.sh: the Go checks cannot run: the tasks need go >= 1.26, found go1.25.1 — go: go.mod requires go >= 1.26 (running go 1.25.1; GOTOOLCHAIN=local)
+```
+
+`--task steps` needs no Go at all (no Go is resolved and the preflight is
+skipped); `long-read` needs it for its `setup.sh`. GNU userland is assumed (`tar`, `timeout -k`, `flock`, `sha256sum`, `find`).
+
 ## How a run works
 
 For each task and run number:
@@ -151,11 +175,25 @@ allow-list of standard-library packages (so agent code cannot reach `os`,
 `syscall`, `runtime`, `unsafe`, `embed` or cgo, and cannot call `os.Exit`) or
 that carries assembly, C or cgo files (the import closure is walked, so a package in a `_x` or `.x` directory, which `./...` skips, is checked too); copies the task's `hidden/` tests in
 and runs them with a fixed Go environment (`GOFLAGS=-buildvcs=false`,
-`GOWORK=off`, `GOENV=off`, `GOTOOLCHAIN=local`, `CGO_ENABLED=0`,
-`GOPROXY=off`). The test run must exit 0, print no `--- FAIL`, and print a
+`GOWORK=off`, `GOENV=off`, `GOTOOLCHAIN=<the resolved version>`,
+`CGO_ENABLED=0`, `GOPROXY=off`; see "Go requirement"). The test run must exit 0, print no `--- FAIL`, and print a
 `--- PASS: <name>` line for every named hidden test. The self-test covers a
 `TestMain` that exits 0 and an `init()` that prints a `PASS` line and exits,
 and an `init()` in an underscore-directory package that the main package imports, on both Go tasks (each must score `fail` with a `check:` reason in the log). A timeout row records no tokens or cost (the result JSON of a cut-off run is not trusted).
+
+**Result class of a check.** `check.sh` exits 0 (`pass`), 1 (`fail`: the check
+ran and judged the agent's work) or 99 (`error`: it could not judge). `fail` is
+reserved for a judgement: `gocheck_fail` exits 1 and leaves a verdict marker,
+and an exit trap turns a status 1 without it (a failed `cp`, a crashed helper)
+into 99. Any status other than 0 or 1 (missing `python3`, a kill, the
+`BENCH_CHECK_TIMEOUT` of 900 seconds) is `error`. When a go command fails in a
+check, the check is re-run on the task's reference solution: if that fails too
+the environment is to blame (`error`), else the agent's tree is (`fail`). An
+`error` row has `exit_reason=check-error`, the log carries a `check:` line, and
+the bench stops with exit 1 (the same environment would repeat on the next run).
+`add-flag` runs the agent's binary under `BENCH_BINARY_TIMEOUT` seconds
+(default 10, then KILL after `BENCH_KILL_GRACE`): a hang is `fail` with
+`check: binary timed out`; a binary that cannot be started is `error`.
 
 Every CSV cell is written by one quoting function (RFC 4180: a value with a
 comma or a double quote is quoted and its quotes doubled; a CR or LF becomes
@@ -208,6 +246,17 @@ without `sandbox_backend`; wrong and missing workdir; the two sandbox
 approval wordings; folder freshness, `.wakil/` preservation and path
 stability.
 
+The Go toolchain cases: every go call of a check and of `setup.sh` carries the
+resolved `GOTOOLCHAIN` and `GOPROXY=off` (`toolchain-pinned`); the status
+mapping (`rc-mapping`, `verdict-required`, `preflight-real-go`); a hanging
+`add-flag` binary (`binary-hang`); and `bench/lib/toolchain_cases.sh`, which
+runs a copy of the harness with a stub `go` that prints the Go 1.25.1 error
+above: `preflight-stops` (one line, exit 1, no CSV row, no model request),
+`preflight-stops-on-check` and `check-error-not-fail` (with the preflight
+bypassed by the test-only `BENCH_TEST_SKIP_PREFLIGHT=1`, the result is `error`,
+never `fail`). It also takes a path (`sh bench/lib/toolchain_cases.sh <tree>`),
+e.g. a `git archive` of an older commit, to show the cases failing there.
+
 CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
 `bench/tasks/*/*.sh` and `bench/lib/*.sh` (job `bench-harness`);
 `scripts/host_verify.sh` runs both as `bench-selftest` and
@@ -229,6 +278,14 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
 - `.wakil/` in a work folder is preserved between runs (the approval lives
   there) and the agent can write to it. The harness never writes into it; it
   prints a warning when a run changed a file under it.
+- A check cannot tell an environment failure that exists only while the
+  agent's tree is built (a cache that fills up during the run) from the
+  agent's fault; one that also breaks the reference solution is caught.
+  A `chmod 000` file in the work folder makes the copy step fail: `error`.
+- The preflight proves the Go toolchain and the checks on the reference
+  solution, not that the agent's binary can run on every filesystem beyond
+  the one the preflight used (`add-flag` reports a binary that cannot be
+  started as `error`).
 - Agent processes that survive a KILL are not hunted down.
 - Docker cannot be benched (`workdir-not-verifiable`, see above).
 
