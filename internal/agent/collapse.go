@@ -125,10 +125,15 @@ func stripAssistantTags(msgs []proxy.Message) []proxy.Message {
 // prefix of the active request) was archived to disk and replaced in the
 // projection by a note pointing to the archive.
 type CollapseRecord struct {
-	Turn           int       `json:"turn"`
-	Archive        string    `json:"archive"`                    // spill path of the full W render
-	WBytes         int       `json:"w_bytes"`                    // size of the working set (W)
-	Note           string    `json:"note"`                       // deterministic note appended to A (or U when Partial)
+	Turn    int    `json:"turn"`
+	Archive string `json:"archive"` // spill path of the full W render
+	WBytes  int    `json:"w_bytes"` // size of the working set (W)
+	Note    string `json:"note"`    // deterministic note appended to A (or U when Partial)
+	// Findings is the "Findings so far" part (buildFindings): files read with
+	// requested line ranges, files written, failed command names with exit
+	// status, the agent's own last notes, and the archive search hint. Built
+	// by code from the archived range; never holds tool-result content.
+	Findings       string    `json:"findings,omitempty"`
 	At             time.Time `json:"at"`                         // when the collapse happened
 	Partial        bool      `json:"partial,omitempty"`          // true = mid-turn prefix collapse; false = full finished turn
 	BoundaryCallID string    `json:"boundary_call_id,omitempty"` // tool_call ID of the first kept assistant message; both writers archive w = s.first+1 .. tailStart-1 so the projection elides exactly w.
@@ -511,6 +516,7 @@ func buildPartialCheckpointBlock(rec CollapseRecord) string {
 		b.WriteString("\n")
 	}
 	b.WriteString(rec.Note)
+	b.WriteString(rec.Findings)
 	return b.String()
 }
 
@@ -647,6 +653,7 @@ func (a *App) indexValueForTurn(t int, rec CollapseRecord) string {
 		fmt.Fprintf(&b, "stash: %s — %s\n", rec.StashKey, rec.StashDesc)
 	}
 	b.WriteString(rec.Note)
+	b.WriteString(rec.Findings)
 	return b.String()
 }
 
@@ -970,7 +977,7 @@ func projectTailAnswerContent(content *string, rec CollapseRecord, capBytes int)
 			content = &c
 		}
 	}
-	noteText := rec.Note
+	noteText := rec.Note + rec.Findings
 	if rec.Summary != "" {
 		noteText = "[checkpoint summary: " + rec.Summary + "]\n" + noteText
 	}
@@ -1177,6 +1184,7 @@ func (a *App) collapseFinishedTurns() {
 			Archive:   archive,
 			WBytes:    wSize,
 			Note:      note,
+			Findings:  buildFindings(wOnly, archive),
 			At:        time.Now(),
 			Summary:   existingRec.Summary,
 			NextSteps: existingRec.NextSteps,
@@ -1448,6 +1456,14 @@ func (a *App) collapseTailStart(s span, taskIdx, before, hardMax int) int {
 	// rounds while they fit, so the clamp never drops it.
 	if hardMax > 0 {
 		hardCap := hardMax * 30 / 100
+		// The findings part of the checkpoint (up to maxFindingsBytes) lives
+		// next to the tail: reserve its room, but never more than half the
+		// cap, and never below the one round the walk always keeps.
+		reserve := maxFindingsBytes
+		if reserve > hardCap/2 {
+			reserve = hardCap / 2
+		}
+		hardCap -= reserve
 		if hardCap < tailCap {
 			tailCap = hardCap
 		}
@@ -1648,6 +1664,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		Archive:        archive,
 		WBytes:         wSize,
 		Note:           note,
+		Findings:       buildFindings(w, archive),
 		At:             time.Now(),
 		Partial:        true,
 		BoundaryCallID: boundaryCallID,
@@ -1911,6 +1928,7 @@ func (a *App) collapseMidTurnPrefix() {
 		Archive:        archive,
 		WBytes:         wSize,
 		Note:           note,
+		Findings:       buildFindings(w, archive),
 		At:             time.Now(),
 		Partial:        true,
 		BoundaryCallID: tailCallID,
