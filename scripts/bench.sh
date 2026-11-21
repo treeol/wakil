@@ -18,6 +18,16 @@ set -eu
 
 prog="${prog:="${0##*/}"}"
 
+# The external programs a run of this harness calls (the script, bench/lib and
+# the task checks; shell builtins are not listed). The self-test builds its
+# "tool missing" PATHs from this list and nothing else (tool_dir), so a case
+# never depends on which directory the host keeps a tool in.
+# shellcheck disable=SC2034 # selftest_tools is read by the tool-list cases
+harness_tools="awk basename cat cp date dirname env find flock git grep head jq mkdir mktemp mv rm sed sha256sum sleep sort tail tar timeout tr"
+# Programs only the self-test (and bench/lib/toolchain_cases.sh) call on top.
+# shellcheck disable=SC2034 # read by the tool-list cases
+selftest_tools="chmod cut id ln touch wc"
+
 # Detect whether stdout is a terminal (heartbeat progress lines are
 # terminal-only; nothing extra when output is piped or redirected).
 if [ -t 1 ]; then
@@ -1048,12 +1058,36 @@ do_setup() {
 }
 
 # ---- self-test -------------------------------------------------------------
+# tool_dir <dir> [omit...]: make <dir> hold links to exactly the programs a run
+# of the harness needs (harness_tools, sh, and go and python3 for the tasks),
+# minus the ones named. A case that simulates a missing tool uses this
+# directory, and only this directory, as its PATH: it loses the tool under test
+# and nothing else, whatever directory the host keeps its tools in.
+tool_dir() {
+    _td_dir=$1; shift
+    mkdir -p "$_td_dir" || return 1
+    for _td_t in $harness_tools sh go python3; do
+        for _td_o in "$@"; do
+            [ "$_td_t" != "$_td_o" ] || continue 2
+        done
+        _td_bin=$(command -v "$_td_t") || continue
+        case "$_td_bin" in
+            /*) ln -s "$_td_bin" "$_td_dir/$_td_t" || return 1 ;;
+        esac
+    done
+}
+
 self_test() {
     # Self-test CSVs and logs go to the cache, never into the repo, and never
     # where find_prev_csv looks for an earlier run. A marker file lets the end
     # of the self-test assert that nothing under bench/results changed.
-    selftest_dir="$cache_home/wakil-bench/selftest"
-    mkdir -p "$selftest_dir" || { echo "$prog: cannot create $selftest_dir" >&2; exit 1; }
+    # One directory per self-test run: the cases read the logs they just wrote
+    # with globs, and the logs of an earlier run (a green sandbox run leaves
+    # some) must not satisfy or break them.
+    selftest_base="$cache_home/wakil-bench/selftest"
+    mkdir -p "$selftest_base" || { echo "$prog: cannot create $selftest_base" >&2; exit 1; }
+    find "$selftest_base" -mindepth 1 -maxdepth 1 -name 'run.*' -mtime +7 -exec rm -rf {} + 2>/dev/null || true
+    selftest_dir=$(mktemp -d "$selftest_base/run.XXXXXX") || { echo "$prog: cannot create a run directory in $selftest_base" >&2; exit 1; }
     _st_marker=$(mktemp "${TMPDIR:-/tmp}/bench-selftest-marker.XXXXXX")
     _saved_results_dir="$results_dir"
     results_dir="$selftest_dir"
@@ -2299,11 +2333,9 @@ EOF
     rm -rf "$_lk_stub"
     # python3 missing: a task whose check or setup uses it stops the run up front.
     _py_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-nopy.XXXXXX")
-    for _bt in jq flock timeout sha256sum git tar sh awk sed grep cat date mktemp head tail sort tr wc find cp mv rm mkdir dirname basename id env uname; do
-        _bt_bin=$(command -v "$_bt") && ln -s "$_bt_bin" "$_py_dir/$_bt" 2>/dev/null
-    done
+    tool_dir "$_py_dir" python3 || { echo "self-test FAILED: cannot build the tool directory for the python3 case" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_py_dir"; exit 1; }
     _py_err=$(PATH="$_py_dir" "$_py_dir/sh" "$0" --wakil /nonexistent/binary --runs 1 --task long-read 2>&1 || true)
-    if ! printf '%s' "$_py_err" | grep -q 'python3 is needed by task long-read'; then
+    if [ -e "$_py_dir/python3" ] || printf '%s' "$_py_err" | grep -q 'required tool' || ! printf '%s' "$_py_err" | grep -q 'python3 is needed by task long-read'; then
         echo "self-test FAILED: a missing python3 was not reported up front for long-read: $_py_err" >&2
         rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_py_dir"; exit 1
     fi
@@ -2328,21 +2360,20 @@ EOF
     echo "  leak_check fail-closed, python3 up front, GOFLAGS cleared, experiment suffix OK"
 
     echo "== self-test: tar in the required-tools list =="
-    # The harness checks for tar up front. A PATH without tar must produce
-    # the "required tool(s) not found: tar" line and exit 1. We build a
-    # minimal PATH that has everything except tar. The real /usr/bin has
-    # tar, so we symlink sh separately into the temp dir and use only that.
+    # A PATH that holds exactly the harness's tools minus tar (tool_dir) must
+    # give the one "required tool(s) not found: tar" line and exit 1: nothing
+    # else may be lost with tar (the old case lost dirname when both lived in one
+    # directory), so the output is exactly that line and nothing more.
     _no_tar_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-no-tar.XXXXXX")
-    for _bt in jq flock timeout sha256sum git sh; do
-        _bt_bin=$(command -v "$_bt") && ln -s "$_bt_bin" "$_no_tar_dir/$_bt" 2>/dev/null
-    done
-    _tar_err=$(PATH="$_no_tar_dir:/dev/null" "$_no_tar_dir/sh" "$0" --wakil /nonexistent/binary --runs 1 2>&1 || true)
-    if ! printf '%s\n' "$_tar_err" | grep -q "required tool(s) not found:.* tar"; then
-        echo "self-test FAILED: tar not reported as missing when absent from PATH" >&2
+    tool_dir "$_no_tar_dir" tar || { echo "self-test FAILED: cannot build the tool directory for the tar case" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_no_tar_dir"; exit 1; }
+    _tar_rc=0
+    _tar_err=$(PATH="$_no_tar_dir" "$_no_tar_dir/sh" "$0" --wakil /nonexistent/binary --runs 1 2>&1) || _tar_rc=$?
+    if [ -e "$_no_tar_dir/tar" ] || [ "$_tar_rc" -ne 1 ] || [ "$_tar_err" != "$prog: required tool(s) not found: tar" ]; then
+        echo "self-test FAILED: tar not reported as the one missing tool (rc=$_tar_rc, want the single line '$prog: required tool(s) not found: tar'):" >&2
         printf '%s\n' "$_tar_err" >&2
         rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_no_tar_dir"; exit 1
     fi
-    echo "  tar required OK (reported when absent from PATH)"
+    echo "  tar required OK (the one line, exit 1, with every other tool on PATH)"
     rm -rf "$_no_tar_dir"
 
     echo
