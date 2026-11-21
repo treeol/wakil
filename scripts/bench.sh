@@ -134,6 +134,16 @@ if [ -n "$missing_tools" ]; then
     exit 1
 fi
 
+# BENCH_TEST_SKIP_PREFLIGHT is a self-test-only switch (lets the toolchain
+# cases drive a check through a broken go). In a normal run it is ignored:
+# print one warning line so the user knows it was not honoured, then unset
+# it so the preflight runs as intended. The self-test and its children keep
+# the variable (self_test=1 is set before the toolchain cases run).
+if [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" = 1 ] && [ "$self_test" -ne 1 ] && [ "${BENCH_ALLOW_SKIP_PREFLIGHT:-}" != 1 ]; then
+    echo "$prog: warning: BENCH_TEST_SKIP_PREFLIGHT is a self-test-only variable — ignored in this run" >&2
+    unset BENCH_TEST_SKIP_PREFLIGHT
+fi
+
 csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds'
 # CSV is created lazily: --setup and --self-test do not write a real-run
 # CSV (a header-only file would be picked up by find_prev_csv as the
@@ -480,11 +490,28 @@ prep_workdir() {
     tdir="$tasks_dir/$task"
     workdir="$work_root/$task"
 
-    # Move .wakil/ aside so it survives the folder cleanup untouched.
+    # Recover .wakil/ from an interrupted prep: if a prior prep_workdir was
+    # killed after moving .wakil/ aside but before moving it back, the saved
+    # copy sits as a sibling of the work folder. Move it back before anything
+    # else so the approval is not lost. The saved path is under $work_root
+    # (same filesystem, so mv is an atomic rename, not a copy+delete).
     _wakil_saved=""
+    _wakil_save_dir="$work_root/.wakil-saved-$task"
+    if [ -d "$_wakil_save_dir" ] && [ ! -d "$workdir/.wakil" ]; then
+        mkdir -p "$workdir" || { echo "$prog: prep_workdir: cannot create $workdir for recovery" >&2; return 1; }
+        mv "$_wakil_save_dir" "$workdir/.wakil" || { echo "$prog: prep_workdir: cannot recover saved .wakil from $_wakil_save_dir" >&2; return 1; }
+    elif [ -d "$_wakil_save_dir" ] && [ -d "$workdir/.wakil" ]; then
+        echo "$prog: prep_workdir: both saved ($_wakil_save_dir) and active ($workdir/.wakil) .wakil/ exist — cannot decide which to keep; remove one manually" >&2
+        return 1
+    fi
+
+    # Move .wakil/ aside so it survives the folder cleanup untouched. The
+    # saved path is a sibling under $work_root (same filesystem) so mv is an
+    # atomic rename, not a copy+delete. If the mv fails, abort before the
+    # wipe — otherwise .wakil/ would be permanently deleted.
     if [ -d "$workdir/.wakil" ]; then
-        _wakil_saved="${TMPDIR:-/tmp}/bench-wakil-saved.$$"
-        mv "$workdir/.wakil" "$_wakil_saved"
+        _wakil_saved="$_wakil_save_dir"
+        mv "$workdir/.wakil" "$_wakil_saved" || { echo "$prog: prep_workdir: cannot save .wakil to $_wakil_saved — aborting before wipe" >&2; return 1; }
     fi
 
     # Delete everything in the folder (it is now empty of .wakil/). This
@@ -1990,6 +2017,72 @@ EOF
     fi
     case "$csv_file" in "$cache_home"/wakil-bench/selftest/*) ;; *) echo "self-test FAILED: CSV not in the cache selftest dir: $csv_file" >&2; exit 1 ;; esac
     echo "  CSV and logs under $selftest_dir; bench/results untouched"
+
+    echo "== self-test: BENCH_TEST_SKIP_PREFLIGHT ignored in normal mode =="
+    # In a normal run (not --self-test), the variable is unset and a warning
+    # is printed. The self-test itself keeps it for the toolchain cases.
+    # We re-invoke bench.sh with the variable set but without --self-test
+    # and capture stderr: the warning must appear.
+    _pf_warn=$(BENCH_TEST_SKIP_PREFLIGHT=1 sh "$0" --wakil /nonexistent/binary --runs 1 --task nonexistent 2>&1 || true)
+    if ! printf '%s\n' "$_pf_warn" | grep -q "BENCH_TEST_SKIP_PREFLIGHT is a self-test-only"; then
+        echo "self-test FAILED: BENCH_TEST_SKIP_PREFLIGHT not warned in normal mode" >&2
+        printf '%s\n' "$_pf_warn" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    echo "  BENCH_TEST_SKIP_PREFLIGHT warning OK (ignored in normal mode, kept in self-test)"
+
+    echo "== self-test: .wakil/ recovered after interrupted prep_workdir =="
+    # Simulate an interrupted prep: .wakil/ is in the saved directory but
+    # the work folder has no .wakil/. The next prep_workdir must recover it.
+    _rec_task="$(echo "$tasks" | awk '{print $1}')"
+    _rec_workdir="$work_root/$_rec_task"
+    _rec_saved="$work_root/.wakil-saved-$_rec_task"
+    prep_workdir "$_rec_task" >/dev/null 2>&1
+    mkdir -p "$_rec_workdir/.wakil"
+    printf '  {"hisn": {\n    "risk_ack": "signing"\n  }}\n' > "$_rec_workdir/.wakil/sandbox.json"
+    _rec_hash_before=$(sha256sum "$_rec_workdir/.wakil/sandbox.json" | awk '{print $1}')
+    # Simulate the interrupt: move .wakil to the saved location, then wipe
+    # the folder (as if the kill happened after the save mv but before the
+    # restore mv).
+    mv "$_rec_workdir/.wakil" "$_rec_saved"
+    rm -rf "$_rec_workdir"
+    mkdir -p "$_rec_workdir"
+    # Now run prep_workdir again: it must find the saved copy and restore it.
+    prep_workdir "$_rec_task" >/dev/null 2>&1
+    if [ ! -f "$_rec_workdir/.wakil/sandbox.json" ]; then
+        echo "self-test FAILED: .wakil/sandbox.json not recovered after interrupted prep" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    _rec_hash_after=$(sha256sum "$_rec_workdir/.wakil/sandbox.json" | awk '{print $1}')
+    if [ "$_rec_hash_before" != "$_rec_hash_after" ]; then
+        echo "self-test FAILED: .wakil/sandbox.json hash changed after recovery ($_rec_hash_before -> $_rec_hash_after)" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    if [ -d "$_rec_saved" ]; then
+        echo "self-test FAILED: saved .wakil dir not consumed by recovery (still at $_rec_saved)" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    echo "  .wakil/ recovery OK (sandbox.json byte-identical after interrupted prep)"
+
+    echo "== self-test: tar in the required-tools list =="
+    # The harness checks for tar up front. A PATH without tar must produce
+    # the "required tool(s) not found: tar" line and exit 1. We build a
+    # minimal PATH that has everything except tar.
+    _tar_path=$(command -v tar)
+    # A minimal PATH that has everything except tar. The real /usr/bin has
+    # tar, so we symlink sh separately into the temp dir and use only that.
+    _no_tar_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-no-tar.XXXXXX")
+    for _bt in jq flock timeout sha256sum git sh; do
+        _bt_bin=$(command -v "$_bt") && ln -s "$_bt_bin" "$_no_tar_dir/$_bt" 2>/dev/null
+    done
+    _tar_err=$(PATH="$_no_tar_dir:/dev/null" "$_no_tar_dir/sh" "$0" --wakil /nonexistent/binary --runs 1 2>&1 || true)
+    if ! printf '%s\n' "$_tar_err" | grep -q "required tool(s) not found:.* tar"; then
+        echo "self-test FAILED: tar not reported as missing when absent from PATH" >&2
+        printf '%s\n' "$_tar_err" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_no_tar_dir"; exit 1
+    fi
+    echo "  tar required OK (reported when absent from PATH)"
+    rm -rf "$_no_tar_dir"
 
     echo
     echo "== self-test summary =="

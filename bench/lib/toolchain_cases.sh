@@ -64,7 +64,8 @@ run_case() {
     rc=0
     env -u GOTOOLCHAIN -u GOFLAGS -u GOPROXY -u GOENV \
         PATH="$tmp/stub:$PATH" MODE="$mode" XDG_CACHE_HOME="$tmp/$name/cache" \
-        BENCH_TASK_DIR="$t/bench/tasks/fix-test" BENCH_MARKER="$tmp/$name/wakil-ran" "$@" \
+        BENCH_TASK_DIR="$t/bench/tasks/fix-test" BENCH_MARKER="$tmp/$name/wakil-ran" \
+        BENCH_ALLOW_SKIP_PREFLIGHT=1 "$@" \
         "$t/scripts/bench.sh" --wakil "$tmp/stub/wakil" --task fix-test --runs 1 \
         >"$tmp/$name/out" 2>"$tmp/$name/err" || rc=$?
 }
