@@ -22,11 +22,27 @@ prog="${prog:="${0##*/}"}"
 # the task checks; shell builtins are not listed). The self-test builds its
 # "tool missing" PATHs from this list and nothing else (tool_dir), so a case
 # never depends on which directory the host keeps a tool in.
-# shellcheck disable=SC2034 # selftest_tools is read by the tool-list cases
 harness_tools="awk basename cat cp date dirname env find flock git grep head jq mkdir mktemp mv rm sed sha256sum sleep sort tail tar timeout tr"
 # Programs only the self-test (and bench/lib/toolchain_cases.sh) call on top.
-# shellcheck disable=SC2034 # read by the tool-list cases
-selftest_tools="chmod cut id ln touch wc"
+selftest_tools="chmod cut id ln touch wc sh"
+
+# Checked before anything else runs, with shell builtins only (command -v): a
+# missing tool gives this one line, never a shell error from the first call.
+# The tools a task needs beyond these (go, python3) are checked where they are
+# resolved (resolve_go, check_task_tools).
+_need="$harness_tools"
+for _a in "$@"; do
+    case "$_a" in --self-test) _need="$harness_tools $selftest_tools" ;; esac
+done
+missing_tools=""
+for _t in $_need; do
+    command -v "$_t" >/dev/null 2>&1 || missing_tools="$missing_tools $_t"
+done
+if [ -n "$missing_tools" ]; then
+    echo "$prog: required tool(s) not found:$missing_tools" >&2
+    exit 1
+fi
+unset _need _a _t
 
 # Detect whether stdout is a terminal (heartbeat progress lines are
 # terminal-only; nothing extra when output is piped or redirected).
@@ -138,20 +154,11 @@ lock_root="$cache_home/wakil-bench/locks"
 # exit_reason) or replaced by a symlink the host-side wakil would then follow.
 run_root="$cache_home/wakil-bench/run"
 
-# Tools the harness cannot work without. jq reads the result JSON (without it
-# the workdir guard sees no workdir and every run would stop as
-# "missing-workdir"), flock guards the work folders, timeout bounds each run,
-# sha256sum digests .wakil/, git builds the work folder's commit, tar copies
-# the work folder for the Go checks. Checked up
-# front so the failure names the tool instead of surfacing run by run.
-missing_tools=""
-for _t in jq flock timeout sha256sum git tar; do
-    command -v "$_t" >/dev/null 2>&1 || missing_tools="$missing_tools $_t"
-done
-if [ -n "$missing_tools" ]; then
-    echo "$prog: required tool(s) not found:$missing_tools" >&2
-    exit 1
-fi
+# Tools the harness cannot work without are checked at the top of this file
+# (harness_tools). jq reads the result JSON (without it the workdir guard sees
+# no workdir and every run would stop as "missing-workdir"), flock guards the
+# work folders, timeout bounds each run, sha256sum digests .wakil/, git builds
+# the work folder's commit, tar copies the work folder for the Go checks.
 
 # --no-preflight skips the Go preflight so the toolchain cases can drive a
 # check through a broken go. It is a flag, never an environment variable: no
@@ -2375,6 +2382,69 @@ EOF
     fi
     echo "  tar required OK (the one line, exit 1, with every other tool on PATH)"
     rm -rf "$_no_tar_dir"
+
+    echo "== self-test: tools-first (a missing tool gives one line naming every missing tool, before anything else runs) =="
+    # Each case's PATH is tool_dir minus the named tools: nothing else is lost.
+    # The output must be exactly the one line (a shell error from a program used
+    # before the check would be a second line), and the exit status 1. The
+    # message is compared whole, never grepped for English text.
+    _tf_n=0
+    for _tf in "dirname" "dirname head tar" "jq"; do
+        _tf_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-toolsfirst.XXXXXX")
+        # shellcheck disable=SC2086 # word splitting is the point: a short list of tool names
+        tool_dir "$_tf_dir" $_tf || { echo "self-test FAILED: tools-first: cannot build the tool directory" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_tf_dir"; exit 1; }
+        _tf_want="$prog: required tool(s) not found:"
+        for _tf_t in $_tf; do _tf_want="$_tf_want $_tf_t"; done
+        # The tools are reported in the harness's own order, not the case's.
+        _tf_want="$prog: required tool(s) not found:"
+        for _tf_t in $harness_tools; do
+            case " $_tf " in *" $_tf_t "*) _tf_want="$_tf_want $_tf_t" ;; esac
+        done
+        _tf_rc=0
+        _tf_out=$(PATH="$_tf_dir" "$_tf_dir/sh" "$0" --wakil /nonexistent/binary --runs 1 2>&1) || _tf_rc=$?
+        _tf_help=$(PATH="$_tf_dir" "$_tf_dir/sh" "$0" -h 2>&1) || true
+        if [ "$_tf_rc" -ne 1 ] || [ "$_tf_out" != "$_tf_want" ] || [ "$_tf_help" != "$_tf_want" ]; then
+            echo "self-test FAILED: tools-first without [$_tf]: rc=$_tf_rc, want exactly the line '$_tf_want':" >&2
+            printf '%s\n' "$_tf_out" >&2
+            printf -- '-h gives: %s\n' "$_tf_help" >&2
+            rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_tf_dir"; exit 1
+        fi
+        rm -rf "$_tf_dir"
+        _tf_n=$((_tf_n + 1))
+    done
+    echo "  $_tf_n cases (dirname; dirname+head+tar; jq): one line naming every missing tool, exit 1, also for -h"
+
+    echo "== self-test: tools-list-sufficient (every task, run for real with only the listed tools on PATH) =="
+    # The solve stub on every task, through a real bench.sh process whose whole
+    # PATH is tool_dir (the harness's tools, sh, go, python3). A program the
+    # list leaves out would show as "not found" in the output or as a row that
+    # is not "pass". --no-preflight keeps the CSV and logs under the case's own
+    # cache; the Go caches are the real ones (a cold cache would rebuild std).
+    _ts_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-toolsuff.XXXXXX")
+    tool_dir "$_ts_dir/bin" || { echo "self-test FAILED: tools-list-sufficient: cannot build the tool directory" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_ts_dir"; exit 1; }
+    cp "$tmpdir/wakil-solve" "$_ts_dir/wakil"
+    _ts_bad=""
+    _ts_n=0
+    for _ts_t in $tasks; do
+        _ts_out="$_ts_dir/$_ts_t.out"
+        _ts_rc=0
+        env -i PATH="$_ts_dir/bin" HOME="${HOME:-/nonexistent}" TMPDIR="${TMPDIR:-/tmp}" \
+            XDG_CACHE_HOME="$_ts_dir/cache" BENCH_TASK_DIR="$tasks_dir/$_ts_t" \
+            ${go_cache:+GOCACHE="$go_cache"} ${go_modcache:+GOMODCACHE="$go_modcache"} ${go_path:+GOPATH="$go_path"} \
+            "$_ts_dir/bin/sh" "$0" --no-preflight --wakil "$_ts_dir/wakil" --task "$_ts_t" --runs 1 >"$_ts_out" 2>&1 || _ts_rc=$?
+        _ts_row=$(sed -n 2p "$_ts_dir"/cache/wakil-bench/nopreflight/*-bench.csv 2>/dev/null | awk -F, '{ print $6 }')
+        rm -rf "$_ts_dir/cache/wakil-bench/nopreflight"
+        if [ "$_ts_rc" -ne 0 ] || grep -qi 'not found' "$_ts_out" || [ "$_ts_row" != pass ]; then
+            _ts_bad="$_ts_bad $_ts_t(rc=$_ts_rc,row=$_ts_row: $(grep -i -m1 'not found' "$_ts_out" || head -n 1 "$_ts_out"))"
+        fi
+        _ts_n=$((_ts_n + 1))
+    done
+    if [ -n "$_ts_bad" ]; then
+        echo "self-test FAILED: tools-list-sufficient:$_ts_bad" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_ts_dir"; exit 1
+    fi
+    rm -rf "$_ts_dir"
+    echo "  $_ts_n task(s) solved and checked with a PATH of exactly the listed tools"
 
     echo
     echo "== self-test summary =="
