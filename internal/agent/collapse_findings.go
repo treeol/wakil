@@ -179,8 +179,13 @@ func fitFindings(entries []findingEntry, archive string) string {
 	hidden := [findCatCount]int{}
 	for {
 		out := renderFindings(entries, hidden, archive)
-		if len(out) <= maxFindingsBytes || len(entries) == 0 {
+		if len(out) <= maxFindingsBytes {
 			return out
+		}
+		if len(entries) == 0 {
+			// Even the markers do not fit (a very long archive path): the
+			// archive line alone, never cut.
+			return renderFindings(nil, [findCatCount]int{}, archive)
 		}
 		oldest := 0
 		for i, e := range entries {
@@ -335,14 +340,20 @@ func commandWord(cmd string) string {
 	for i < len(fields) {
 		f := fields[i]
 		switch {
-		case strings.Contains(f, "=") && !strings.HasPrefix(f, "=") && !strings.ContainsAny(f[:strings.Index(f, "=")], "/\"'$`"):
+		case isAssignmentWord(f):
 			i++ // VAR=value prefix
 		case f == "cd":
-			// Skip "cd DIR" and the && or ; that follows it.
-			i += 2
-			if i < len(fields) && (fields[i] == "&&" || fields[i] == ";") {
+			// Skip "cd [-options] DIR" up to the && or ; that follows it; no
+			// such separator means no command word (the directory is an
+			// argument and is never returned).
+			i++
+			for i < len(fields) && fields[i] != "&&" && fields[i] != ";" {
 				i++
 			}
+			if i >= len(fields) {
+				return "?"
+			}
+			i++
 		default:
 			goto found
 		}
@@ -362,4 +373,27 @@ found:
 		}
 	}
 	return w
+}
+
+// isAssignmentWord reports whether w is NAME=value with a shell variable name.
+func isAssignmentWord(w string) bool {
+	k := strings.Index(w, "=")
+	if k <= 0 {
+		return false
+	}
+	for j, r := range w[:k] {
+		if !(r == '_' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || j > 0 && r >= '0' && r <= '9') {
+			return false
+		}
+	}
+	return true
+}
+
+// withFindings appends the findings part to a note, making sure a newline
+// separates them.
+func withFindings(note, findings string) string {
+	if findings != "" && note != "" && !strings.HasSuffix(note, "\n") {
+		note += "\n"
+	}
+	return note + findings
 }

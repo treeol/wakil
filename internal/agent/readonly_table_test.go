@@ -165,6 +165,10 @@ var classifyTable = []classifyRow{
 	{"sed -n '/[a/p' f", false, true, "unterminated bracket"},
 	{"sed -n '/[a/]/p' f", false, true, "delimiter inside a bracket in an address"},
 	{"sed 's[a[b[p' f", false, true, "bracket as the s delimiter"},
+	{"sed 's^[^a]^w out^' f", false, true, "caret delimiter and a negated bracket: a non-bracket-aware sed sees a w flag"},
+	{"sed 's^[^a]^w_out^' f", false, true, "same, without a space"},
+	{"sed 's^[^a]^X^g' f", false, true, "same, harmless replacement: refused all the same"},
+	{"sed 's,[^a],X,' f", true, false, "negated bracket with another delimiter"},
 	{"sed 's/a\\/;#/w out' f", false, true, "escaped delimiter then a comment hides w"},
 	// The script is not one single-quoted word: the shell can change it.
 	{"sed -n /[a-z]/p file", false, true, "unquoted script: a glob"},

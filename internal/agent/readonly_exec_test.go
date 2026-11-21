@@ -202,18 +202,8 @@ func TestSedBracketReadOnlyFormsDoNotWrite(t *testing.T) {
 		`sed -n '/x/,/[y]/p' f`,
 		`sed -n -e '/[a]/p' f`,
 		`sed 's/a/b/' 'f[1]'`,
-		`sed 's/[/]/X/' f`,
 	} {
-		ro := IsReadOnlyShell(cmd)
-		if cmd == `sed 's/[/]/X/' f` {
-			// Refused by the classifier (delimiter inside a bracket); run
-			// only to show the form is harmless here, never as read-only.
-			if ro {
-				t.Errorf("%q must not be read-only", cmd)
-			}
-			continue
-		}
-		if !ro {
+		if !IsReadOnlyShell(cmd) {
 			t.Errorf("%q should be read-only", cmd)
 			continue
 		}

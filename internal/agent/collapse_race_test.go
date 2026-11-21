@@ -17,6 +17,7 @@ import (
 // several places after releasing the lock, and passes after because it reads
 // it once under the lock.)
 func TestHandleCollapseContextCurTurnRace(t *testing.T) {
+	isolateToolCache(t)
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.SetContextMode("long-session")
 	app.Cfg.ContextCollapseMinBytes = 0

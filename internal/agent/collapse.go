@@ -515,8 +515,7 @@ func buildPartialCheckpointBlock(rec CollapseRecord) string {
 		b.WriteString(rec.NextSteps)
 		b.WriteString("\n")
 	}
-	b.WriteString(rec.Note)
-	b.WriteString(rec.Findings)
+	b.WriteString(withFindings(rec.Note, rec.Findings))
 	return b.String()
 }
 
@@ -652,8 +651,7 @@ func (a *App) indexValueForTurn(t int, rec CollapseRecord) string {
 	if rec.StashKey != "" {
 		fmt.Fprintf(&b, "stash: %s — %s\n", rec.StashKey, rec.StashDesc)
 	}
-	b.WriteString(rec.Note)
-	b.WriteString(rec.Findings)
+	b.WriteString(withFindings(rec.Note, rec.Findings))
 	return b.String()
 }
 
@@ -977,7 +975,7 @@ func projectTailAnswerContent(content *string, rec CollapseRecord, capBytes int)
 			content = &c
 		}
 	}
-	noteText := rec.Note + rec.Findings
+	noteText := withFindings(rec.Note, rec.Findings)
 	if rec.Summary != "" {
 		noteText = "[checkpoint summary: " + rec.Summary + "]\n" + noteText
 	}
@@ -1736,7 +1734,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		// would land in the wrong conversation. Drop the archive and stop.
 		a.stateMu.Unlock()
 		_ = os.Remove(archive)
-		return "collapse_context: the session changed while collapsing — nothing was collapsed"
+		return "collapse_context: the session changed while collapsing — this request was not collapsed"
 	}
 	if a.collapsed == nil {
 		a.collapsed = map[int]CollapseRecord{}

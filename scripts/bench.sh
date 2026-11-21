@@ -146,6 +146,10 @@ fi
 # warning line and writes its CSV and logs only under the cache directory
 # (never bench/results, never where find_prev_csv looks), so it cannot be
 # mistaken for a measured run. The self-test has its own redirect.
+if [ "$skip_preflight" -eq 1 ] && [ "$self_test" -eq 1 ]; then
+    echo "$prog: --no-preflight and --self-test cannot be combined" >&2
+    exit 2
+fi
 if [ "$skip_preflight" -eq 1 ]; then
     echo "$prog: warning: --no-preflight: the Go preflight is skipped; results go to $cache_home/wakil-bench/nopreflight, not bench/results" >&2
     [ "$self_test" -eq 1 ] || results_dir="$cache_home/wakil-bench/nopreflight"

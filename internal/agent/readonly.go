@@ -1131,6 +1131,9 @@ func sedParseDestructive(script string, seen *int) bool {
 				}
 				j := i + 1
 				if j < n && s[j] == '^' {
+					if delim == '^' {
+						return false // the negation caret would also be the delimiter
+					}
 					j++
 				}
 				if j < n && s[j] == ']' {

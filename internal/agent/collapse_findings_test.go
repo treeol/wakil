@@ -146,6 +146,9 @@ func TestCommandWord(t *testing.T) {
 		strings.Repeat("a", 41) + " x":     "?",
 		"cd /tmp":                          "?",
 		"API_KEY=sk-secret-value curl url": "curl",
+		"cd -P secretdir && make":          "make",
+		"cd secretdir":                     "?",
+		"--token=x curl":                   "?",
 	} {
 		if got := commandWord(in); got != want {
 			t.Errorf("commandWord(%q) = %q, want %q", in, got, want)
@@ -416,5 +419,29 @@ func TestFindingsSearchHintWorksOnOwnArchive(t *testing.T) {
 		Name: "search_files", Arguments: fmt.Sprintf(`{"pattern":"RESULT-BODY-ONE","path":%q}`, rec.Archive)}})
 	if !strings.Contains(res, "RESULT-BODY-ONE") {
 		t.Errorf("search_files on the archive path did not find the term: %q", res)
+	}
+}
+
+// TestBuildFindingsLongArchivePath: a path so long that even the (n more)
+// markers do not fit leaves the archive line alone, never over the limit
+// beyond that line.
+func TestBuildFindingsLongArchivePath(t *testing.T) {
+	arch := "/cache/" + strings.Repeat("d", 700) + "/turn-1.txt"
+	w := []proxy.Message{tcMsg("a", "read_file", `{"path":"x.go"}`), trMsg("a", "read_file", "x")}
+	got := buildFindings(w, arch)
+	if strings.Contains(got, "more)") || strings.Contains(got, "read (requested") || !strings.Contains(got, arch) {
+		t.Errorf("want only the header and the archive line:\n%s", got)
+	}
+}
+
+func TestWithFindingsSeparator(t *testing.T) {
+	if got := withFindings("note", "F\n"); got != "note\nF\n" {
+		t.Errorf("got %q", got)
+	}
+	if got := withFindings("note\n", "F\n"); got != "note\nF\n" {
+		t.Errorf("got %q", got)
+	}
+	if got := withFindings("note", ""); got != "note" {
+		t.Errorf("got %q", got)
 	}
 }

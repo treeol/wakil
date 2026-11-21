@@ -184,6 +184,7 @@ func TestStreamTurnAsyncNoticeNotInStream(t *testing.T) {
 // a.Out.
 func noticeFallbackOut(t *testing.T, out io.Writer) string {
 	t.Helper()
+	isolateToolCache(t)
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.SetContextMode("long-session")
 	app.Cfg.ContextCollapseMinBytes = 1
