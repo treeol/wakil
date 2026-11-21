@@ -286,7 +286,12 @@ func TestScreenStreamingAnswer(t *testing.T) {
 	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: "hello "}, h.m.sessionID))
 	h.settle()
 	h.p.Send(evt(event.KindMessageDelta, event.MessageDelta{Text: "stream"}, h.m.sessionID))
-	h.settle()
+	// settle only sees that the output went quiet; under -race on a loaded
+	// runner the frame with the second chunk can be drawn after that. Wait
+	// for the text itself.
+	h.waitFor("streamed answer on screen", func() bool {
+		return strings.Contains(h.raw(), "hello stream")
+	})
 	if !strings.Contains(h.raw(), "hello stream") {
 		t.Fatalf("streaming text missing from final screen")
 	}
