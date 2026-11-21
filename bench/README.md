@@ -161,11 +161,17 @@ killer); it is also `timeout`, with `exit_reason=killed`.
 
 **Parallel runs.** One `flock` per task
 (`${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/locks/<task>.lock`, outside the
-work folder) is held from before the folder is emptied until the run ends.
-A second bench on the same task prints `task <t> is already being run by
+work folder) is taken once per task and held from before the folder is first
+emptied until the last of its `--runs` has ended (never released between two
+runs). No program the bench starts (wakil, the checks, `git`, the heartbeat
+and its `sleep`) inherits the lock, and nothing of a run is left alive after
+it. A second bench on the same task prints `task <t> is already being run by
 another bench`, exits 75, writes no CSV row and leaves the folder alone.
 Different tasks can run in parallel. The harness refuses to run without
-`flock`; it also requires `jq`, `timeout`, `sha256sum` and `git`.
+`flock`; it also requires `jq`, `timeout`, `sha256sum` and `git`. The tools
+are checked first, with shell builtins only: a missing one gives one line
+(`required tool(s) not found: a b c`, naming all of them) and exit 1, before
+anything else runs; the list is `harness_tools` at the top of `scripts/bench.sh`.
 
 **Fake passes.** The Go tasks (`fix-test`, `rename`) never run the agent's
 tree. `check.sh` (via `bench/lib/gocheck.sh`) works on a clean copy of the
@@ -248,7 +254,13 @@ must report `pass`); declined runs; agent-written test code that tries to
 fake a pass; no generator, seed or check in the `long-read` folder or its
 history, and `leak_check` refusing every leak kind; a planted `solution/`
 (`leak-detected`); a model name and version with a comma, quote and newline
-(CSV); a held task lock (exit 75, folder untouched); a stub that sleeps past
+(CSV); a held task lock (exit 75, folder untouched); `--runs 2` with the
+heartbeat on (two rows, the lock held in both runs, no started program holds
+it, a second bench exits 75 in both, nothing left alive, `lock-series`); a
+missing tool (`tools-first`, `tar`, `python3`: each case's PATH is a private
+directory with exactly the harness's tools minus the one under test) and a
+run of every task with only the listed tools (`tools-list-sufficient`); a
+stub that sleeps past
 the timeout and one that ignores TERM (both `timeout`, no `check.sh`); the
 workdir guard for docker, hisn (plain and symlinked), direct and a binary
 without `sandbox_backend`; wrong and missing workdir; the two sandbox
