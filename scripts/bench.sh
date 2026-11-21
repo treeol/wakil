@@ -51,6 +51,12 @@ wakil_bin="wakil"
 kill_grace="${BENCH_KILL_GRACE:-10}"
 case "$kill_grace" in *[!0-9]*|'') echo "${0##*/}: BENCH_KILL_GRACE must be a positive integer (got $kill_grace)" >&2; exit 2 ;; esac
 [ "$kill_grace" -ge 1 ] || { echo "${0##*/}: BENCH_KILL_GRACE must be >= 1" >&2; exit 2; }
+# Upper bound for one check.sh, setup.sh or preflight run (BENCH_CHECK_TIMEOUT,
+# seconds): a hung "go build" of agent code must not hang the harness. A hit is
+# an error ("check: timed out"), not a fail.
+check_timeout="${BENCH_CHECK_TIMEOUT:-900}"
+case "$check_timeout" in *[!0-9]*|'') echo "${0##*/}: BENCH_CHECK_TIMEOUT must be a positive integer (got $check_timeout)" >&2; exit 2 ;; esac
+[ "$check_timeout" -ge 1 ] || { echo "${0##*/}: BENCH_CHECK_TIMEOUT must be >= 1" >&2; exit 2; }
 model_name=""
 only_task=""
 runs=1
@@ -116,10 +122,11 @@ run_root="$cache_home/wakil-bench/run"
 # Tools the harness cannot work without. jq reads the result JSON (without it
 # the workdir guard sees no workdir and every run would stop as
 # "missing-workdir"), flock guards the work folders, timeout bounds each run,
-# sha256sum digests .wakil/, git builds the work folder's commit. Checked up
+# sha256sum digests .wakil/, git builds the work folder's commit, tar copies
+# the work folder for the Go checks. Checked up
 # front so the failure names the tool instead of surfacing run by run.
 missing_tools=""
-for _t in jq flock timeout sha256sum git; do
+for _t in jq flock timeout sha256sum git tar; do
     command -v "$_t" >/dev/null 2>&1 || missing_tools="$missing_tools $_t"
 done
 if [ -n "$missing_tools" ]; then
@@ -199,8 +206,41 @@ go_modcache=""
 go_cache=""
 go_path=""
 
+# go_required_version: the highest "go" directive of the selected tasks' go.mod
+# files (task repos and the long-read generator), e.g. 1.26.
+go_required_version() {
+    for _gr_t in $tasks; do
+        for _gr_f in "$tasks_dir/$_gr_t/repo/go.mod" "$tasks_dir/$_gr_t/gen/go.mod"; do
+            [ -f "$_gr_f" ] && awk '$1 == "go" { print $2; exit }' "$_gr_f"
+        done
+    done | sort -t. -k1,1n -k2,2n -k3,3n | tail -n 1
+}
+
+# go_found_version: the Go the harness found: the resolved toolchain, else the
+# installed Go ("local", no switching), else "none".
+go_found_version() {
+    if [ -n "$go_toolchain" ] && [ "$go_toolchain" != local ]; then
+        echo "$go_toolchain"
+    elif command -v go >/dev/null 2>&1; then
+        _gf=$(cd "$repo_root" && GOTOOLCHAIN=local GOPROXY=off go env GOVERSION 2>/dev/null | head -n 1)
+        echo "${_gf:-unknown}"
+    else
+        echo "no go in PATH"
+    fi
+}
+
+# go_fail_line <detail>: the one line printed when the Go checks cannot run.
+# It names the Go the tasks need and the Go that was found, then go's own
+# words (the cause can be something else than the version, e.g. GOSUMDB=off or
+# an uncached toolchain, and go says so).
+go_fail_line() {
+    echo "$prog: the Go checks cannot run: the tasks need go >= $(go_required_version), found $(go_found_version) — $1" >&2
+}
+
 # resolve_go: fill go_toolchain and the cache locations, or print one line and
-# return 1.
+# return 1. BENCH_TEST_SKIP_PREFLIGHT=1 (test only, read here and in
+# preflight_go, never passed on) lets a failed resolve fall back to "local" so
+# the self-test can drive a check through a broken go.
 resolve_go() {
     _rg_need=0
     for _rg_t in $tasks; do
@@ -208,14 +248,17 @@ resolve_go() {
     done
     [ "$_rg_need" -eq 1 ] || return 0
     if ! command -v go >/dev/null 2>&1; then
-        echo "$prog: go is not installed (the Go tasks need the repo's toolchain, see bench/README.md)" >&2
+        [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" != 1 ] || { go_toolchain=local; return 0; }
+        go_fail_line "go is not installed (see bench/README.md)"
         return 1
     fi
     _rg_err=$(mktemp "${TMPDIR:-/tmp}/bench-resolve.XXXXXX") || return 1
     # GOPROXY=off: resolving must not download either.
     if ! _rg_v=$(cd "$repo_root" && GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
-        echo "$prog: cannot resolve the Go toolchain in $repo_root: $(head -n 1 "$_rg_err")" >&2
+        _rg_msg=$(head -n 1 "$_rg_err")
         rm -f "$_rg_err"
+        [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" != 1 ] || { go_toolchain=local; return 0; }
+        go_fail_line "$_rg_msg"
         return 1
     fi
     rm -f "$_rg_err"
@@ -232,8 +275,9 @@ resolve_go() {
 }
 
 # with_go_env <command>...: run a check or setup hook with the resolved Go
-# settings in its environment (and nowhere else: the agent never sees them).
-# Runs in a subshell.
+# settings in its environment (and nowhere else: the agent never sees them),
+# under timeout (check_timeout, kill_grace; status 124/137 on a hit). Runs in a
+# subshell.
 with_go_env() {
     (
         unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH
@@ -243,8 +287,56 @@ with_go_env() {
             [ -z "$go_cache" ] || { BENCH_GOCACHE="$go_cache"; export BENCH_GOCACHE; }
             [ -z "$go_path" ] || { BENCH_GOPATH="$go_path"; export BENCH_GOPATH; }
         fi
-        "$@"
+        timeout -k "$kill_grace" "$check_timeout" "$@"
     )
+}
+
+# preflight_go: before any run (and so before any model request) prove that
+# the Go the checks use can run the Go tasks: setup.sh and every Go check are
+# run once on a pristine task tree (repo/ with the reference solution on top;
+# the check runs in BENCH_PREFLIGHT=1 mode, where any failure is an
+# environment error). One line on stderr and return 1 when one cannot; nothing
+# is written to the results.
+preflight_go() {
+    [ -n "$go_toolchain" ] || return 0
+    [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" != 1 ] || return 0
+    _pf_root="$cache_home/wakil-bench/preflight"
+    mkdir -p "$_pf_root" || { echo "$prog: cannot create $_pf_root" >&2; return 1; }
+    for _pf_t in $tasks; do
+        _pf_d="$tasks_dir/$_pf_t"
+        [ -f "$_pf_d/repo/go.mod" ] || continue
+        _pf_tmp=$(mktemp -d "$_pf_root/$_pf_t.XXXXXX") || return 1
+        _pf_out="$_pf_tmp.out"
+        _pf_bad=""
+        if [ -x "$_pf_d/setup.sh" ]; then
+            mkdir "$_pf_tmp/s"
+            ( cd "$_pf_tmp/s" && with_go_env "$_pf_d/setup.sh" ) >"$_pf_out" 2>&1 9>&- || _pf_bad="setup of $_pf_t: $(head -n 1 "$_pf_out")"
+        fi
+        if [ -z "$_pf_bad" ] && grep -q 'gocheck_prepare\|gocheck_env' "$_pf_d/check.sh" && [ -d "$_pf_d/solution" ]; then
+            mkdir "$_pf_tmp/c"
+            cp -R "$_pf_d/repo/." "$_pf_tmp/c/" && cp -R "$_pf_d/solution/." "$_pf_tmp/c/" || _pf_bad="cannot copy $_pf_t"
+            if [ -z "$_pf_bad" ]; then
+                ( cd "$_pf_tmp/c" && with_go_env env BENCH_PREFLIGHT=1 "$_pf_d/check.sh" ) >"$_pf_out" 2>&1 9>&- || _pf_bad="check of $_pf_t: $(grep -m1 '^check:' "$_pf_out" || head -n 1 "$_pf_out")"
+            fi
+        fi
+        rm -rf "$_pf_tmp" "$_pf_out"
+        if [ -n "$_pf_bad" ]; then
+            go_fail_line "$_pf_bad"
+            return 1
+        fi
+    done
+}
+
+# check_result_for_rc <status>: the result class of a check's exit status:
+# 0 pass, 1 fail (the check ran and judged the agent's work), anything else
+# error (the check could not judge: bench/lib/gocheck.sh uses 99; 124/137 a
+# timeout; 126/127 a missing interpreter; ...).
+check_result_for_rc() {
+    case "$1" in
+        0) echo pass ;;
+        1) echo fail ;;
+        *) echo error ;;
+    esac
 }
 
 # na <value>: the CSV cell for a value a binary did not report.
@@ -715,10 +807,21 @@ run_one_locked() {
         { printf '\n--- check.sh (%s) ---\n' "$task"; ( cd "$workdir" && with_go_env "$tdir/check.sh" ) 2>&1; } >>"$log_file" 2>&1 9>&-
         chk_rc=$?
         set -e
-        if [ "$chk_rc" -eq 0 ]; then
-            result="pass"
-        else
-            result="fail"
+        result=$(check_result_for_rc "$chk_rc")
+        if [ "$result" = "error" ]; then
+            # The check could not judge: not a "fail" of the agent. It is not
+            # scored, the same environment would give the same on the next
+            # run, so the bench stops (like the guards above).
+            case "$chk_rc" in
+                124|137) _chk_why="timed out after ${check_timeout}s" ;;
+                *) _chk_why="ended with status $chk_rc" ;;
+            esac
+            printf 'check: error: check.sh %s\n' "$_chk_why" >>"$log_file"
+            exit_reason="check-error"
+            csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+            echo "$prog: bench stopped — task $task run $run: the check could not judge ($_chk_why); see $log_file" >&2
+            grep '^check:' "$log_file" | tail -n 2 >&2 || true
+            return 1
         fi
         csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
     fi
@@ -1053,6 +1156,50 @@ EOF
     else
         echo "  skipped (no Go task selected)"
     fi
+
+    echo "== self-test: rc-mapping, verdict-required, preflight-real-go (the result class of a check) =="
+    # check_result_for_rc: only 0 and an explicit 1 are verdicts.
+    for _m in "0 pass" "1 fail" "2 error" "99 error" "124 error" "126 error" "127 error" "137 error"; do
+        _m_rc=${_m% *}; _m_want=${_m#* }
+        _m_got=$(check_result_for_rc "$_m_rc")
+        [ "$_m_got" = "$_m_want" ] || { echo "self-test FAILED: rc-mapping: status $_m_rc -> $_m_got, want $_m_want" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    done
+    # verdict-required: a check that ends with status 1 by accident (a failed
+    # command under set -e) must come out as 99; gocheck_fail stays 1, and
+    # BENCH_PREFLIGHT turns a fail into 99.
+    _vr="$tmpdir/verdict"
+    mkdir -p "$_vr/lib" "$_vr/t"
+    cp "$bench_dir/lib/gocheck.sh" "$_vr/lib/gocheck.sh"
+    for _v in accident:1 judged:1 judged-pre:99 clean:0; do
+        _v_name=${_v%:*}; _v_want=${_v#*:}
+        cat > "$_vr/t/check.sh" <<VEOF
+#!/bin/sh
+set -eu
+. "$_vr/lib/gocheck.sh"
+gocheck_init "$_vr/t"
+case "$_v_name" in
+    accident) cp /nonexistent/file /nonexistent/dest ;;
+    judged|judged-pre) gocheck_fail "wrong answer" ;;
+    clean) : ;;
+esac
+VEOF
+        chmod +x "$_vr/t/check.sh"
+        _v_pre=""; [ "$_v_name" != judged-pre ] || _v_pre=1
+        _v_rc=0
+        BENCH_PREFLIGHT="$_v_pre" "$_vr/t/check.sh" >"$_vr/out" 2>&1 || _v_rc=$?
+        [ "$_v_name" != accident ] || _v_want=99
+        if [ "$_v_rc" -ne "$_v_want" ]; then
+            echo "self-test FAILED: verdict-required: $_v_name ended with $_v_rc, want $_v_want" >&2
+            cat "$_vr/out" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+    done
+    # preflight-real-go: the preflight runs setup.sh and every Go check on the
+    # reference solutions; with the real Go it must accept them (main ran it
+    # before this self-test started; this runs it again, explicitly).
+    if [ -n "$go_toolchain" ]; then
+        preflight_go || { echo "self-test FAILED: preflight-real-go: the preflight refused the real Go" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    fi
+    echo "  status 0/1 map to pass/fail, every other status to error; an unannounced status 1 becomes 99; the preflight accepts the real Go"
 
     echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
     # Also asserts that bench.sh passes --allow-destructive to `wakil run`.
@@ -1742,6 +1889,7 @@ EOF
 
 main() {
     resolve_go || exit 1
+    preflight_go || exit 1
 
     if [ "$do_setup" -eq 1 ]; then
         do_setup

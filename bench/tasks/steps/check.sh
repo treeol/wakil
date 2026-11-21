@@ -1,7 +1,12 @@
 #!/bin/sh
 # check.sh for steps: all six artifacts (with a trailing newline allowed)
-# hold the stated content.
+# hold the stated content. Exit status: see bench/lib/gocheck.sh (0 pass, 1
+# fail, 99 error).
 set -eu
+tdir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=../../lib/gocheck.sh
+. "$tdir/../../lib/gocheck.sh"
+gocheck_init "$tdir"
 fail=0
 expect() {
     f=$1; want=$2
@@ -19,4 +24,4 @@ expect step3.txt 11
 expect step4.txt six
 expect step5.txt 100
 expect step6.txt last
-exit $fail
+[ "$fail" -eq 0 ] || gocheck_fail "an artifact is missing or wrong"

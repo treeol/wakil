@@ -1,7 +1,8 @@
 #!/bin/sh
 # check.sh for fix-test: runs the hidden test against a clean copy of the
 # package (agent-written tests are dropped, go.mod restored, imports of the
-# package restricted) — see bench/lib/gocheck.sh.
+# package restricted) — see bench/lib/gocheck.sh, which also defines the exit
+# status (0 pass, 1 fail, 99 error).
 set -eu
 tdir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck source=../../lib/gocheck.sh
