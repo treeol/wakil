@@ -135,6 +135,7 @@ gocheck_bin() {
     { [ "$_gb_t" -ge 1 ] && [ "$_gb_g" -ge 1 ]; } || gocheck_error "BENCH_BINARY_TIMEOUT and BENCH_KILL_GRACE must be >= 1"
     GC_BIN_RC=0
     timeout -k "$_gb_g" "$_gb_t" "$GC_BIN" "$@" < "$_gb_in" > "$GC_TMP/bin.out" 2> "$GC_TMP/bin.err" || GC_BIN_RC=$?
+    # shellcheck disable=SC2034 # read by the sourcing check.sh (add-flag)
     GC_BIN_OUT=$(cat "$GC_TMP/bin.out")
     case "$GC_BIN_RC" in
         124|137) gocheck_fail "binary timed out" ;;
