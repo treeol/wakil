@@ -1517,12 +1517,15 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 			afterPriorCount++
 		}
 	}
-	_, curKept := a.keep[a.curTurn]
-	existingCur, hasExistingCur := a.collapsed[a.curTurn]
+	// curTurn is read once, under the lock, and used for the rest of the
+	// call: a /new on another goroutine resets it under stateMu.Lock.
+	turn := a.curTurn
+	_, curKept := a.keep[turn]
+	existingCur, hasExistingCur := a.collapsed[turn]
 	a.stateMu.RUnlock()
 	priorCollapsed := afterPriorCount - beforeCount
 
-	if a.curTurn <= 0 {
+	if turn <= 0 {
 		if priorCollapsed > 0 {
 			return fmt.Sprintf("collapsed %d prior request(s); no active request prefix to collapse", priorCollapsed)
 		}
@@ -1530,9 +1533,9 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	}
 	if curKept {
 		if priorCollapsed > 0 {
-			return fmt.Sprintf("collapsed %d prior request(s); current request %d is exempted by /keep", priorCollapsed, a.curTurn)
+			return fmt.Sprintf("collapsed %d prior request(s); current request %d is exempted by /keep", priorCollapsed, turn)
 		}
-		return fmt.Sprintf("collapse_context: request %d is exempted from collapse by /keep", a.curTurn)
+		return fmt.Sprintf("collapse_context: request %d is exempted from collapse by /keep", turn)
 	}
 
 	// Guard: if async work is actively running or sitting in the inbox,
@@ -1547,7 +1550,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 
 	a.convMu.RLock()
 	spans := turnSpansFromSlice(a.Conv)
-	s, ok := spans[a.curTurn]
+	s, ok := spans[turn]
 	if !ok {
 		a.convMu.RUnlock()
 		if priorCollapsed > 0 {
@@ -1570,7 +1573,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	if curAsstIdx <= s.first+1 {
 		a.convMu.RUnlock()
 		if priorCollapsed > 0 {
-			res := fmt.Sprintf("collapsed %d prior request(s); no completed tool rounds in current request %d to collapse yet", priorCollapsed, a.curTurn)
+			res := fmt.Sprintf("collapsed %d prior request(s); no completed tool rounds in current request %d to collapse yet", priorCollapsed, turn)
 			if args.NextSteps != "" {
 				res += "\nNext steps: " + args.NextSteps
 			}
@@ -1623,18 +1626,18 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 		return fmt.Sprintf("collapse_context: current request working set (%d chars) is below minimum collapse threshold (%d chars)", wSize, minBytes)
 	}
 
-	archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("turn-%d-part", a.curTurn), renderWorkingSet(w))
+	archive := wtools.SpillToCache(a.chatID(), fmt.Sprintf("turn-%d-part", turn), renderWorkingSet(w))
 	if archive == "" {
 		if !a.collapseArchiveFailed {
 			a.collapseArchiveFailed = true
-			fmt.Fprintln(a.Out, Yellow("⚠ collapse: archive write failed for turn "+fmt.Sprint(a.curTurn)+" — working set kept in context"))
+			fmt.Fprintln(a.Out, Yellow("⚠ collapse: archive write failed for turn "+fmt.Sprint(turn)+" — working set kept in context"))
 		}
 		return "collapse_context: archive write failed — working set kept in context"
 	}
 
-	note := buildCollapseNote(a.curTurn, w, archive)
+	note := buildCollapseNote(turn, w, archive)
 	rec := CollapseRecord{
-		Turn:           a.curTurn,
+		Turn:           turn,
 		Archive:        archive,
 		WBytes:         wSize,
 		Note:           note,
@@ -1704,18 +1707,25 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	cpLen := len(buildPartialCheckpointBlock(rec))
 
 	a.stateMu.Lock()
+	if a.curTurn != turn {
+		// The session was reset (/new) after the turn was read: the record
+		// would land in the wrong conversation. Drop the archive and stop.
+		a.stateMu.Unlock()
+		_ = os.Remove(archive)
+		return "collapse_context: the session changed while collapsing — nothing was collapsed"
+	}
 	if a.collapsed == nil {
 		a.collapsed = map[int]CollapseRecord{}
 	}
-	a.collapsed[a.curTurn] = rec
+	a.collapsed[turn] = rec
 	a.midTurnCollapses++
 	a.stateMu.Unlock()
 
-	a.emitCollapseNotice(formatCollapseNotice(a.curTurn, wSize, cpLen, w, s.first+1, archive))
+	a.emitCollapseNotice(formatCollapseNotice(turn, wSize, cpLen, w, s.first+1, archive))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s — host-side path: read it with read_file, a sandbox-shell \"not found\" does not mean it is gone)",
-		a.curTurn, wSize, cpLen, archive)
+		turn, wSize, cpLen, archive)
 	if priorCollapsed > 0 {
 		fmt.Fprintf(&b, " + %d prior request(s)", priorCollapsed)
 	}
