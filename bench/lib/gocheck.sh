@@ -14,7 +14,8 @@
 #     agent code cannot reach os, syscall, runtime, unsafe, embed, cgo) or that
 #     carries assembly/C/cgo files;
 #   - copies the task's hidden/ tree in and runs it with a clean Go environment
-#     (gocheck_env: no GOFLAGS/GOENV/GOWORK/cgo from the agent or the user, the
+#     (gocheck_env: no GOFLAGS/GOENV/GOWORK/cgo from the agent or the user,
+#     GO111MODULE=on, the
 #     toolchain pinned to the one bench.sh resolved, GOPROXY=off so nothing is
 #     ever downloaded), requiring rc 0, no "--- FAIL" and a "--- PASS: <name>"
 #     line per test.
@@ -161,7 +162,7 @@ gocheck_env() {
         exit 99
     fi
     export GOTOOLCHAIN="$BENCH_GOTOOLCHAIN" GOPROXY=off
-    export GOFLAGS=-buildvcs=false GOWORK=off GOENV=off CGO_ENABLED=0
+    export GOFLAGS=-buildvcs=false GOWORK=off GOENV=off CGO_ENABLED=0 GO111MODULE=on
     [ -z "${BENCH_GOMODCACHE:-}" ] || export GOMODCACHE="$BENCH_GOMODCACHE"
     [ -z "${BENCH_GOCACHE:-}" ] || export GOCACHE="$BENCH_GOCACHE"
     [ -z "${BENCH_GOPATH:-}" ] || export GOPATH="$BENCH_GOPATH"
@@ -220,7 +221,12 @@ gocheck_run() {
     pkg=$1; shift
     [ -d "$GC_TDIR/hidden" ] || gocheck_error "task has no hidden/ tree"
     cp -R "$GC_TDIR/hidden/." . || gocheck_error "cannot restore the hidden tests"
-    if ! go test -count=1 -v "$pkg" > "$GC_TMP/test.out" 2>&1; then
+    # BENCH_GO_TEST_TIMEOUT (seconds, set by bench.sh below its check timeout):
+    # a hanging agent test ends as a failed "go test", not a timed-out check.
+    _gr_to=""
+    [ -z "${BENCH_GO_TEST_TIMEOUT:-}" ] || _gr_to="-timeout=${BENCH_GO_TEST_TIMEOUT}s"
+    # shellcheck disable=SC2086 # $_gr_to is empty or one option
+    if ! go test -count=1 -v $_gr_to "$pkg" > "$GC_TMP/test.out" 2>&1; then
         cat "$GC_TMP/test.out"
         gocheck_blame "go test failed"
     fi

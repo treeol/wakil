@@ -239,7 +239,7 @@ go_found_version() {
     if [ -n "$go_toolchain" ] && [ "$go_toolchain" != local ]; then
         echo "$go_toolchain"
     elif command -v go >/dev/null 2>&1; then
-        _gf=$(cd "$repo_root" && GOTOOLCHAIN=local GOPROXY=off go env GOVERSION 2>/dev/null | head -n 1)
+        _gf=$(cd "$repo_root" && GOFLAGS= GOTOOLCHAIN=local GOPROXY=off go env GOVERSION 2>/dev/null | head -n 1)
         echo "${_gf:-unknown}"
     else
         echo "no go in PATH"
@@ -270,8 +270,9 @@ resolve_go() {
         return 1
     fi
     _rg_err=$(mktemp "${TMPDIR:-/tmp}/bench-resolve.XXXXXX") || return 1
-    # GOPROXY=off: resolving must not download either.
-    if ! _rg_v=$(cd "$repo_root" && GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
+    # GOPROXY=off: resolving must not download either. GOFLAGS= : the caller's
+    # flags (-mod=..., -modfile=...) must not steer which toolchain is found.
+    if ! _rg_v=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
         _rg_msg=$(head -n 1 "$_rg_err")
         rm -f "$_rg_err"
         [ "$skip_preflight" -ne 1 ] || { go_toolchain=local; return 0; }
@@ -286,9 +287,9 @@ resolve_go() {
         go[0-9]*) go_toolchain="$_rg_v" ;;
         *) go_toolchain="local" ;;
     esac
-    go_modcache=$(cd "$repo_root" && GOPROXY=off go env GOMODCACHE 2>/dev/null) || go_modcache=""
-    go_cache=$(cd "$repo_root" && GOPROXY=off go env GOCACHE 2>/dev/null) || go_cache=""
-    go_path=$(cd "$repo_root" && GOPROXY=off go env GOPATH 2>/dev/null) || go_path=""
+    go_modcache=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOMODCACHE 2>/dev/null) || go_modcache=""
+    go_cache=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOCACHE 2>/dev/null) || go_cache=""
+    go_path=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOPATH 2>/dev/null) || go_path=""
 }
 
 # with_go_env <command>...: run a check or setup hook with the resolved Go
@@ -297,7 +298,13 @@ resolve_go() {
 # subshell.
 with_go_env() {
     (
-        unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH
+        unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH BENCH_GO_TEST_TIMEOUT
+        # "go test" gets its own -timeout, below the outer bound, so a hanging
+        # test binary ends as a test failure (decided by gocheck_blame) and
+        # not as a timed-out check (an error that stops the bench).
+        _wg_t=$((check_timeout * 2 / 3))
+        [ "$_wg_t" -ge 1 ] || _wg_t=1
+        BENCH_GO_TEST_TIMEOUT="$_wg_t"; export BENCH_GO_TEST_TIMEOUT
         # The binary time limit of add-flag follows the harness's kill grace.
         BENCH_KILL_GRACE="$kill_grace"; export BENCH_KILL_GRACE
         if [ -n "$go_toolchain" ]; then
@@ -329,7 +336,9 @@ preflight_go() {
         _pf_bad=""
         if [ -x "$_pf_d/setup.sh" ]; then
             mkdir "$_pf_tmp/s"
-            ( cd "$_pf_tmp/s" && with_go_env "$_pf_d/setup.sh" ) >"$_pf_out" 2>&1 9>&- || _pf_bad="setup of $_pf_t: $(head -n 1 "$_pf_out")"
+            # As prep_workdir does: the task's repo/ is in place before setup.sh runs.
+            cp -R "$_pf_d/repo/." "$_pf_tmp/s/" || _pf_bad="cannot copy $_pf_t for its setup"
+            [ -n "$_pf_bad" ] || ( cd "$_pf_tmp/s" && with_go_env "$_pf_d/setup.sh" ) >"$_pf_out" 2>&1 9>&- || _pf_bad="setup of $_pf_t: $(head -n 1 "$_pf_out")"
         fi
         if [ -z "$_pf_bad" ] && grep -Eq 'gocheck_prepare|gocheck_env' "$_pf_d/check.sh"; then
             [ -d "$_pf_d/solution" ] || _pf_bad="task $_pf_t has no solution/ to run its check on"
@@ -598,10 +607,15 @@ leak_check() {
         echo "$prog: LEAK in $_lt — a generator (cmd/gen) is present in the work folder" >&2
         return 1
     fi
-    if grep -rIl --exclude-dir=.git --exclude-dir=.wakil -e 'rand\.NewSource' -e 'rand\.Seed' "$_lw" >/dev/null 2>&1; then
-        echo "$prog: LEAK in $_lt — a seeded generator is present in the work folder" >&2
-        return 1
-    fi
+    # grep: 0 a match (leak), 1 none, anything else = the scan did not work
+    # (an unsupported option, an unreadable file): fail closed, never "clean".
+    _lg_rc=0
+    grep -rIl --exclude-dir=.git --exclude-dir=.wakil -e 'rand\.NewSource' -e 'rand\.Seed' "$_lw" >/dev/null 2>&1 || _lg_rc=$?
+    case "$_lg_rc" in
+        0) echo "$prog: LEAK in $_lt — a seeded generator is present in the work folder" >&2; return 1 ;;
+        1) ;;
+        *) echo "$prog: cannot scan $_lw for a seeded generator (grep status $_lg_rc) — aborting" >&2; return 1 ;;
+    esac
     _hist=$(git -C "$_lw" log --all --name-only --format= 2>/dev/null | sort -u)
     for _n in check.sh setup.sh; do
         case "
@@ -672,6 +686,7 @@ run_one_locked() {
     task=$1; run=$2; bin=$3
     tdir="$tasks_dir/$task"
     workdir="$work_root/$task"
+    hb_pid=""   # never carry a heartbeat pid over from an earlier run
 
     prep_workdir "$task" || return 1
 
@@ -1162,7 +1177,7 @@ EOF
         mkdir -p "$tmpdir/gorec"
         cat > "$tmpdir/gorec/go" <<EOF
 #!/bin/sh
-echo "GOTOOLCHAIN=\$GOTOOLCHAIN GOPROXY=\$GOPROXY GOENV=\$GOENV GOFLAGS=\$GOFLAGS GOWORK=\$GOWORK args=\$*" >> "\$BENCH_GO_LOG"
+echo "GOTOOLCHAIN=\$GOTOOLCHAIN GOPROXY=\$GOPROXY GOENV=\$GOENV GOFLAGS=\$GOFLAGS GOWORK=\$GOWORK GO111MODULE=\$GO111MODULE args=\$*" >> "\$BENCH_GO_LOG"
 exec "$_real_go" "\$@"
 EOF
         chmod +x "$tmpdir/gorec/go"
@@ -1180,11 +1195,18 @@ EOF
                 BENCH_TASK_DIR="$tasks_dir/$task" run_one "$task" "self-pinned" "$stub_solve"
             fi
             _n=$(wc -l < "$BENCH_GO_LOG")
-            _bad=$(grep -vc "^GOTOOLCHAIN=$go_toolchain GOPROXY=off GOENV=off GOFLAGS=-buildvcs=false GOWORK=off " "$BENCH_GO_LOG" || true)
+            _bad=$(grep -vc "^GOTOOLCHAIN=$go_toolchain GOPROXY=off GOENV=off GOFLAGS=-buildvcs=false GOWORK=off GO111MODULE=on " "$BENCH_GO_LOG" || true)
             if [ "$_n" -eq 0 ] || [ "$_bad" -ne 0 ]; then
                 PATH="$_saved_path"; export PATH
                 echo "self-test FAILED: toolchain-pinned: $task made $_n go call(s), $_bad without GOTOOLCHAIN=$go_toolchain GOPROXY=off:" >&2
                 cat "$BENCH_GO_LOG" >&2
+                rm -rf "$tmpdir" "$_self_work_root"; exit 1
+            fi
+            # Every "go test" of a check carries a -timeout below the outer bound.
+            _gt_bad=$(grep ' args=test ' "$BENCH_GO_LOG" | awk -v max="$check_timeout" '{ if (match($0, /-timeout=[0-9]+s/)) { v = substr($0, RSTART + 9, RLENGTH - 10) + 0; if (v >= 1 && v < max) next } print }' | head -n 1)
+            if [ -n "$_gt_bad" ]; then
+                PATH="$_saved_path"; export PATH
+                echo "self-test FAILED: toolchain-pinned: $task ran go test without a -timeout below BENCH_CHECK_TIMEOUT ($check_timeout): $_gt_bad" >&2
                 rm -rf "$tmpdir" "$_self_work_root"; exit 1
             fi
             _pin_calls=$((_pin_calls + _n))
@@ -1988,16 +2010,21 @@ EOF
     echo "  .wakil/ preservation OK (sandbox.json byte-identical after 2 refills, no extra files, markers gone)"
 
     echo "== self-test: fixed-path stability (expect same path across runs) =="
+    # Two real preparations: the folder is at the same canonical path, and the
+    # second one refilled it (a marker the first run's agent could have left
+    # is gone).
     _stab_task="$(echo "$tasks" | awk '{print $1}')"
-    _stab_path1="$work_root/$_stab_task"
-    prep_workdir "$_stab_task"
-    _stab_path2="$work_root/$_stab_task"
-    if [ "$_stab_path1" != "$_stab_path2" ]; then
-        echo "self-test FAILED: path changed between runs ($_stab_path1 -> $_stab_path2)" >&2
+    prep_workdir "$_stab_task" || { echo "self-test FAILED: prep_workdir $_stab_task" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _stab_path1=$(cd "$work_root/$_stab_task" && pwd -P)
+    : > "$work_root/$_stab_task/agent-left-this"
+    prep_workdir "$_stab_task" || { echo "self-test FAILED: second prep_workdir $_stab_task" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _stab_path2=$(cd "$work_root/$_stab_task" && pwd -P)
+    if [ "$_stab_path1" != "$_stab_path2" ] || [ -e "$work_root/$_stab_task/agent-left-this" ]; then
+        echo "self-test FAILED: path or freshness changed between runs ($_stab_path1 -> $_stab_path2)" >&2
         rm -rf "$tmpdir" "$_self_work_root"
         exit 1
     fi
-    echo "  path stability OK ($_stab_path1)"
+    echo "  path stability OK ($_stab_path1), second prep refilled the folder"
 
     echo "== self-test: cached-% and 4-decimal cost formatting =="
     _tbl_out=$(print_table "$csv_file" "$resolved_model")
@@ -2079,6 +2106,86 @@ EOF
     fi
     echo "  .wakil/ recovery OK (sandbox.json byte-identical after interrupted prep)"
 
+    echo "== self-test: prep_workdir abort paths (saved copy and live .wakil/ both exist; the save fails) =="
+    _ab_task="$(echo "$tasks" | awk '{print $1}')"
+    _ab_workdir="$work_root/$_ab_task"
+    _ab_saved="$work_root/.wakil-saved-$_ab_task"
+    prep_workdir "$_ab_task" >/dev/null 2>&1
+    mkdir -p "$_ab_workdir/.wakil" "$_ab_saved"
+    printf 'live\n' > "$_ab_workdir/.wakil/marker"
+    printf 'saved\n' > "$_ab_saved/marker"
+    : > "$_ab_workdir/agent-file"
+    _ab_err=$(prep_workdir "$_ab_task" 2>&1 >/dev/null) && _ab_rc=0 || _ab_rc=$?
+    if [ "$_ab_rc" -eq 0 ] || ! printf '%s' "$_ab_err" | grep -q 'both saved' || [ "$(cat "$_ab_workdir/.wakil/marker")" != live ] || [ "$(cat "$_ab_saved/marker")" != saved ] || [ ! -e "$_ab_workdir/agent-file" ]; then
+        echo "self-test FAILED: with a saved copy and a live .wakil/ prep_workdir must stop and touch nothing (rc=$_ab_rc): $_ab_err" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    rm -rf "$_ab_saved"
+    # The save fails: the mv target's parent is a read-only directory. The
+    # wipe must not run.
+    _ab_ro=$(mktemp -d "${TMPDIR:-/tmp}/bench-ro.XXXXXX")
+    _ab_work_save="$work_root"
+    work_root="$_ab_ro/work"
+    mkdir -p "$work_root/$_ab_task/.wakil"
+    printf 'live\n' > "$work_root/$_ab_task/.wakil/marker"
+    : > "$work_root/$_ab_task/agent-file"
+    chmod 555 "$work_root"
+    if [ "$(id -u)" -ne 0 ] && ! (: > "$work_root/probe") 2>/dev/null; then
+        _ab_err=$(prep_workdir "$_ab_task" 2>&1 >/dev/null) && _ab_rc=0 || _ab_rc=$?
+        if [ "$_ab_rc" -eq 0 ] || ! printf '%s' "$_ab_err" | grep -q 'aborting before wipe' || [ ! -e "$work_root/$_ab_task/agent-file" ] || [ "$(cat "$work_root/$_ab_task/.wakil/marker")" != live ]; then
+            chmod 755 "$work_root"; work_root="$_ab_work_save"
+            echo "self-test FAILED: a failed .wakil save must abort before the wipe (rc=$_ab_rc): $_ab_err" >&2
+            rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_ab_ro"; exit 1
+        fi
+        echo "  both-exist and failed-save abort without touching the folder"
+    else
+        echo "  both-exist aborts; failed-save case skipped (running as root or the directory stayed writable)"
+    fi
+    chmod 755 "$work_root"; work_root="$_ab_work_save"
+    rm -rf "$_ab_ro"
+
+    echo "== self-test: leak_check fails closed when grep cannot scan; python3 up front; resolve_go ignores GOFLAGS and an experiment suffix =="
+    _lk_task="$(echo "$tasks" | awk '{print $1}')"
+    prep_workdir "$_lk_task" >/dev/null 2>&1
+    _lk_stub=$(mktemp -d "${TMPDIR:-/tmp}/bench-grepstub.XXXXXX")
+    printf '#!/bin/sh\necho "grep: unrecognized option" >&2\nexit 2\n' > "$_lk_stub/grep"
+    chmod +x "$_lk_stub/grep"
+    _lk_err=$(PATH="$_lk_stub:$PATH" leak_check "$work_root/$_lk_task" "$_lk_task" 2>&1) && _lk_rc=0 || _lk_rc=$?
+    if [ "$_lk_rc" -eq 0 ] || ! printf '%s' "$_lk_err" | grep -q 'cannot scan'; then
+        echo "self-test FAILED: leak_check passed a folder that grep could not scan (rc=$_lk_rc): $_lk_err" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_lk_stub"; exit 1
+    fi
+    rm -rf "$_lk_stub"
+    # python3 missing: a task whose check or setup uses it stops the run up front.
+    _py_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-nopy.XXXXXX")
+    for _bt in jq flock timeout sha256sum git tar sh awk sed grep cat date mktemp head tail sort tr wc find cp mv rm mkdir dirname basename id env uname; do
+        _bt_bin=$(command -v "$_bt") && ln -s "$_bt_bin" "$_py_dir/$_bt" 2>/dev/null
+    done
+    _py_err=$(PATH="$_py_dir" "$_py_dir/sh" "$0" --wakil /nonexistent/binary --runs 1 --task long-read 2>&1 || true)
+    if ! printf '%s' "$_py_err" | grep -q 'python3 is needed by task long-read'; then
+        echo "self-test FAILED: a missing python3 was not reported up front for long-read: $_py_err" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_py_dir"; exit 1
+    fi
+    rm -rf "$_py_dir"
+    # resolve_go: a stub go that fails when GOFLAGS is set, and answers with an
+    # experiment suffix.
+    _rg_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-rggo.XXXXXX")
+    printf '#!/bin/sh\n[ -z "$GOFLAGS" ] || { echo "go: GOFLAGS leaked: $GOFLAGS" >&2; exit 1; }\ncase "$*" in\n  "env GOVERSION") echo "go1.26.11 X:aliastypeparams,jsonv2" ;;\n  "env GOMODCACHE") echo /tmp/m ;;\n  "env GOCACHE") echo /tmp/c ;;\n  "env GOPATH") echo /tmp/p ;;\n  *) exit 1 ;;\nesac\n' > "$_rg_dir/go"
+    chmod +x "$_rg_dir/go"
+    _rg_saved_tc="$go_toolchain"; _rg_saved_path="$PATH"
+    go_toolchain=""
+    PATH="$_rg_dir:$PATH"; GOFLAGS=-mod=vendor; export GOFLAGS
+    _rg_err=$(resolve_go 2>&1) && _rg_rc=0 || _rg_rc=$?
+    resolve_go >/dev/null 2>&1 || true
+    _rg_got="$go_toolchain"
+    unset GOFLAGS; PATH="$_rg_saved_path"; go_toolchain="$_rg_saved_tc"
+    rm -rf "$_rg_dir"
+    if [ "$_rg_rc" -ne 0 ] || [ "$_rg_got" != "go1.26.11" ]; then
+        echo "self-test FAILED: resolve_go with GOFLAGS set and an experiment suffix: rc=$_rg_rc toolchain=$_rg_got: $_rg_err" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    echo "  leak_check fail-closed, python3 up front, GOFLAGS cleared, experiment suffix OK"
+
     echo "== self-test: tar in the required-tools list =="
     # The harness checks for tar up front. A PATH without tar must produce
     # the "required tool(s) not found: tar" line and exit 1. We build a
@@ -2115,7 +2222,23 @@ EOF
     csv_file="$_saved_csv_file"
 }
 
+# check_task_tools: tools a task's check needs beyond the required ones above
+# (python3 for long-read). Checked before the first run so the failure names
+# the tool instead of surfacing as a check error after the model was paid.
+check_task_tools() {
+    for _ct_t in $tasks; do
+        for _ct_f in "$tasks_dir/$_ct_t"/check.sh "$tasks_dir/$_ct_t"/setup.sh; do
+            [ -f "$_ct_f" ] || continue
+            if grep -q 'python3' "$_ct_f" && ! command -v python3 >/dev/null 2>&1; then
+                echo "$prog: python3 is needed by task $_ct_t ($(basename "$_ct_f")) and was not found" >&2
+                return 1
+            fi
+        done
+    done
+}
+
 main() {
+    check_task_tools || exit 1
     resolve_go || exit 1
     preflight_go || exit 1
 

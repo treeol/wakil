@@ -9,7 +9,9 @@ staging experiments.
 
 ```
 scripts/bench.sh [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
-                 [--timeout SECONDS] [--mashura LEVEL] [--self-test]
+                 [--timeout SECONDS] [--mashura LEVEL] [--no-preflight]
+                 [--self-test]
+scripts/bench.sh --setup
 ```
 
 Defaults: the `wakil` binary from `PATH`, the user's configured model,
@@ -82,7 +84,7 @@ bench.sh: the Go checks cannot run: the tasks need go >= 1.26, found go1.25.1 â€
 ```
 
 `--task steps` needs no Go at all (no Go is resolved and the preflight is
-skipped); `long-read` needs it for its `setup.sh`. GNU userland is assumed (`tar`, `timeout -k`, `flock`, `sha256sum`, `find`).
+skipped); `long-read` needs it for its `setup.sh`. `python3` is checked before the first run when a selected task's `check.sh` or `setup.sh` uses it. GNU userland is assumed (`tar`, `timeout -k`, `flock`, `sha256sum`, `find`).
 
 ## How a run works
 
@@ -224,8 +226,10 @@ full turn-end collapses.
 `exit_reason` column carries the reason string from `--result-json`
 (`pass`, `declined`, `backend_failure`, `gaps`, `error`) when the
 binary reports one, or `n/a` otherwise. Values a binary does not report
-are `n/a`: the harness also works with a binary that lacks
-`--result-json` (pass/fail and seconds only).
+are `n/a` (tokens, cost, tool counts). A binary must report the work
+folder in `--result-json`: without the `workdir` field the harness cannot
+verify where the agent ran, stops with `exit_reason=missing-workdir` and
+scores nothing.
 
 ## Self-test
 
