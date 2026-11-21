@@ -155,14 +155,12 @@ func TestIsDestructiveShell(t *testing.T) {
 		{"echo x &>/tmp/out", "&>file (no space) — destructive"},
 		// sed -i is destructive (in-place edit).
 		{"sed -i s/a/b/ f", "sed in-place edit"},
-		{"cat `whoami`", "backtick substitution"},
 		// sed w/e/r/a/i/c/d/D commands are destructive.
 		{"sed 'w out.txt' file", "sed write to file"},
 		{"sed 'r other.txt' file", "sed read file (inserts content)"},
 		{"sed 'a text' file", "sed append"},
 		{"sed 'd' file", "sed delete"},
 		{"sed 's/a/b/w' file", "sed substitute + write flag"},
-		{"sed -i s/a/b/ f", "sed in-place edit"},
 		// for/while loop is destructive when any command is destructive.
 		{"for f in *; do rm $f; done", "for + rm body"},
 		{"for f in *.txt; do sed -i s/a/b/ $f; done", "for + sed -i body"},

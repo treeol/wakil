@@ -16,6 +16,7 @@ import (
 
 	"github.com/treeol/wakil/internal/agent"
 	"github.com/treeol/wakil/internal/buildinfo"
+	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
@@ -108,14 +109,8 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 			}
 		}
 		toolCalls := 0
-		mashuraTools := 0
 		for _, m := range app.Conv {
 			toolCalls += len(m.ToolCalls)
-			for _, tc := range m.ToolCalls {
-				if wtools.IsMashuraTool(tc.Function.Name) {
-					mashuraTools++
-				}
-			}
 		}
 		res.ToolCalls = &toolCalls
 		midTurn, turnEnd := app.CollapseCounts()
@@ -123,7 +118,7 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 		res.CollapsesTurnEnd = &turnEnd
 		// Mashura rounds = explicit mashura__* tool calls in the conversation
 		// plus automatic rounds fired by Wakil itself (countAutoRounds rule).
-		rounds := mashuraTools + agent.AutoRoundsInConv(app.Conv)
+		rounds := resultMashuraRounds(app.Conv)
 		res.MashuraRounds = &rounds
 		// Declined calls: count of tool calls whose result was declined by the
 		// user or by policy. Uses a dedicated counter on App (not Conv scanning
@@ -136,4 +131,20 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 		return err
 	}
 	return os.WriteFile(path, append(b, '\n'), 0o644)
+}
+
+// resultMashuraRounds counts the Mashūra rounds of a conversation: the
+// model's own mashura__* calls plus the automatic rounds Wakil started
+// (agent.AutoRoundsInConv). A legacy synthetic call carries a mashura tool
+// name and an automatic-round id; it is counted once, as automatic.
+func resultMashuraRounds(conv []proxy.Message) int {
+	modelCalls := 0
+	for _, m := range conv {
+		for _, tc := range m.ToolCalls {
+			if !agent.IsAutoRoundCallID(tc.ID) && wtools.IsMashuraTool(tc.Function.Name) {
+				modelCalls++
+			}
+		}
+	}
+	return modelCalls + agent.AutoRoundsInConv(conv)
 }

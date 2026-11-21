@@ -286,6 +286,28 @@ func TestRestoreRepoStateEndpointMismatchSkipsModelAndBackend(t *testing.T) {
 	}
 }
 
+// TestRestoreRepoStateNetworkValidated: a saved network mode is applied only
+// when it is "open" or "host"; anything else in the state file is ignored.
+func TestRestoreRepoStateNetworkValidated(t *testing.T) {
+	for _, tc := range []struct{ saved, want string }{
+		{"open", "open"}, {"host", "host"}, {"bridge", ""}, {"OPEN", ""}, {" open", ""},
+	} {
+		withRepoStateDir(t)
+		ws := t.TempDir()
+		if err := updateRepoState(ws, func(s *RepoState) { s.Network = tc.saved }); err != nil {
+			t.Fatal(err)
+		}
+		app := &App{
+			Cfg:    config.Config{ExecMode: "direct", WorkDir: ws},
+			Client: repoStateTestClient("m"),
+		}
+		RestoreRepoState(app)
+		if app.NetworkOverride != tc.want {
+			t.Errorf("saved %q: NetworkOverride = %q, want %q", tc.saved, app.NetworkOverride, tc.want)
+		}
+	}
+}
+
 func TestRestoreRepoStateBackendOnlyForIlmProxyKind(t *testing.T) {
 	withRepoStateDir(t)
 	ws := t.TempDir()

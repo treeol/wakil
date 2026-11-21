@@ -542,8 +542,9 @@ func (a *App) restoreEndpointIndependentLocked(st *RepoState) []string {
 	}
 
 	// Per-repo hisn network mode override (endpoint-independent, like
-	// zdr/region). "open" narrows; "host" removes the override.
-	if st.Network != "" {
+	// zdr/region): "open" or "host", stored by /network. Any other value in an
+	// old or hand-edited state file is ignored (no override), never applied.
+	if st.Network == "open" || st.Network == "host" {
 		a.NetworkOverride = st.Network
 		a.invalidatePreambleLocked()
 		if ns, ok := a.Exec.(exec.NetworkSetter); ok {

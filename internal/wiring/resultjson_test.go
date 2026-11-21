@@ -129,6 +129,22 @@ func TestResultJSON_CountAutoRoundsFromConv(t *testing.T) {
 	}
 }
 
+// TestResultJSON_AutoRoundCountedOnce: a legacy synthetic call carries a
+// mashura tool name and an automatic-round id; it is one round, not two, and a
+// model-made mashura call next to it still counts.
+func TestResultJSON_AutoRoundCountedOnce(t *testing.T) {
+	conv := []proxy.Message{
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{
+			{ID: "auto-counsel-1", Function: proxy.FunctionCall{Name: "mashura__debug", Arguments: "{}"}},
+			{ID: "wakil-auto-2", Function: proxy.FunctionCall{Name: "mashura__debug", Arguments: "{}"}},
+			{ID: "call_9", Function: proxy.FunctionCall{Name: "mashura__review", Arguments: "{}"}},
+		}},
+	}
+	if got := resultMashuraRounds(conv); got != 3 {
+		t.Errorf("mashura rounds = %d, want 3 (two automatic, one by the model)", got)
+	}
+}
+
 func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
 	app := fakeApp("http://unused.invalid")
 	app.Client.Model = "openrouter/test"

@@ -239,12 +239,19 @@ func countAutoRounds(w []proxy.Message) int {
 			autoRounds++
 		}
 		for _, tc := range m.ToolCalls {
-			if strings.HasPrefix(tc.ID, magicToolCallPrefix) || strings.HasPrefix(tc.ID, "auto-counsel-") {
+			if IsAutoRoundCallID(tc.ID) {
 				autoRounds++
 			}
 		}
 	}
 	return autoRounds
+}
+
+// IsAutoRoundCallID reports whether a tool-call id marks a call injected by
+// Wakil itself for an automatic Mashūra round: the current prefix, or the
+// "auto-counsel-" id of sessions saved before 0.8.3.
+func IsAutoRoundCallID(id string) bool {
+	return strings.HasPrefix(id, magicToolCallPrefix) || strings.HasPrefix(id, "auto-counsel-")
 }
 
 // buildCollapseNote builds the deterministic note appended to A in the
