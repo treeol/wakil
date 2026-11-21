@@ -116,16 +116,26 @@ gocheck_go() {
 }
 
 # gocheck_bin <stdin-file> <arg>...: run the agent-built binary $GC_BIN with
-# the file as stdin. Sets GC_BIN_RC and GC_BIN_OUT (stdout, trailing newlines
-# stripped); stderr goes to $GC_TMP/bin.err. A status of 125/126/127 means the
-# binary could not be started (noexec filesystem, missing loader): the
-# environment, not the agent's behaviour.
+# the file as stdin, under a time limit (BENCH_BINARY_TIMEOUT seconds, default
+# 10, then KILL after BENCH_KILL_GRACE seconds, default 10: a hang is the
+# agent's bug and must not hang the harness). Sets GC_BIN_RC and GC_BIN_OUT
+# (stdout, trailing newlines stripped); stderr goes to $GC_TMP/bin.err.
+#   124 or 137 -> fail "binary timed out" (the agent's binary hung);
+#   125/126/127 -> error: "timeout" itself failed or the binary could not be
+#   started (noexec filesystem, missing loader): the environment, not the
+#   agent's behaviour.
+# Any other status is the binary's own exit code and is returned to the check.
+# stdout and stderr go to files, so a child the binary leaves behind cannot
+# hold a pipe open.
 gocheck_bin() {
     _gb_in=$1; shift
+    _gb_t=${BENCH_BINARY_TIMEOUT:-10}; _gb_g=${BENCH_KILL_GRACE:-10}
+    case "$_gb_t$_gb_g" in *[!0-9]*|'') gocheck_error "BENCH_BINARY_TIMEOUT and BENCH_KILL_GRACE must be integers" ;; esac
     GC_BIN_RC=0
-    "$GC_BIN" "$@" < "$_gb_in" > "$GC_TMP/bin.out" 2> "$GC_TMP/bin.err" || GC_BIN_RC=$?
+    timeout -k "$_gb_g" "$_gb_t" "$GC_BIN" "$@" < "$_gb_in" > "$GC_TMP/bin.out" 2> "$GC_TMP/bin.err" || GC_BIN_RC=$?
     GC_BIN_OUT=$(cat "$GC_TMP/bin.out")
     case "$GC_BIN_RC" in
+        124|137) gocheck_fail "binary timed out" ;;
         125|126|127) gocheck_error "cannot run the built binary (status $GC_BIN_RC): $(head -n 1 "$GC_TMP/bin.err")" ;;
     esac
 }

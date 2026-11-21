@@ -281,6 +281,8 @@ resolve_go() {
 with_go_env() {
     (
         unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH
+        # The binary time limit of add-flag follows the harness's kill grace.
+        BENCH_KILL_GRACE="$kill_grace"; export BENCH_KILL_GRACE
         if [ -n "$go_toolchain" ]; then
             BENCH_GOTOOLCHAIN="$go_toolchain"; export BENCH_GOTOOLCHAIN
             [ -z "$go_modcache" ] || { BENCH_GOMODCACHE="$go_modcache"; export BENCH_GOMODCACHE; }
@@ -1216,6 +1218,67 @@ VEOF
         grep -E '^  PASS' "$_tc_out"
     else
         echo "  skipped (no fix-test task)"
+    fi
+
+    echo "== self-test: binary-hang (add-flag: the agent's binary sleeps past the limit -> fail, check: binary timed out) =="
+    # A fake agent that writes a cmd/grep which ignores TERM and sleeps. The
+    # limit is 2s and the grace 1s, so the case stays seconds long; the check
+    # must judge the agent (fail), not hang and not blame the environment.
+    if [ -d "$tasks_dir/add-flag" ]; then
+        stub_hang="$tmpdir/wakil-hang"
+        cat > "$stub_hang" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-hang/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cat > "$workdir/cmd/grep/main.go" <<'GO'
+package main
+
+import (
+	"os/signal"
+	"syscall"
+	"time"
+)
+
+func main() {
+	signal.Ignore(syscall.SIGTERM)
+	time.Sleep(time.Hour)
+}
+GO
+    cat > "$result_json" <<JSON
+{"wakil_version":"stub-hang/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0}
+JSON
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_hang"
+        task_idx=1
+        _hang_t0=$(date +%s)
+        _saved_grace="$kill_grace"; kill_grace=1
+        BENCH_BINARY_TIMEOUT=2 BENCH_TASK_DIR="" run_one add-flag "self-hang" "$stub_hang" >/dev/null
+        kill_grace="$_saved_grace"
+        _hang_secs=$(( $(date +%s) - _hang_t0 ))
+        _row_result=$(csv_cell "$csv_file" last 6)
+        if [ "$_row_result" != "fail" ] || ! grep -q '^check: binary timed out' "$results_dir"/add-flag-self-hang-*.log 2>/dev/null; then
+            echo "self-test FAILED: binary-hang: result=$_row_result, want fail with 'check: binary timed out'" >&2
+            tail -n 5 "$results_dir"/add-flag-self-hang-*.log >&2 2>/dev/null || true
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        if [ "$_hang_secs" -gt 40 ]; then
+            echo "self-test FAILED: binary-hang took ${_hang_secs}s (the limit did not hold)" >&2
+            rm -rf "$tmpdir" "$_self_work_root"; exit 1
+        fi
+        echo "  hanging binary -> fail, 'check: binary timed out' (${_hang_secs}s)"
     fi
 
     echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
