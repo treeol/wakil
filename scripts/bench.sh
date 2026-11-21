@@ -1756,6 +1756,9 @@ EOF
     # on the same task, which must exit 75 without touching the folder.
     _ls_task="$(echo "$tasks" | awk '{print $1}')"
     _ls_dir="$tmpdir/lockseries"
+    if [ ! -r "/proc/$$/comm" ] || [ ! -d "/proc/$$/fd" ]; then
+        echo "  skipped (needs /proc: Linux only)"
+    else
     mkdir -p "$_ls_dir/shim" "$_ls_dir/cache/wakil-bench"
     for _sh in git find sha256sum sleep timeout cp mv rm cat grep date sort mktemp head tail awk sed tr wc; do
         _sh_real=$(command -v "$_sh") || continue
@@ -1765,6 +1768,7 @@ EOF
 for _f in /proc/\$\$/fd/*; do
     if [ "\$_f" -ef "\$BENCH_LOCKFILE" ]; then echo "$_sh" >> "\$BENCH_LEAKLOG"; fi
 done
+echo "$_sh \$*" >> "\$BENCH_CALLLOG"
 exec "$_sh_real" "\$@"
 SHIM
         chmod +x "$_ls_dir/shim/$_sh"
@@ -1801,16 +1805,15 @@ case "$1" in
 esac
 EOF
     chmod +x "$_ls_stub"
-    _ls_saved="$lock_root|$is_tty|$hb_interval|$runs|$tasks|$PATH"
     _ls_lock_root="$lock_root"; _ls_is_tty="$is_tty"; _ls_hb="$hb_interval"; _ls_runs="$runs"; _ls_tasks="$tasks"; _ls_path="$PATH"
     lock_root="$_ls_dir/cache/wakil-bench/locks"
-    is_tty=1; hb_interval=37; runs=2; tasks="$_ls_task"; task_idx=0
+    _ls_hb_test=37; is_tty=1; hb_interval=$_ls_hb_test; runs=2; tasks="$_ls_task"; task_idx=0
     BENCH_LOCKFILE="$lock_root/$_ls_task.lock"; BENCH_LEAKLOG="$_ls_dir/leak.log"; BENCH_HOLDLOG="$_ls_dir/hold.log"
     BENCH_FLOCKLOG="$_ls_dir/flock.log"; BENCH_2NDRC="$_ls_dir/2nd.rc"; BENCH_2NDOUT="$_ls_dir/2nd.out"
-    BENCH_MARKLOG="$_ls_dir/mark.log"; BENCH_CACHE="$_ls_dir/cache"; BENCH_SCRIPT="$0"; BENCH_TASK="$_ls_task"
+    BENCH_MARKLOG="$_ls_dir/mark.log"; BENCH_CALLLOG="$_ls_dir/calls.log"; BENCH_CACHE="$_ls_dir/cache"; BENCH_SCRIPT="$0"; BENCH_TASK="$_ls_task"
     BENCH_SHELL_COMM=$(cat "/proc/$$/comm"); BENCH_RUN_MARK="$_ls_dir"
-    export BENCH_LOCKFILE BENCH_LEAKLOG BENCH_HOLDLOG BENCH_FLOCKLOG BENCH_2NDRC BENCH_2NDOUT BENCH_MARKLOG BENCH_CACHE BENCH_SCRIPT BENCH_TASK BENCH_SHELL_COMM BENCH_RUN_MARK
-    : > "$BENCH_LEAKLOG"; : > "$BENCH_HOLDLOG"; : > "$BENCH_FLOCKLOG"; : > "$BENCH_2NDRC"; : > "$BENCH_MARKLOG"
+    export BENCH_CALLLOG BENCH_LOCKFILE BENCH_LEAKLOG BENCH_HOLDLOG BENCH_FLOCKLOG BENCH_2NDRC BENCH_2NDOUT BENCH_MARKLOG BENCH_CACHE BENCH_SCRIPT BENCH_TASK BENCH_SHELL_COMM BENCH_RUN_MARK
+    : > "$BENCH_CALLLOG"; : > "$BENCH_LEAKLOG"; : > "$BENCH_HOLDLOG"; : > "$BENCH_FLOCKLOG"; : > "$BENCH_2NDRC"; : > "$BENCH_MARKLOG"
     _ls_rows_before=$(wc -l < "$csv_file")
     _ls_t0=$(date +%s)
     PATH="$_ls_dir/shim:$PATH"; export PATH
@@ -1832,8 +1835,9 @@ EOF
     _ls_hb_alive=no
     [ -z "${hb_pid:-}" ] || ! kill -0 "$hb_pid" 2>/dev/null || _ls_hb_alive=yes
     lock_root="$_ls_lock_root"; is_tty="$_ls_is_tty"; hb_interval="$_ls_hb"; runs="$_ls_runs"; tasks="$_ls_tasks"
-    unset BENCH_LOCKFILE BENCH_LEAKLOG BENCH_HOLDLOG BENCH_FLOCKLOG BENCH_2NDRC BENCH_2NDOUT BENCH_MARKLOG BENCH_CACHE BENCH_SCRIPT BENCH_TASK BENCH_SHELL_COMM BENCH_RUN_MARK
+    unset BENCH_CALLLOG BENCH_LOCKFILE BENCH_LEAKLOG BENCH_HOLDLOG BENCH_FLOCKLOG BENCH_2NDRC BENCH_2NDOUT BENCH_MARKLOG BENCH_CACHE BENCH_SCRIPT BENCH_TASK BENCH_SHELL_COMM BENCH_RUN_MARK
     _ls_why=""
+    grep -qx "sleep $_ls_hb_test" "$_ls_dir/calls.log" || _ls_why="$_ls_why the heartbeat never ran (no sleep $_ls_hb_test was started: the case would prove nothing);"
     [ "$_ls_rc" -eq 0 ] || _ls_why="$_ls_why run_all returned $_ls_rc ($(head -n 1 "$_ls_dir/run.err"));"
     [ "$_ls_rows" -eq 2 ] || _ls_why="$_ls_why --runs 2 wrote $_ls_rows rows, want 2;"
     [ ! -s "$_ls_dir/leak.log" ] || _ls_why="$_ls_why programs started holding the lock: $(sort -u "$_ls_dir/leak.log" | tr '\n' ' ');"
@@ -1851,6 +1855,7 @@ EOF
         rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
     fi
     echo "  --runs 2 with the heartbeat on: 2 rows in ${_ls_secs}s; lock held in both runs, no started program holds it, a second bench exits 75 in both runs, nothing left alive, lock free afterwards"
+    fi
 
     echo "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
     # Use the harness's own timeout path with a short per-run timeout so
@@ -2393,8 +2398,6 @@ EOF
         _tf_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-toolsfirst.XXXXXX")
         # shellcheck disable=SC2086 # word splitting is the point: a short list of tool names
         tool_dir "$_tf_dir" $_tf || { echo "self-test FAILED: tools-first: cannot build the tool directory" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_tf_dir"; exit 1; }
-        _tf_want="$prog: required tool(s) not found:"
-        for _tf_t in $_tf; do _tf_want="$_tf_want $_tf_t"; done
         # The tools are reported in the harness's own order, not the case's.
         _tf_want="$prog: required tool(s) not found:"
         for _tf_t in $harness_tools; do
@@ -2419,16 +2422,20 @@ EOF
     # PATH is tool_dir (the harness's tools, sh, go, python3). A program the
     # list leaves out would show as "not found" in the output or as a row that
     # is not "pass". --no-preflight keeps the CSV and logs under the case's own
-    # cache; the Go caches are the real ones (a cold cache would rebuild std).
+    # cache and HOME; the Go caches are the real ones (a cold cache would rebuild std).
     _ts_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-toolsuff.XXXXXX")
     tool_dir "$_ts_dir/bin" || { echo "self-test FAILED: tools-list-sufficient: cannot build the tool directory" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_ts_dir"; exit 1; }
     cp "$tmpdir/wakil-solve" "$_ts_dir/wakil"
+    # A private, empty HOME: the host's own git configuration (signing needs gpg
+    # or ssh-keygen, which are not tools of the harness) must not decide whether
+    # the case passes. Only the Go caches are carried over.
+    mkdir -p "$_ts_dir/home"
     _ts_bad=""
     _ts_n=0
     for _ts_t in $tasks; do
         _ts_out="$_ts_dir/$_ts_t.out"
         _ts_rc=0
-        env -i PATH="$_ts_dir/bin" HOME="${HOME:-/nonexistent}" TMPDIR="${TMPDIR:-/tmp}" \
+        env -i PATH="$_ts_dir/bin" HOME="$_ts_dir/home" TMPDIR="${TMPDIR:-/tmp}" \
             XDG_CACHE_HOME="$_ts_dir/cache" BENCH_TASK_DIR="$tasks_dir/$_ts_t" \
             ${go_cache:+GOCACHE="$go_cache"} ${go_modcache:+GOMODCACHE="$go_modcache"} ${go_path:+GOPATH="$go_path"} \
             "$_ts_dir/bin/sh" "$0" --no-preflight --wakil "$_ts_dir/wakil" --task "$_ts_t" --runs 1 >"$_ts_out" 2>&1 || _ts_rc=$?

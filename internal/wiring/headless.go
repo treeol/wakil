@@ -720,15 +720,19 @@ func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *
 // own, with the same writer as the tool lines. Other session notes (the auto
 // and grant lines, workflow and handoff progress) stay out of a headless run.
 // The writer is flushed first so the notice never lands inside an answer line
-// that has no newline yet, and newlines in the text become spaces so one
-// notice is one line whatever its producer wrote. HeadlessWriter strips any
+// that has no newline yet (that answer line is then split into two output
+// records), and whitespace runs, newlines included, become one space so one
+// notice is one line whatever its producer wrote; an empty notice prints nothing. HeadlessWriter strips any
 // escape sequence.
 func writeNotice(hw *HeadlessWriter, n event.SessionNote) {
 	if !n.Notice {
 		return
 	}
 	hw.Flush()
-	line := strings.Join(strings.Fields(strings.NewReplacer("\r", " ", "\n", " ").Replace(n.Text)), " ")
+	line := strings.Join(strings.Fields(n.Text), " ")
+	if line == "" {
+		return
+	}
 	_, _ = hw.Write([]byte(line + "\n"))
 }
 

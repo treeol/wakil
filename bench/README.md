@@ -171,7 +171,7 @@ Different tasks can run in parallel. The harness refuses to run without
 `flock`; it also requires `jq`, `timeout`, `sha256sum` and `git`. The tools
 are checked first, with shell builtins only: a missing one gives one line
 (`required tool(s) not found: a b c`, naming all of them) and exit 1, before
-anything else runs; the list is `harness_tools` at the top of `scripts/bench.sh`.
+anything else runs, `-h` included; the list is `harness_tools` at the top of `scripts/bench.sh`.
 
 **Fake passes.** The Go tasks (`fix-test`, `rename`) never run the agent's
 tree. `check.sh` (via `bench/lib/gocheck.sh`) works on a clean copy of the

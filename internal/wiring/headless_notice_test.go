@@ -214,6 +214,7 @@ func TestWriteNotice(t *testing.T) {
 	_, _ = hw.Write([]byte("answer so far"))
 	writeNotice(hw, event.SessionNote{Text: "⚡ auto: write_file\n  detail"}) // not a notice: ignored
 	writeNotice(hw, event.SessionNote{Text: "\x1b[2m· first\nsecond\x1b[0m", Notice: true})
+	writeNotice(hw, event.SessionNote{Text: " \n ", Notice: true}) // empty: prints nothing
 	_, _ = hw.Write([]byte(" and the rest\n"))
 	hw.Flush()
 	got := outputLines(t, out.String())
