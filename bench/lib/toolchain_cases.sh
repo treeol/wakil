@@ -13,7 +13,7 @@
 # Cases: preflight-stops, preflight-stops-on-check, check-error-not-fail.
 set -eu
 root=$(CDPATH='' cd -- "${1:?usage: toolchain_cases.sh <tree>}" && pwd)
-real_go=$(command -v go) || { echo "toolchain_cases: go is needed to build the stubs" >&2; exit 1; }
+real_go=$(command -v go) || { echo "toolchain_cases: go is needed (the \"env-ok\" stub forwards go env to it)" >&2; exit 1; }
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/bench-tccases.XXXXXX")
 trap 'rm -rf "$tmp"' EXIT
 host_err='go: go.mod requires go >= 1.26 (running go 1.25.1; GOTOOLCHAIN=local)'
@@ -57,6 +57,9 @@ run_case() {
     t="$tmp/$name/tree"
     mkdir -p "$t"
     cp -R "$root/scripts" "$root/bench" "$t/"
+    # The harness resolves the toolchain in its repo root, so the root go.mod
+    # must be there (a host with an older Go switches because of it).
+    cp "$root/go.mod" "$t/go.mod"
     rm -rf "$t/bench/results"
     rc=0
     env -u GOTOOLCHAIN -u GOFLAGS -u GOPROXY -u GOENV \
@@ -109,14 +112,18 @@ check_preflight preflight-stops go1.25.1
 echo "    stderr: $(head -n 1 "$tmp/preflight-stops/err" || true)"
 
 run_case preflight-stops-on-check env-ok
-check_preflight preflight-stops-on-check "$(GOPROXY=off "$real_go" env GOVERSION | cut -d' ' -f1)"
+expected=$(cd "$tmp/preflight-stops-on-check/tree" && GOPROXY=off "$real_go" env GOVERSION | cut -d' ' -f1)
+check_preflight preflight-stops-on-check "$expected"
 
 # (b) With the preflight bypassed (test only), a toolchain error inside the
 # check is an "error" with a "check:" reason in the log, never "fail".
 run_case check-error-not-fail all BENCH_TEST_SKIP_PREFLIGHT=1
 why=""
 [ -e "$tmp/check-error-not-fail/wakil-ran" ] || why="$why the run did not happen;"
-csv=$(ls "$t"/bench/results/*-bench.csv 2>/dev/null | head -n 1 || true)
+csv=""
+for f in "$t"/bench/results/*-bench.csv; do
+    [ -f "$f" ] && { csv=$f; break; }
+done
 row=""
 [ -z "$csv" ] || row=$(sed -n 2p "$csv")
 case "$row" in
@@ -124,7 +131,7 @@ case "$row" in
     *,fix-test,1,fail,*) why="$why result is fail, not error;" ;;
     *) why="$why unexpected row: $row;" ;;
 esac
-grep -qh '^check: ' "$t"/bench/results/fix-test-1-*.log 2>/dev/null || why="$why the log has no check: line;"
+grep -qh '^check: environment error: ' "$t"/bench/results/fix-test-1-*.log 2>/dev/null || why="$why the log has no 'check: environment error' line;"
 verdict check-error-not-fail "$why"
 [ -z "$row" ] || echo "    row: $row"
 

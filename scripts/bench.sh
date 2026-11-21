@@ -314,7 +314,10 @@ preflight_go() {
             mkdir "$_pf_tmp/s"
             ( cd "$_pf_tmp/s" && with_go_env "$_pf_d/setup.sh" ) >"$_pf_out" 2>&1 9>&- || _pf_bad="setup of $_pf_t: $(head -n 1 "$_pf_out")"
         fi
-        if [ -z "$_pf_bad" ] && grep -q 'gocheck_prepare\|gocheck_env' "$_pf_d/check.sh" && [ -d "$_pf_d/solution" ]; then
+        if [ -z "$_pf_bad" ] && grep -Eq 'gocheck_prepare|gocheck_env' "$_pf_d/check.sh"; then
+            [ -d "$_pf_d/solution" ] || _pf_bad="task $_pf_t has no solution/ to run its check on"
+        fi
+        if [ -z "$_pf_bad" ] && grep -Eq 'gocheck_prepare|gocheck_env' "$_pf_d/check.sh"; then
             mkdir "$_pf_tmp/c"
             cp -R "$_pf_d/repo/." "$_pf_tmp/c/" && cp -R "$_pf_d/solution/." "$_pf_tmp/c/" || _pf_bad="cannot copy $_pf_t"
             if [ -z "$_pf_bad" ]; then
@@ -1172,7 +1175,7 @@ EOF
     _vr="$tmpdir/verdict"
     mkdir -p "$_vr/lib" "$_vr/t"
     cp "$bench_dir/lib/gocheck.sh" "$_vr/lib/gocheck.sh"
-    for _v in accident:1 judged:1 judged-pre:99 clean:0; do
+    for _v in accident:99 judged:1 judged-pre:99 clean:0; do
         _v_name=${_v%:*}; _v_want=${_v#*:}
         cat > "$_vr/t/check.sh" <<VEOF
 #!/bin/sh
@@ -1189,7 +1192,6 @@ VEOF
         _v_pre=""; [ "$_v_name" != judged-pre ] || _v_pre=1
         _v_rc=0
         BENCH_PREFLIGHT="$_v_pre" "$_vr/t/check.sh" >"$_vr/out" 2>&1 || _v_rc=$?
-        [ "$_v_name" != accident ] || _v_want=99
         if [ "$_v_rc" -ne "$_v_want" ]; then
             echo "self-test FAILED: verdict-required: $_v_name ended with $_v_rc, want $_v_want" >&2
             cat "$_vr/out" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1
@@ -1206,9 +1208,9 @@ VEOF
     echo "== self-test: stub go (host Go too old): preflight-stops, preflight-stops-on-check, check-error-not-fail =="
     # A black-box driver runs a copy of this bench.sh with a stub go that
     # prints "go: go.mod requires go >= 1.26 (running go 1.25.1;
-    # GOTOOLCHAIN=local)". Needs no Go itself beyond building nothing: it only
-    # needs the fix-test task to exist.
-    if [ -d "$tasks_dir/fix-test" ] && [ -f "$bench_dir/lib/toolchain_cases.sh" ]; then
+    # GOTOOLCHAIN=local)". It forwards "go env" to the real go in one case, so
+    # it needs a Go (and the fix-test task).
+    if [ -n "$go_toolchain" ] && [ -d "$tasks_dir/fix-test" ] && [ -f "$bench_dir/lib/toolchain_cases.sh" ]; then
         _tc_out="$tmpdir/toolchain-cases.out"
         if ! sh "$bench_dir/lib/toolchain_cases.sh" "$repo_root" >"$_tc_out" 2>&1; then
             echo "self-test FAILED: toolchain cases:" >&2
@@ -1217,7 +1219,7 @@ VEOF
         fi
         grep -E '^  PASS' "$_tc_out"
     else
-        echo "  skipped (no fix-test task)"
+        echo "  skipped (no Go task selected or no fix-test task)"
     fi
 
     echo "== self-test: binary-hang (add-flag: the agent's binary sleeps past the limit -> fail, check: binary timed out) =="
@@ -1279,6 +1281,46 @@ EOF
             rm -rf "$tmpdir" "$_self_work_root"; exit 1
         fi
         echo "  hanging binary -> fail, 'check: binary timed out' (${_hang_secs}s)"
+    fi
+
+    echo "== self-test: binary-exit (add-flag: right output but exit status 1, or the binary's own 126, must be fail, not pass and not error) =="
+    if [ -d "$tasks_dir/add-flag" ]; then
+        stub_bexit="$tmpdir/wakil-bexit"
+        cat > "$stub_bexit" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-bexit/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    sed -i "s/lineNo := 0/lineNo := 0\n\tdefer os.Exit($BENCH_EXIT)/" "$workdir/cmd/grep/main.go"
+    cat > "$result_json" <<JSON
+{"wakil_version":"stub-bexit/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0}
+JSON
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_bexit"
+        for _be in 1 126; do
+            task_idx=1
+            BENCH_EXIT=$_be BENCH_TASK_DIR="$tasks_dir/add-flag" run_one add-flag "self-bexit-$_be" "$stub_bexit" >/dev/null
+            _row_result=$(csv_cell "$csv_file" last 6)
+            if [ "$_row_result" != "fail" ]; then
+                echo "self-test FAILED: binary-exit: output right, exit status $_be: got $_row_result, want fail" >&2
+                tail -n 5 "$results_dir"/add-flag-self-bexit-$_be-*.log >&2 2>/dev/null || true
+                rm -rf "$tmpdir" "$_self_work_root"; exit 1
+            fi
+        done
+        echo "  exit status 1 and the binary's own 126 -> fail"
     fi
 
     echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="

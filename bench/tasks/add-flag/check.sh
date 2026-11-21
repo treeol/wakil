@@ -20,11 +20,13 @@ printf '%s\n' "$input" > "$GC_TMP/input.txt"
 
 # 1: without -n, matching lines only.
 gocheck_bin "$GC_TMP/input.txt" beta
+[ "$GC_BIN_RC" -eq 0 ] || gocheck_fail "no-flag: exit status $GC_BIN_RC, want 0"
 test "$GC_BIN_OUT" = 'beta gamma
 gamma beta' || gocheck_fail "no-flag: got $GC_BIN_OUT"
 
 # 2: with -n, line numbers prefix matches.
 gocheck_bin "$GC_TMP/input.txt" -n beta
+[ "$GC_BIN_RC" -eq 0 ] || gocheck_fail "with -n: exit status $GC_BIN_RC, want 0"
 test "$GC_BIN_OUT" = '2:beta gamma
 3:gamma beta' || gocheck_fail "with -n: got $GC_BIN_OUT"
 
@@ -36,5 +38,6 @@ fi
 
 # Also: flag after the search string still works (defined behaviour).
 gocheck_bin "$GC_TMP/input.txt" beta -n
+[ "$GC_BIN_RC" -eq 0 ] || gocheck_fail "flag after string: exit status $GC_BIN_RC, want 0"
 test "$GC_BIN_OUT" = '2:beta gamma
 3:gamma beta' || gocheck_fail "flag after string: got $GC_BIN_OUT"

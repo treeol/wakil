@@ -192,8 +192,13 @@ the environment is to blame (`error`), else the agent's tree is (`fail`). An
 `error` row has `exit_reason=check-error`, the log carries a `check:` line, and
 the bench stops with exit 1 (the same environment would repeat on the next run).
 `add-flag` runs the agent's binary under `BENCH_BINARY_TIMEOUT` seconds
-(default 10, then KILL after `BENCH_KILL_GRACE`): a hang is `fail` with
-`check: binary timed out`; a binary that cannot be started is `error`.
+(default 10, then KILL after `BENCH_KILL_GRACE`; both must be >= 1): a hang is
+`fail` with `check: binary timed out`, and a non-zero exit status where the
+task expects success is `fail`. A status of 125/126/127 is ambiguous (`timeout`
+or the exec failed, or the agent's binary exited with it itself), so it is
+decided by the reference solution: it runs here -> `fail`, it does not ->
+`error`. `long-read`'s judgement uses exit status 3 inside its python step, so
+a python traceback (status 1) is an `error`.
 
 Every CSV cell is written by one quoting function (RFC 4180: a value with a
 comma or a double quote is quoted and its quotes doubled; a CR or LF becomes
@@ -249,7 +254,7 @@ stability.
 The Go toolchain cases: every go call of a check and of `setup.sh` carries the
 resolved `GOTOOLCHAIN` and `GOPROXY=off` (`toolchain-pinned`); the status
 mapping (`rc-mapping`, `verdict-required`, `preflight-real-go`); a hanging
-`add-flag` binary (`binary-hang`); and `bench/lib/toolchain_cases.sh`, which
+`add-flag` binary (`binary-hang`, `binary-exit`); and `bench/lib/toolchain_cases.sh`, which
 runs a copy of the harness with a stub `go` that prints the Go 1.25.1 error
 above: `preflight-stops` (one line, exit 1, no CSV row, no model request),
 `preflight-stops-on-check` and `check-error-not-fail` (with the preflight
