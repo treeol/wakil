@@ -61,6 +61,9 @@ case "$kill_grace" in *[!0-9]*|'') echo "${0##*/}: BENCH_KILL_GRACE must be a po
 check_timeout="${BENCH_CHECK_TIMEOUT:-900}"
 case "$check_timeout" in *[!0-9]*|'') echo "${0##*/}: BENCH_CHECK_TIMEOUT must be a positive integer (got $check_timeout)" >&2; exit 2 ;; esac
 [ "$check_timeout" -ge 1 ] || { echo "${0##*/}: BENCH_CHECK_TIMEOUT must be >= 1" >&2; exit 2; }
+# Seconds between two heartbeat lines of a run on a terminal. A variable so the
+# self-test can give the heartbeat's sleep a number nothing else uses.
+hb_interval=30
 model_name=""
 only_task=""
 runs=1
@@ -649,9 +652,17 @@ wakil_digest() {
 # fd 9 (flock -n: never waits). Two benches on the same task would otherwise
 # empty and refill the same folder under each other. A held lock prints a
 # message and returns 75 without touching the folder; the caller must not
-# write a CSV row for it. The fd stays open until unlock_task; the children
-# (wakil, check.sh, setup.sh) are started with 9>&- so they do not inherit
-# it and keep the lock after the bench is gone.
+# write a CSV row for it. The fd stays open until unlock_task.
+#
+# No program the bench starts may inherit the lock: a flock belongs to the open
+# file description, so one leaked descriptor (an orphaned "sleep" of the
+# heartbeat was the one that blocked --runs 2) keeps the lock after the bench
+# let go. Every call that runs with the lock held is therefore made with 9>&-
+# (run_one, run_all, do_setup): the shell keeps the lock on a close-on-exec copy
+# of the descriptor for the length of the call, and nothing it starts inherits
+# it. The heartbeat is a fork, not an exec, so it is torn down by hand (see
+# run_one_locked) and unlock_task releases the lock itself (flock -u), which
+# frees it even if some descriptor did leak.
 lock_task() {
     if ! command -v flock >/dev/null 2>&1; then
         echo "$prog: flock not found — refusing to run: two benches on one task would delete each other's work folder" >&2
@@ -669,6 +680,7 @@ lock_task() {
 
 # unlock_task: release the lock taken by lock_task.
 unlock_task() {
+    flock -u 9 2>/dev/null || true
     exec 9>&-
 }
 
@@ -680,7 +692,7 @@ unlock_task() {
 run_one() {
     lock_task "$1" || return $?
     _ro_rc=0
-    run_one_locked "$@" || _ro_rc=$?
+    run_one_locked "$@" 9>&- || _ro_rc=$?
     unlock_task
     return "$_ro_rc"
 }
@@ -727,10 +739,20 @@ run_one_locked() {
     # The heartbeat runs in the background so it does not inflate the
     # recorded duration; wait in the foreground captures the real exit
     # code and the real elapsed time.
-    if [ "$is_tty" -eq 1 ] && [ "$timeout_sec" -gt 30 ]; then
+    if [ "$is_tty" -eq 1 ] && [ "$timeout_sec" -gt "$hb_interval" ]; then
+        # The sleep runs in the background and is waited for, so the TERM that
+        # ends the heartbeat is acted on at once (a trap waits for a foreground
+        # command to finish) and takes the sleep with it: nothing of the
+        # heartbeat outlives the run. "exit 0" keeps the shell from reporting
+        # the signal.
         (
+            _hb_sleep=""
+            trap '[ -z "$_hb_sleep" ] || kill "$_hb_sleep" 2>/dev/null; exit 0' TERM
             while kill -0 "$run_pid" 2>/dev/null; do
-                sleep 30
+                sleep "$hb_interval" &
+                _hb_sleep=$!
+                wait "$_hb_sleep" 2>/dev/null || true
+                _hb_sleep=""
                 kill -0 "$run_pid" 2>/dev/null || break
                 now=$(date +%s)
                 elapsed=$((now - start_epoch))
@@ -981,15 +1003,22 @@ sum_cost() {
     ' "$1"
 }
 
-# run_all <wakil-bin>: run every task `runs` times.
+# run_all <wakil-bin>: run every task `runs` times. The lock of a task is taken
+# once for the whole series (no other bench can slip in between two runs) and
+# released on every way out: the end of the series, a run that stops the bench,
+# and nothing at all when the lock is refused (75, nothing was taken).
 run_all() {
     for task in $tasks; do
         task_idx=$((task_idx + 1))
+        lock_task "$task" || return $?
         i=1
+        _ra_rc=0
         while [ "$i" -le "$runs" ]; do
-            run_one "$task" "$i" "$1" || return $?
+            run_one_locked "$task" "$i" "$1" 9>&- || { _ra_rc=$?; break; }
             i=$((i + 1))
         done
+        unlock_task
+        [ "$_ra_rc" -eq 0 ] || return "$_ra_rc"
     done
 }
 
@@ -1005,7 +1034,7 @@ do_setup() {
         workdir="$work_root/$task"
         lock_task "$task" || return $?
         _su_rc=0
-        prep_workdir "$task" || _su_rc=1
+        prep_workdir "$task" 9>&- || _su_rc=1
         unlock_task
         [ "$_su_rc" -eq 0 ] || return 1
         echo "WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust"
@@ -1673,6 +1702,114 @@ EOF
     BENCH_TASK_DIR="" run_one "$_lock_task" "self-lock-free" "$stub_noop" >/dev/null
     [ ! -e "$_lock_workdir/.bench-lock-marker" ] || { echo "self-test FAILED: after the lock was released the folder was not refilled" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  held lock -> exit 75, message, folder and CSV untouched; released lock -> run proceeds"
+
+    echo "== self-test: --runs 2 on a terminal (heartbeat on): the series holds the lock, no started program does, nothing is left alive, a second bench is refused =="
+    # The heartbeat only runs when stdout is a terminal, so the case switches it
+    # on (is_tty) with an interval no other sleep in the harness uses, and runs
+    # the real run_all with a stub that finishes long before one interval. Shims
+    # in front of the harness's tools report when they were started holding the
+    # lock file open (same device and inode, so a symlinked cache directory
+    # cannot hide it). The stub, which runs inside every run, lists the
+    # processes holding the lock file (only the bench shell and its forked
+    # heartbeat may), proves a fresh flock is refused, and starts a second bench
+    # on the same task, which must exit 75 without touching the folder.
+    _ls_task="$(echo "$tasks" | awk '{print $1}')"
+    _ls_dir="$tmpdir/lockseries"
+    mkdir -p "$_ls_dir/shim" "$_ls_dir/cache/wakil-bench"
+    for _sh in git find sha256sum sleep timeout cp mv rm cat grep date sort mktemp head tail awk sed tr wc; do
+        _sh_real=$(command -v "$_sh") || continue
+        case "$_sh_real" in /*) ;; *) continue ;; esac
+        cat > "$_ls_dir/shim/$_sh" <<SHIM
+#!/bin/sh
+for _f in /proc/\$\$/fd/*; do
+    if [ "\$_f" -ef "\$BENCH_LOCKFILE" ]; then echo "$_sh" >> "\$BENCH_LEAKLOG"; fi
+done
+exec "$_sh_real" "\$@"
+SHIM
+        chmod +x "$_ls_dir/shim/$_sh"
+    done
+    _ls_stub="$_ls_dir/wakil-lockstub"
+    cat > "$_ls_stub" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-lock/0.0.0" ;;
+  run)
+    shift
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    for f in /proc/[0-9]*/fd/*; do
+      if [ "$f" -ef "$BENCH_LOCKFILE" ]; then
+        p=${f#/proc/}; p=${p%%/*}
+        c=$(cat "/proc/$p/comm" 2>/dev/null)
+        [ "$c" = "$BENCH_SHELL_COMM" ] || echo "holder $p $c" >> "$BENCH_HOLDLOG"
+      fi
+    done 2>/dev/null
+    if flock -n "$BENCH_LOCKFILE" true; then echo free >> "$BENCH_FLOCKLOG"; else echo held >> "$BENCH_FLOCKLOG"; fi
+    echo keep > "$WAKIL_HOST_WORKDIR/.bench-lock-marker"
+    XDG_CACHE_HOME="$BENCH_CACHE" sh "$BENCH_SCRIPT" --no-preflight --wakil "$0" --runs 1 --task "$BENCH_TASK" >"$BENCH_2NDOUT" 2>&1
+    echo "$?" >> "$BENCH_2NDRC"
+    [ -f "$WAKIL_HOST_WORKDIR/.bench-lock-marker" ] && echo ok >> "$BENCH_MARKLOG"
+    printf '{"model":"stub","exit_reason":"pass","workdir":"%s"}\n' "$WAKIL_HOST_WORKDIR" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+    chmod +x "$_ls_stub"
+    _ls_saved="$lock_root|$is_tty|$hb_interval|$runs|$tasks|$PATH"
+    _ls_lock_root="$lock_root"; _ls_is_tty="$is_tty"; _ls_hb="$hb_interval"; _ls_runs="$runs"; _ls_tasks="$tasks"; _ls_path="$PATH"
+    lock_root="$_ls_dir/cache/wakil-bench/locks"
+    is_tty=1; hb_interval=37; runs=2; tasks="$_ls_task"; task_idx=0
+    BENCH_LOCKFILE="$lock_root/$_ls_task.lock"; BENCH_LEAKLOG="$_ls_dir/leak.log"; BENCH_HOLDLOG="$_ls_dir/hold.log"
+    BENCH_FLOCKLOG="$_ls_dir/flock.log"; BENCH_2NDRC="$_ls_dir/2nd.rc"; BENCH_2NDOUT="$_ls_dir/2nd.out"
+    BENCH_MARKLOG="$_ls_dir/mark.log"; BENCH_CACHE="$_ls_dir/cache"; BENCH_SCRIPT="$0"; BENCH_TASK="$_ls_task"
+    BENCH_SHELL_COMM=$(cat "/proc/$$/comm"); BENCH_RUN_MARK="$_ls_dir"
+    export BENCH_LOCKFILE BENCH_LEAKLOG BENCH_HOLDLOG BENCH_FLOCKLOG BENCH_2NDRC BENCH_2NDOUT BENCH_MARKLOG BENCH_CACHE BENCH_SCRIPT BENCH_TASK BENCH_SHELL_COMM BENCH_RUN_MARK
+    : > "$BENCH_LEAKLOG"; : > "$BENCH_HOLDLOG"; : > "$BENCH_FLOCKLOG"; : > "$BENCH_2NDRC"; : > "$BENCH_MARKLOG"
+    _ls_rows_before=$(wc -l < "$csv_file")
+    _ls_t0=$(date +%s)
+    PATH="$_ls_dir/shim:$PATH"; export PATH
+    _ls_rc=0
+    BENCH_TASK_DIR="" run_all "$_ls_stub" >"$_ls_dir/run.out" 2>"$_ls_dir/run.err" || _ls_rc=$?
+    PATH="$_ls_path"; export PATH
+    _ls_secs=$(( $(date +%s) - _ls_t0 ))
+    _ls_rows=$(( $(wc -l < "$csv_file") - _ls_rows_before ))
+    _ls_free_after=no
+    flock -n "$BENCH_LOCKFILE" true && _ls_free_after=yes
+    _ls_left=""
+    for _p in /proc/[0-9]*; do
+        [ -r "$_p/environ" ] || continue
+        case "$(cat "$_p/comm" 2>/dev/null)" in sleep|timeout|wakil-lockstub) ;; *) continue ;; esac
+        if tr '\0' '\n' < "$_p/environ" 2>/dev/null | grep -qx "BENCH_RUN_MARK=$BENCH_RUN_MARK"; then
+            _ls_left="$_ls_left ${_p#/proc/}:$(cat "$_p/comm")"
+        fi
+    done
+    _ls_hb_alive=no
+    [ -z "${hb_pid:-}" ] || ! kill -0 "$hb_pid" 2>/dev/null || _ls_hb_alive=yes
+    lock_root="$_ls_lock_root"; is_tty="$_ls_is_tty"; hb_interval="$_ls_hb"; runs="$_ls_runs"; tasks="$_ls_tasks"
+    unset BENCH_LOCKFILE BENCH_LEAKLOG BENCH_HOLDLOG BENCH_FLOCKLOG BENCH_2NDRC BENCH_2NDOUT BENCH_MARKLOG BENCH_CACHE BENCH_SCRIPT BENCH_TASK BENCH_SHELL_COMM BENCH_RUN_MARK
+    _ls_why=""
+    [ "$_ls_rc" -eq 0 ] || _ls_why="$_ls_why run_all returned $_ls_rc ($(head -n 1 "$_ls_dir/run.err"));"
+    [ "$_ls_rows" -eq 2 ] || _ls_why="$_ls_why --runs 2 wrote $_ls_rows rows, want 2;"
+    [ ! -s "$_ls_dir/leak.log" ] || _ls_why="$_ls_why programs started holding the lock: $(sort -u "$_ls_dir/leak.log" | tr '\n' ' ');"
+    [ ! -s "$_ls_dir/hold.log" ] || _ls_why="$_ls_why processes holding the lock besides the bench shell: $(tr '\n' ';' < "$_ls_dir/hold.log");"
+    [ "$(tr '\n' ' ' < "$_ls_dir/flock.log")" = "held held " ] || _ls_why="$_ls_why the lock was not held inside both runs ($(tr '\n' ' ' < "$_ls_dir/flock.log"));"
+    [ "$(tr '\n' ' ' < "$_ls_dir/2nd.rc")" = "75 75 " ] || _ls_why="$_ls_why a second bench on the task did not exit 75 in both runs ($(tr '\n' ' ' < "$_ls_dir/2nd.rc"));"
+    grep -q "task $_ls_task is already being run by another bench" "$_ls_dir/2nd.out" 2>/dev/null || _ls_why="$_ls_why the second bench printed no refusal;"
+    [ "$(tr '\n' ' ' < "$_ls_dir/mark.log")" = "ok ok " ] || _ls_why="$_ls_why the second bench touched the work folder;"
+    [ "$_ls_free_after" = yes ] || _ls_why="$_ls_why the lock is still held after run_all;"
+    [ -z "$_ls_left" ] || _ls_why="$_ls_why processes of the run are still alive:$_ls_left;"
+    [ "$_ls_hb_alive" = no ] || _ls_why="$_ls_why the heartbeat is still alive;"
+    [ "$_ls_secs" -lt 25 ] || _ls_why="$_ls_why the series took ${_ls_secs}s (the heartbeat sleep of ${_ls_hb}s was waited for);"
+    if [ -n "$_ls_why" ]; then
+        echo "self-test FAILED: lock-series:$_ls_why" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    fi
+    echo "  --runs 2 with the heartbeat on: 2 rows in ${_ls_secs}s; lock held in both runs, no started program holds it, a second bench exits 75 in both runs, nothing left alive, lock free afterwards"
 
     echo "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
     # Use the harness's own timeout path with a short per-run timeout so
