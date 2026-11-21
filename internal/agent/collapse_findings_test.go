@@ -187,17 +187,6 @@ func findingsApp(t *testing.T) *App {
 	return app
 }
 
-func recFindings(t *testing.T, app *App) string {
-	t.Helper()
-	app.stateMu.RLock()
-	defer app.stateMu.RUnlock()
-	rec, ok := app.collapsed[1]
-	if !ok {
-		t.Fatal("no collapse record for turn 1")
-	}
-	return rec.Findings
-}
-
 // TestFindingsAllThreePaths: the checkpoint the model sees after each of the
 // three collapse paths carries the same findings part, and none of the
 // tool-result marker text.
