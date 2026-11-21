@@ -672,6 +672,8 @@ func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *
 			if tl := ev.Payload.(event.ToolCallCompleted).ToolLine; tl != "" {
 				_, _ = hw.Write([]byte(tl + "\n"))
 			}
+		case event.KindSessionNote:
+			writeNotice(hw, ev.Payload.(event.SessionNote))
 		case event.KindWorkflowWarning:
 			emitEvent(rawOut, map[string]any{
 				"type":    "warning",
@@ -714,6 +716,22 @@ func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *
 	}
 }
 
+// writeNotice prints a notice (the collapse and async lines) as one line of its
+// own, with the same writer as the tool lines. Other session notes (the auto
+// and grant lines, workflow and handoff progress) stay out of a headless run.
+// The writer is flushed first so the notice never lands inside an answer line
+// that has no newline yet, and newlines in the text become spaces so one
+// notice is one line whatever its producer wrote. HeadlessWriter strips any
+// escape sequence.
+func writeNotice(hw *HeadlessWriter, n event.SessionNote) {
+	if !n.Notice {
+		return
+	}
+	hw.Flush()
+	line := strings.Join(strings.Fields(strings.NewReplacer("\r", " ", "\n", " ").Replace(n.Text)), " ")
+	_, _ = hw.Write([]byte(line + "\n"))
+}
+
 // consumeTurnEvents drains the subscription until the session reaches a terminal
 // outcome, projecting deltas to the writer and latching the decline reason. It
 // returns (exit code, message): the exit code for the turn's final outcome and
@@ -739,6 +757,8 @@ func consumeTurnEvents(ctx context.Context, sub core.EventSubscription, hw *Head
 			if tl := ev.Payload.(event.ToolCallCompleted).ToolLine; tl != "" {
 				_, _ = hw.Write([]byte(tl + "\n"))
 			}
+		case event.KindSessionNote:
+			writeNotice(hw, ev.Payload.(event.SessionNote))
 		case event.KindApprovalResolved:
 			ar := ev.Payload.(event.ApprovalResolved)
 			if ar.Outcome == "declined" {

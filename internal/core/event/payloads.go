@@ -481,8 +481,13 @@ type LearnNudge struct {
 // occurs DURING a turn or between commands. It is display-only — never folded
 // into the durable stream (replay reconstructs state from durable events, not
 // from notes) and carries no identity beyond the session.
+//
+// Notice marks a note that a headless run prints as one line of its output (the
+// collapse and async notices); the other notes are display-only there. The zero
+// value (older events, every other producer) is "not a notice".
 type SessionNote struct {
-	Text string
+	Text   string
+	Notice bool `json:",omitempty"`
 }
 
 // ---- 7c workflow-outcome payloads ----

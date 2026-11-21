@@ -217,8 +217,14 @@ type AsyncJobChunkMsg struct {
 	Text         string
 }
 
-// SysNoteMsg delivers a status line into the viewport.
-type SysNoteMsg struct{ Text string }
+// SysNoteMsg delivers a status line into the viewport. Notice marks the few
+// status lines that also belong in a headless run's output (the collapse and
+// async notices, set only by App.emitNotice); every other note (the auto and
+// grant lines, workflow and handoff progress) stays display-only.
+type SysNoteMsg struct {
+	Text   string
+	Notice bool
+}
 
 // NewConvMsg signals that the conversation was reset.
 // RebuildConv=true tells the TUI to repopulate the viewport from app.Conv

@@ -1299,7 +1299,7 @@ func (a *App) emitNotice(text string) {
 	sink := a.EventSink
 	a.callbackMu.Unlock()
 	if sink != nil {
-		sink(SysNoteMsg{Text: text})
+		sink(SysNoteMsg{Text: text, Notice: true})
 		return
 	}
 	if noticeStyled(a.Out) {

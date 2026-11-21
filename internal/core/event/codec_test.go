@@ -247,7 +247,7 @@ func payloadsEqual(kind Kind, want, got any) bool {
 	case KindLearnNudge:
 		return want.(LearnNudge).Text == got.(LearnNudge).Text
 	case KindSessionNote:
-		return want.(SessionNote).Text == got.(SessionNote).Text
+		return want.(SessionNote) == got.(SessionNote)
 	case KindWorkflowOutcome:
 		w := want.(WorkflowOutcome)
 		g := got.(WorkflowOutcome)
@@ -353,7 +353,7 @@ func samplePayload(kind Kind) any {
 	case KindLearnNudge:
 		return LearnNudge{Text: "save this?"}
 	case KindSessionNote:
-		return SessionNote{Text: "progress note"}
+		return SessionNote{Text: "progress note", Notice: true}
 	case KindWorkflowOutcome:
 		return WorkflowOutcome{TurnID: "trn_test1", Outcome: "declined", Reason: "user declined"}
 	case KindWorkflowWarning:
@@ -368,5 +368,25 @@ func samplePayload(kind Kind) any {
 		}}
 	default:
 		return nil
+	}
+}
+
+// TestSessionNoticeFlagCompat: a payload written before the Notice flag existed
+// decodes with Notice=false (it is not shown as a headless notice), and a plain
+// note does not write the field.
+func TestSessionNoticeFlagCompat(t *testing.T) {
+	got, err := UnmarshalPayload(KindSessionNote, []byte(`{"Text":"old note"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := got.(SessionNote); n.Text != "old note" || n.Notice {
+		t.Errorf("old payload decoded as %+v", n)
+	}
+	b, err := MarshalPayload(KindSessionNote, SessionNote{Text: "plain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != `{"Text":"plain"}` {
+		t.Errorf("plain note encoded as %s", b)
 	}
 }

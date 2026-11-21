@@ -71,7 +71,11 @@ and it has no replay protection for external side effects.
 ## Output
 
 One JSON object per line. The event types in `internal/wiring/headless.go` are
-`output` (a line of agent output), `warning`, `error`, `tokens` (input and
+`output` (a line of agent output: the answer text, one line per tool call, and
+one plain line for each collapse notice and each "async results delivered"
+notice, never inside an answer line and without escape sequences; the other
+status notes of the interactive UI, such as the auto-approval lines, are not
+printed), `warning`, `error`, `tokens` (input and
 output token counts, plus `cost_usd` and budget fields when pricing or `--budget` is set; not emitted by `--plan`), and a final
 `done` record whose `outcome` is `pass`, `declined`, `backend_failure` (with a
 `resume_id`) or, for `--plan`, `gaps` or `verify_failed`. In `--continue` mode

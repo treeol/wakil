@@ -276,7 +276,7 @@ func projectAgentEvent(emit sessionhost.SessionEmitter, turnID event.TurnID, msg
 		// (HandleTUICommand returning SysNoteMsg) never reach the EventSink —
 		// DispatchCommand translates them to CommandResult.Notice — so this
 		// case fires only for in-turn notes.
-		emit.Notify(event.KindSessionNote, event.SessionNote{Text: m.Text})
+		emit.Notify(event.KindSessionNote, event.SessionNote{Text: m.Text, Notice: m.Notice})
 
 	case agent.CompactedMsg:
 		// Durable: conversation_compacted. The TurnID is not available from
