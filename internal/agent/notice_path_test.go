@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -174,5 +176,80 @@ func TestStreamTurnAsyncNoticeNotInStream(t *testing.T) {
 	}
 	if len(got) != 1 {
 		t.Fatalf("notice sink got %d async notices %v, want exactly 1 (all notes: %+v)", len(got), got, notes)
+	}
+}
+
+// noticeFallbackOut runs the two notices that use the fallback (the async one
+// and a collapse notice) with no event sink attached and returns what reached
+// a.Out.
+func noticeFallbackOut(t *testing.T, out io.Writer) string {
+	t.Helper()
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextCollapseMinBytes = 1
+	app.Out = out
+	app.emitNotice("· async results delivered")
+	conv := oneCollapsedTurn(1)
+	for i := range conv {
+		conv[i].Turn = 1
+	}
+	app.Conv = conv
+	app.turnSeq = 1
+	app.collapseFinishedTurns()
+	return fmt.Sprint(out)
+}
+
+// TestNoticeFallbackNoEscapeWithoutTerminal: with no terminal (a buffer, a
+// pipe, a file) the collapse and async notices carry no escape sequence, with
+// or without NO_COLOR.
+func TestNoticeFallbackNoEscapeWithoutTerminal(t *testing.T) {
+	for _, noColor := range []string{"", "1"} {
+		t.Setenv("NO_COLOR", noColor)
+		var buf strings.Builder
+		got := noticeFallbackOut(t, &buf)
+		if !strings.Contains(got, "async results delivered") || !strings.Contains(got, "collapsed request 1:") {
+			t.Fatalf("NO_COLOR=%q: notices missing: %q", noColor, got)
+		}
+		if strings.Contains(got, "\x1b") {
+			t.Errorf("NO_COLOR=%q: escape sequence without a terminal: %q", noColor, got)
+		}
+	}
+	// A real file that is not a terminal.
+	f, err := os.CreateTemp(t.TempDir(), "out")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	noticeFallbackOut(t, f)
+	b, _ := os.ReadFile(f.Name())
+	if len(b) == 0 || strings.Contains(string(b), "\x1b") {
+		t.Errorf("file output empty or styled: %q", b)
+	}
+}
+
+// TestNoticeFallbackTerminalStyling: on a terminal the line is dimmed, unless
+// NO_COLOR is set to a non-empty value (an empty NO_COLOR does not disable
+// colour, per no-color.org).
+func TestNoticeFallbackTerminalStyling(t *testing.T) {
+	old := isTerminalFile
+	isTerminalFile = func(*os.File) bool { return true }
+	t.Cleanup(func() { isTerminalFile = old })
+	for _, tc := range []struct {
+		noColor string
+		styled  bool
+	}{{"", true}, {"1", false}, {"0", false}} {
+		t.Setenv("NO_COLOR", tc.noColor)
+		f, err := os.CreateTemp(t.TempDir(), "tty")
+		if err != nil {
+			t.Fatal(err)
+		}
+		app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+		app.Out = f
+		app.emitNotice("· async results delivered")
+		f.Close()
+		b, _ := os.ReadFile(f.Name())
+		if got := strings.Contains(string(b), "\x1b[2m"); got != tc.styled {
+			t.Errorf("NO_COLOR=%q: styled=%v, want %v: %q", tc.noColor, got, tc.styled, b)
+		}
 	}
 }

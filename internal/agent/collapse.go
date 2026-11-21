@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"sort"
 	"strings"
 	"time"
+
+	"golang.org/x/term"
 
 	"github.com/treeol/wakil/internal/memory"
 	"github.com/treeol/wakil/internal/proxy"
@@ -1274,16 +1277,35 @@ func (a *App) emitCollapseNotice(text string) {
 
 // emitNotice is the one path for a status line that must not land in the
 // assistant or reasoning stream: SysNoteMsg when an event sink is attached,
-// otherwise a dimmed line on a.Out (headless mode, tests).
+// otherwise a line on a.Out (headless mode, tests). The fallback line is
+// dimmed only when a.Out is a terminal and NO_COLOR is not set to a non-empty
+// value (https://no-color.org); in a pipe, a file or a test buffer it carries
+// no escape sequence.
 func (a *App) emitNotice(text string) {
 	a.callbackMu.Lock()
 	sink := a.EventSink
 	a.callbackMu.Unlock()
 	if sink != nil {
 		sink(SysNoteMsg{Text: text})
-	} else {
-		fmt.Fprintln(a.Out, Dim(text))
+		return
 	}
+	if noticeStyled(a.Out) {
+		text = Dim(text)
+	}
+	fmt.Fprintln(a.Out, text)
+}
+
+// isTerminalFile reports whether f is a terminal. A variable so tests can
+// exercise the styled branch without a pty.
+var isTerminalFile = func(f *os.File) bool { return term.IsTerminal(int(f.Fd())) }
+
+// noticeStyled reports whether a notice written to w may carry ANSI styling.
+func noticeStyled(w io.Writer) bool {
+	if os.Getenv("NO_COLOR") != "" {
+		return false
+	}
+	f, ok := w.(*os.File)
+	return ok && isTerminalFile(f)
 }
 
 // formatToolAggregation renders a tool-name → count map as a sorted, capped
