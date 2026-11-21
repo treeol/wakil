@@ -14,7 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`BENCH_TEST_SKIP_PREFLIGHT` is a self-test-only switch.** In a normal run the variable is ignored and one warning line says so; toolchain-case children keep it through `BENCH_ALLOW_SKIP_PREFLIGHT`.
+- **The bench preflight can be skipped only with the `--no-preflight` flag.** `BENCH_TEST_SKIP_PREFLIGHT` and `BENCH_ALLOW_SKIP_PREFLIGHT` are no longer read, so no environment variable switches the preflight off. A run with the flag prints one warning line and writes its CSV and logs under the cache (`wakil-bench/nopreflight`), never under `bench/results`.
 - **Bench `prep_workdir` recovers `.wakil/` after an interrupted prep.** The `.wakil/` directory is saved to a sibling under `$work_root` (same filesystem, atomic rename) and the save `mv` aborts before the wipe if it fails. At the start of `prep_workdir`, a saved copy from an interrupted prior prep is moved back before anything else; if both saved and active copies exist, the function aborts. The saved copy is never deleted by the harness.
 
 ### Corrections to the 0.8.8 notes

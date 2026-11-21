@@ -258,7 +258,7 @@ mapping (`rc-mapping`, `verdict-required`, `preflight-real-go`); a hanging
 runs a copy of the harness with a stub `go` that prints the Go 1.25.1 error
 above: `preflight-stops` (one line, exit 1, no CSV row, no model request),
 `preflight-stops-on-check` and `check-error-not-fail` (with the preflight
-bypassed by the test-only `BENCH_TEST_SKIP_PREFLIGHT=1`, the result is `error`,
+bypassed by the test-only `--no-preflight` flag (its CSV and logs go to the cache, never to `bench/results`), the result is `error`,
 never `fail`). It also takes a path (`sh bench/lib/toolchain_cases.sh <tree>`),
 e.g. a `git archive` of an older commit, to show the cases failing there.
 

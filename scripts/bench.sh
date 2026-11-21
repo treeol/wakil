@@ -29,7 +29,8 @@ fi
 usage() {
     cat <<USAGE
 usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
-             [--timeout SECONDS] [--mashura LEVEL] [--self-test]
+             [--timeout SECONDS] [--mashura LEVEL] [--no-preflight]
+             [--self-test]
   or:  $prog --setup
 
   --wakil PATH      wakil binary to run (default: from PATH)
@@ -38,6 +39,9 @@ usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
   --runs N          runs per task (default: 1)
   --timeout SECONDS per-run timeout in seconds (default: 600)
   --mashura LEVEL   auto-counsel: off|low|medium|high (default: off)
+  --no-preflight    skip the Go preflight (test use). The run writes its CSV
+                    and logs under the cache (wakil-bench/nopreflight), never
+                    under bench/results
   --self-test       run every task against stub wakil binaries
   --setup           create all task work folders and print the one
                     'WAKIL_HOST_WORKDIR=<path> wakil sandbox trust' command per folder
@@ -63,6 +67,7 @@ runs=1
 timeout_sec=600
 mashura_level="off"
 self_test=0
+skip_preflight=0
 do_setup=0
 
 while [ $# -gt 0 ]; do
@@ -91,6 +96,7 @@ while [ $# -gt 0 ]; do
             case "$2" in off|low|medium|high) ;; *) echo "$prog: --mashura must be off|low|medium|high (got $2)" >&2; exit 2 ;; esac
             mashura_level="$2"; shift 2 ;;
         --self-test) self_test=1; shift ;;
+        --no-preflight) skip_preflight=1; shift ;;
         --setup) do_setup=1; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "$prog: unknown argument: $1" >&2; usage >&2; exit 2 ;;
@@ -134,15 +140,15 @@ if [ -n "$missing_tools" ]; then
     exit 1
 fi
 
-# BENCH_TEST_SKIP_PREFLIGHT is a self-test-only switch (lets the toolchain
-# cases drive a check through a broken go). In a normal run it is ignored:
-# print one warning line so the user knows it was not honoured, then unset
-# it so the preflight runs as intended. The toolchain-case children pass
-# BENCH_ALLOW_SKIP_PREFLIGHT=1 (set in bench/lib/toolchain_cases.sh) so the
-# gate does not fire on them.
-if [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" = 1 ] && [ "$self_test" -ne 1 ] && [ "${BENCH_ALLOW_SKIP_PREFLIGHT:-}" != 1 ]; then
-    echo "$prog: warning: BENCH_TEST_SKIP_PREFLIGHT is a self-test-only variable — ignored in this run" >&2
-    unset BENCH_TEST_SKIP_PREFLIGHT
+# --no-preflight skips the Go preflight so the toolchain cases can drive a
+# check through a broken go. It is a flag, never an environment variable: no
+# variable alone can switch the preflight off. A run that skips it prints one
+# warning line and writes its CSV and logs only under the cache directory
+# (never bench/results, never where find_prev_csv looks), so it cannot be
+# mistaken for a measured run. The self-test has its own redirect.
+if [ "$skip_preflight" -eq 1 ]; then
+    echo "$prog: warning: --no-preflight: the Go preflight is skipped; results go to $cache_home/wakil-bench/nopreflight, not bench/results" >&2
+    [ "$self_test" -eq 1 ] || results_dir="$cache_home/wakil-bench/nopreflight"
 fi
 
 csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds'
@@ -249,9 +255,9 @@ go_fail_line() {
 }
 
 # resolve_go: fill go_toolchain and the cache locations, or print one line and
-# return 1. BENCH_TEST_SKIP_PREFLIGHT=1 (test only, read here and in
-# preflight_go, never passed on) lets a failed resolve fall back to "local" so
-# the self-test can drive a check through a broken go.
+# return 1. --no-preflight (test only, read here and in preflight_go) lets a
+# failed resolve fall back to "local" so the self-test can drive a check
+# through a broken go.
 resolve_go() {
     _rg_need=0
     for _rg_t in $tasks; do
@@ -259,7 +265,7 @@ resolve_go() {
     done
     [ "$_rg_need" -eq 1 ] || return 0
     if ! command -v go >/dev/null 2>&1; then
-        [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" != 1 ] || { go_toolchain=local; return 0; }
+        [ "$skip_preflight" -ne 1 ] || { go_toolchain=local; return 0; }
         go_fail_line "go is not installed (see bench/README.md)"
         return 1
     fi
@@ -268,7 +274,7 @@ resolve_go() {
     if ! _rg_v=$(cd "$repo_root" && GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
         _rg_msg=$(head -n 1 "$_rg_err")
         rm -f "$_rg_err"
-        [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" != 1 ] || { go_toolchain=local; return 0; }
+        [ "$skip_preflight" -ne 1 ] || { go_toolchain=local; return 0; }
         go_fail_line "$_rg_msg"
         return 1
     fi
@@ -312,7 +318,7 @@ with_go_env() {
 # is written to the results.
 preflight_go() {
     [ -n "$go_toolchain" ] || return 0
-    [ "${BENCH_TEST_SKIP_PREFLIGHT:-}" != 1 ] || return 0
+    [ "$skip_preflight" -ne 1 ] || return 0
     _pf_root="$cache_home/wakil-bench/preflight"
     mkdir -p "$_pf_root" || { echo "$prog: cannot create $_pf_root" >&2; return 1; }
     for _pf_t in $tasks; do
@@ -2019,18 +2025,26 @@ EOF
     case "$csv_file" in "$cache_home"/wakil-bench/selftest/*) ;; *) echo "self-test FAILED: CSV not in the cache selftest dir: $csv_file" >&2; exit 1 ;; esac
     echo "  CSV and logs under $selftest_dir; bench/results untouched"
 
-    echo "== self-test: BENCH_TEST_SKIP_PREFLIGHT ignored in normal mode =="
-    # In a normal run (not --self-test), the variable is unset and a warning
-    # is printed. The self-test itself keeps it for the toolchain cases.
-    # We re-invoke bench.sh with the variable set but without --self-test
-    # and capture stderr: the warning must appear.
-    _pf_warn=$(BENCH_TEST_SKIP_PREFLIGHT=1 sh "$0" --wakil /nonexistent/binary --runs 1 --task nonexistent 2>&1 || true)
-    if ! printf '%s\n' "$_pf_warn" | grep -q "BENCH_TEST_SKIP_PREFLIGHT is a self-test-only"; then
-        echo "self-test FAILED: BENCH_TEST_SKIP_PREFLIGHT not warned in normal mode" >&2
-        printf '%s\n' "$_pf_warn" >&2
-        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker"; exit 1
+    echo "== self-test: --no-preflight is the only way to skip the preflight, and says so =="
+    # A normal run with the old variables set (and nothing else) must neither
+    # skip the preflight nor warn about it; the flag prints exactly one warning
+    # line that names the cache directory. Both runs stop at the unknown task,
+    # before any model request, with a temp cache.
+    _np_cache=$(mktemp -d "${TMPDIR:-/tmp}/bench-nopre.XXXXXX")
+    _np_env=$(XDG_CACHE_HOME="$_np_cache" BENCH_TEST_SKIP_PREFLIGHT=1 BENCH_ALLOW_SKIP_PREFLIGHT=1 sh "$0" --wakil /nonexistent/binary --runs 1 --task nonexistent 2>&1 || true)
+    if printf '%s\n' "$_np_env" | grep -q 'no-preflight\|SKIP_PREFLIGHT'; then
+        echo "self-test FAILED: the old variables changed or warned in a normal run:" >&2
+        printf '%s\n' "$_np_env" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_np_cache"; exit 1
     fi
-    echo "  BENCH_TEST_SKIP_PREFLIGHT warning OK (ignored in normal mode, kept in self-test)"
+    _np_flag=$(XDG_CACHE_HOME="$_np_cache" sh "$0" --no-preflight --wakil /nonexistent/binary --runs 1 --task nonexistent 2>&1 || true)
+    if [ "$(printf '%s\n' "$_np_flag" | grep -c -- '--no-preflight: the Go preflight is skipped')" -ne 1 ] || ! printf '%s\n' "$_np_flag" | grep -q "$_np_cache/wakil-bench/nopreflight"; then
+        echo "self-test FAILED: --no-preflight must print exactly one warning line naming the cache directory:" >&2
+        printf '%s\n' "$_np_flag" >&2
+        rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_np_cache"; exit 1
+    fi
+    rm -rf "$_np_cache"
+    echo "  old variables ignored without a warning; --no-preflight warns once"
 
     echo "== self-test: .wakil/ recovered after interrupted prep_workdir =="
     # Simulate an interrupted prep: .wakil/ is in the saved directory but

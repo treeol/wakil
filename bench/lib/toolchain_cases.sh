@@ -10,7 +10,9 @@
 # The stub go prints the error a host with Go 1.25.1 gives for a go.mod that
 # needs 1.26 and exits 1:
 #   go: go.mod requires go >= 1.26 (running go 1.25.1; GOTOOLCHAIN=local)
-# Cases: preflight-stops, preflight-stops-on-check, check-error-not-fail.
+# Cases: preflight-stops, preflight-stops-ignores-env, preflight-stops-on-check,
+# check-error-not-fail. The preflight is skipped only by the --no-preflight
+# flag (case_flags below); the two old variables must change nothing.
 set -eu
 root=$(CDPATH='' cd -- "${1:?usage: toolchain_cases.sh <tree>}" && pwd)
 real_go=$(command -v go) || { echo "toolchain_cases: go is needed (the \"env-ok\" stub forwards go env to it)" >&2; exit 1; }
@@ -51,7 +53,9 @@ STUB
 chmod +x "$tmp/stub/go" "$tmp/stub/wakil"
 
 # run_case <name> <MODE> [VAR=value]...: copies the tree, runs one bench; sets
-# rc, $tmp/<name>/{out,err}, and the tree dir in $t.
+# rc, $tmp/<name>/{out,err}, and the tree dir in $t. $case_flags (set by the
+# caller, e.g. --no-preflight) is passed to bench.sh as options.
+case_flags=""
 run_case() {
     name=$1; mode=$2; shift 2
     t="$tmp/$name/tree"
@@ -62,11 +66,12 @@ run_case() {
     cp "$root/go.mod" "$t/go.mod"
     rm -rf "$t/bench/results"
     rc=0
+    # shellcheck disable=SC2086 # $case_flags is a short list of bench.sh options, split on purpose
     env -u GOTOOLCHAIN -u GOFLAGS -u GOPROXY -u GOENV \
         PATH="$tmp/stub:$PATH" MODE="$mode" XDG_CACHE_HOME="$tmp/$name/cache" \
         BENCH_TASK_DIR="$t/bench/tasks/fix-test" BENCH_MARKER="$tmp/$name/wakil-ran" \
-        BENCH_ALLOW_SKIP_PREFLIGHT=1 "$@" \
-        "$t/scripts/bench.sh" --wakil "$tmp/stub/wakil" --task fix-test --runs 1 \
+        "$@" \
+        "$t/scripts/bench.sh" $case_flags --wakil "$tmp/stub/wakil" --task fix-test --runs 1 \
         >"$tmp/$name/out" 2>"$tmp/$name/err" || rc=$?
 }
 
@@ -112,19 +117,32 @@ run_case preflight-stops all
 check_preflight preflight-stops go1.25.1
 echo "    stderr: $(head -n 1 "$tmp/preflight-stops/err" || true)"
 
+# Both old variables set, no flag: the preflight still runs and still stops
+# the run (the same one-line stderr, no CSV row, no model request).
+run_case preflight-stops-ignores-env all BENCH_TEST_SKIP_PREFLIGHT=1 BENCH_ALLOW_SKIP_PREFLIGHT=1
+check_preflight preflight-stops-ignores-env go1.25.1
+
 run_case preflight-stops-on-check env-ok
 expected=$(cd "$tmp/preflight-stops-on-check/tree" && GOPROXY=off "$real_go" env GOVERSION | cut -d' ' -f1)
 check_preflight preflight-stops-on-check "$expected"
 
-# (b) With the preflight bypassed (test only), a toolchain error inside the
-# check is an "error" with a "check:" reason in the log, never "fail".
-run_case check-error-not-fail all BENCH_TEST_SKIP_PREFLIGHT=1
+# (b) With the preflight bypassed by the flag (test only), a toolchain error
+# inside the check is an "error" with a "check:" reason in the log, never
+# "fail". The skipped run writes nothing under the tree's bench/results: the
+# CSV and the logs are under the cache directory, and stderr holds exactly one
+# warning line naming it.
+case_flags=--no-preflight
+run_case check-error-not-fail all
+case_flags=""
 why=""
 [ -e "$tmp/check-error-not-fail/wakil-ran" ] || why="$why the run did not happen;"
+nopre="$tmp/check-error-not-fail/cache/wakil-bench/nopreflight"
+[ ! -d "$t/bench/results" ] || [ -z "$(find "$t/bench/results" -type f | head -n 1)" ] || why="$why a file was written under bench/results;"
 csv=""
-for f in "$t"/bench/results/*-bench.csv; do
+for f in "$nopre"/*-bench.csv; do
     [ -f "$f" ] && { csv=$f; break; }
 done
+[ -n "$csv" ] || why="$why no CSV under the cache nopreflight dir;"
 row=""
 [ -z "$csv" ] || row=$(sed -n 2p "$csv")
 case "$row" in
@@ -132,7 +150,8 @@ case "$row" in
     *,fix-test,1,fail,*) why="$why result is fail, not error;" ;;
     *) why="$why unexpected row: $row;" ;;
 esac
-grep -qh '^check: environment error: ' "$t"/bench/results/fix-test-1-*.log 2>/dev/null || why="$why the log has no 'check: environment error' line;"
+grep -qh '^check: environment error: ' "$nopre"/fix-test-1-*.log 2>/dev/null || why="$why the log has no 'check: environment error' line;"
+[ "$(grep -c -- '--no-preflight: the Go preflight is skipped' "$tmp/check-error-not-fail/err" || true)" -eq 1 ] || why="$why stderr lacks exactly one --no-preflight warning line;"
 verdict check-error-not-fail "$why"
 [ -z "$row" ] || echo "    row: $row"
 
