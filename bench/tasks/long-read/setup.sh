@@ -6,4 +6,7 @@
 # and never appear in its git history.
 set -eu
 here=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=../../lib/gocheck.sh
+. "$here/../../lib/gocheck.sh"
+gocheck_env
 go run -C "$here/gen" . "$PWD/docs"

@@ -181,6 +181,72 @@ set -- $tasks
 total_tasks=$#
 task_idx=0
 
+# ---- Go toolchain for the checks -------------------------------------------
+# The Go tasks' checks (and long-read's setup.sh) must not depend on what the
+# host's own Go happens to be: the host's Go can be older than a task's go.mod
+# (then "GOTOOLCHAIN=local" can never build it), and a check must never
+# download anything. So the toolchain is resolved once, here, in the repo root
+# with the caller's environment (the same way a developer's "go version" in
+# the repo resolves it: the already cached toolchain the repo's go.mod
+# selects), and every check runs with GOTOOLCHAIN set to that exact version
+# and GOPROXY=off (bench/lib/gocheck.sh, gocheck_env).
+#
+# go_toolchain is empty when no selected task needs Go. The cache locations
+# are resolved with the same environment because the checks run with
+# GOENV=off, which hides "go env -w" settings.
+go_toolchain=""
+go_modcache=""
+go_cache=""
+go_path=""
+
+# resolve_go: fill go_toolchain and the cache locations, or print one line and
+# return 1.
+resolve_go() {
+    _rg_need=0
+    for _rg_t in $tasks; do
+        [ -f "$tasks_dir/$_rg_t/repo/go.mod" ] && _rg_need=1
+    done
+    [ "$_rg_need" -eq 1 ] || return 0
+    if ! command -v go >/dev/null 2>&1; then
+        echo "$prog: go is not installed (the Go tasks need the repo's toolchain, see bench/README.md)" >&2
+        return 1
+    fi
+    _rg_err=$(mktemp "${TMPDIR:-/tmp}/bench-resolve.XXXXXX") || return 1
+    # GOPROXY=off: resolving must not download either.
+    if ! _rg_v=$(cd "$repo_root" && GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
+        echo "$prog: cannot resolve the Go toolchain in $repo_root: $(head -n 1 "$_rg_err")" >&2
+        rm -f "$_rg_err"
+        return 1
+    fi
+    rm -f "$_rg_err"
+    # "go1.26.11" (possibly followed by an experiment list); a development
+    # build cannot be pinned by name, so it stays on "local".
+    _rg_v=${_rg_v%% *}
+    case "$_rg_v" in
+        go[0-9]*) go_toolchain="$_rg_v" ;;
+        *) go_toolchain="local" ;;
+    esac
+    go_modcache=$(cd "$repo_root" && GOPROXY=off go env GOMODCACHE 2>/dev/null) || go_modcache=""
+    go_cache=$(cd "$repo_root" && GOPROXY=off go env GOCACHE 2>/dev/null) || go_cache=""
+    go_path=$(cd "$repo_root" && GOPROXY=off go env GOPATH 2>/dev/null) || go_path=""
+}
+
+# with_go_env <command>...: run a check or setup hook with the resolved Go
+# settings in its environment (and nowhere else: the agent never sees them).
+# Runs in a subshell.
+with_go_env() {
+    (
+        unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH
+        if [ -n "$go_toolchain" ]; then
+            BENCH_GOTOOLCHAIN="$go_toolchain"; export BENCH_GOTOOLCHAIN
+            [ -z "$go_modcache" ] || { BENCH_GOMODCACHE="$go_modcache"; export BENCH_GOMODCACHE; }
+            [ -z "$go_cache" ] || { BENCH_GOCACHE="$go_cache"; export BENCH_GOCACHE; }
+            [ -z "$go_path" ] || { BENCH_GOPATH="$go_path"; export BENCH_GOPATH; }
+        fi
+        "$@"
+    )
+}
+
 # na <value>: the CSV cell for a value a binary did not report.
 na() {
     case "$1" in
@@ -354,7 +420,7 @@ prep_workdir() {
     # working directory.
     cp -R "$tdir/repo/." "$workdir/" || { echo "$prog: prep_workdir: cannot copy $tdir/repo into $workdir" >&2; return 1; }
     if [ -x "$tdir/setup.sh" ]; then
-        if ! ( cd "$workdir" && "$tdir/setup.sh" ) >"$workdir/.bench-setup.log" 2>&1 9>&-; then
+        if ! ( cd "$workdir" && with_go_env "$tdir/setup.sh" ) >"$workdir/.bench-setup.log" 2>&1 9>&-; then
             echo "$prog: prep_workdir: setup.sh of $task failed — aborting:" >&2
             cat "$workdir/.bench-setup.log" >&2
             return 1
@@ -646,7 +712,7 @@ run_one_locked() {
         # the binary reported. check.sh lives in the task dir (never in the
         # work folder) and runs in the work folder.
         set +e
-        { printf '\n--- check.sh (%s) ---\n' "$task"; ( cd "$workdir" && "$tdir/check.sh" ) 2>&1; } >>"$log_file" 2>&1 9>&-
+        { printf '\n--- check.sh (%s) ---\n' "$task"; ( cd "$workdir" && with_go_env "$tdir/check.sh" ) 2>&1; } >>"$log_file" 2>&1 9>&-
         chk_rc=$?
         set -e
         if [ "$chk_rc" -eq 0 ]; then
@@ -944,6 +1010,49 @@ EOF
         [ "$_row_result" = "pass" ] || { echo "self-test FAILED: solve $task: expected pass, got $_row_result" >&2; _pass_count=$((_pass_count + 1)); }
     done
     [ "$_pass_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+
+    echo "== self-test: toolchain-pinned (every go call of a check or setup runs with the resolved GOTOOLCHAIN and GOPROXY=off) =="
+    # A recording go in front of PATH, forwarding to the real one. It logs the
+    # environment of each call; the real runs below are the ordinary solve and
+    # prep paths, so the log shows what the checks and setup.sh really used.
+    if [ -n "$go_toolchain" ]; then
+        _real_go=$(command -v go)
+        mkdir -p "$tmpdir/gorec"
+        cat > "$tmpdir/gorec/go" <<EOF
+#!/bin/sh
+echo "GOTOOLCHAIN=\$GOTOOLCHAIN GOPROXY=\$GOPROXY GOENV=\$GOENV GOFLAGS=\$GOFLAGS GOWORK=\$GOWORK args=\$*" >> "\$BENCH_GO_LOG"
+exec "$_real_go" "\$@"
+EOF
+        chmod +x "$tmpdir/gorec/go"
+        _saved_path="$PATH"
+        PATH="$tmpdir/gorec:$PATH"; export PATH
+        _pin_calls=0
+        for task in $tasks; do
+            [ -f "$tasks_dir/$task/repo/go.mod" ] || continue
+            BENCH_GO_LOG="$tmpdir/gorec/$task.log"; export BENCH_GO_LOG
+            : > "$BENCH_GO_LOG"
+            task_idx=1
+            if [ -x "$tasks_dir/$task/setup.sh" ]; then
+                prep_workdir "$task" || { PATH="$_saved_path"; echo "self-test FAILED: toolchain-pinned: prep_workdir $task" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+            else
+                BENCH_TASK_DIR="$tasks_dir/$task" run_one "$task" "self-pinned" "$stub_solve"
+            fi
+            _n=$(wc -l < "$BENCH_GO_LOG")
+            _bad=$(grep -vc "^GOTOOLCHAIN=$go_toolchain GOPROXY=off GOENV=off GOFLAGS=-buildvcs=false GOWORK=off " "$BENCH_GO_LOG" || true)
+            if [ "$_n" -eq 0 ] || [ "$_bad" -ne 0 ]; then
+                PATH="$_saved_path"; export PATH
+                echo "self-test FAILED: toolchain-pinned: $task made $_n go call(s), $_bad without GOTOOLCHAIN=$go_toolchain GOPROXY=off:" >&2
+                cat "$BENCH_GO_LOG" >&2
+                rm -rf "$tmpdir" "$_self_work_root"; exit 1
+            fi
+            _pin_calls=$((_pin_calls + _n))
+        done
+        PATH="$_saved_path"; export PATH
+        unset BENCH_GO_LOG
+        echo "  $_pin_calls go call(s) of checks and setup, all with GOTOOLCHAIN=$go_toolchain GOPROXY=off"
+    else
+        echo "  skipped (no Go task selected)"
+    fi
 
     echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
     # Also asserts that bench.sh passes --allow-destructive to `wakil run`.
@@ -1632,6 +1741,8 @@ EOF
 }
 
 main() {
+    resolve_go || exit 1
+
     if [ "$do_setup" -eq 1 ]; then
         do_setup
         return 0

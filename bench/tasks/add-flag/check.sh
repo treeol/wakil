@@ -1,6 +1,10 @@
 #!/bin/sh
 # check.sh for add-flag: builds the command and runs it with three inputs.
 set -eu
+tdir=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
+# shellcheck source=../../lib/gocheck.sh
+. "$tdir/../../lib/gocheck.sh"
+gocheck_env
 go build -o .grep-bin ./cmd/grep
 
 input='alpha

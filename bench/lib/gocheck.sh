@@ -14,8 +14,10 @@
 #     agent code cannot reach os, syscall, runtime, unsafe, embed, cgo) or that
 #     carries assembly/C/cgo files;
 #   - copies the task's hidden/ tree in and runs it with a clean Go environment
-#     (no GOFLAGS/GOENV/GOWORK/GOTOOLCHAIN/cgo from the agent or the user),
-#     requiring rc 0, no "--- FAIL" and a "--- PASS: <name>" line per test.
+#     (gocheck_env: no GOFLAGS/GOENV/GOWORK/cgo from the agent or the user, the
+#     toolchain pinned to the one bench.sh resolved, GOPROXY=off so nothing is
+#     ever downloaded), requiring rc 0, no "--- FAIL" and a "--- PASS: <name>"
+#     line per test.
 # Limit: this stops code that cheats inside the test process; it does not
 # sandbox agent code that the check builds and runs (add-flag runs the agent's
 # binary on the host) — see bench/README.md.
@@ -23,6 +25,26 @@
 gocheck_fail() {
     echo "check: $*" >&2
     exit 1
+}
+
+# gocheck_env: the fixed Go environment of every check and of setup.sh. Not
+# inherited from the agent or the user, except what bench.sh resolved once at
+# start in the repo root and passes in BENCH_*: the toolchain (GOTOOLCHAIN is
+# that exact version, so a toolchain already in the local cache is used even
+# when the host's own Go is older than a task's go.mod) and the cache
+# locations (GOENV=off hides "go env -w" settings, so they are handed over
+# explicitly). GOPROXY=off: a check never downloads a toolchain or a module.
+gocheck_env() {
+    if [ -z "${BENCH_GOTOOLCHAIN:-}" ]; then
+        echo "check: BENCH_GOTOOLCHAIN is not set (checks are started by scripts/bench.sh)" >&2
+        exit 99
+    fi
+    export GOTOOLCHAIN="$BENCH_GOTOOLCHAIN" GOPROXY=off
+    export GOFLAGS=-buildvcs=false GOWORK=off GOENV=off CGO_ENABLED=0
+    [ -z "${BENCH_GOMODCACHE:-}" ] || export GOMODCACHE="$BENCH_GOMODCACHE"
+    [ -z "${BENCH_GOCACHE:-}" ] || export GOCACHE="$BENCH_GOCACHE"
+    [ -z "${BENCH_GOPATH:-}" ] || export GOPATH="$BENCH_GOPATH"
+    unset GOROOT GOTMPDIR GOEXPERIMENT GOARCH GOOS GOCACHEPROG
 }
 
 # gocheck_prepare <task-dir> "<allowed stdlib imports, space separated>"
@@ -50,8 +72,7 @@ gocheck_prepare() {
     cp "$GC_TDIR/repo/go.mod" go.mod
 
     # The Go environment is fixed here, not inherited.
-    export GOFLAGS=-buildvcs=false GOWORK=off GOENV=off GOTOOLCHAIN=local CGO_ENABLED=0 GOPROXY=off
-    unset GOROOT GOTMPDIR GOEXPERIMENT GOARCH GOOS
+    gocheck_env
 
     GC_MOD=$(awk '$1 == "module" { print $2; exit }' go.mod)
     # -deps walks the import closure of ./..., not just the directories ./...
