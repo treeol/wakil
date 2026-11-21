@@ -196,7 +196,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// convMu. Empty inbox → no message, no cost.
 		if envelope := a.drainAsyncInbox(); envelope != "" {
 			a.appendConv(proxy.Message{Role: "user", Content: StrPtr(envelope)})
-			fmt.Fprintln(a.Out, Dim("· async results delivered"))
+			a.emitNotice("· async results delivered")
 		}
 		// Subagent budget visibility: inject a per-iteration budget snapshot
 		// as a user message at the loop top, so the child LLM can steer itself.

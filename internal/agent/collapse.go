@@ -1269,13 +1269,20 @@ func aggregateToolResults(msgs []proxy.Message) map[string]int {
 // rather than the assistant stream. When no event sink is attached (headless
 // mode, tests), it falls back to a.Out so the notice is not lost.
 func (a *App) emitCollapseNotice(text string) {
+	a.emitNotice(text)
+}
+
+// emitNotice is the one path for a status line that must not land in the
+// assistant or reasoning stream: SysNoteMsg when an event sink is attached,
+// otherwise a dimmed line on a.Out (headless mode, tests).
+func (a *App) emitNotice(text string) {
 	a.callbackMu.Lock()
 	sink := a.EventSink
 	a.callbackMu.Unlock()
 	if sink != nil {
 		sink(SysNoteMsg{Text: text})
 	} else {
-		fmt.Fprintln(a.Out, text)
+		fmt.Fprintln(a.Out, Dim(text))
 	}
 }
 
@@ -1682,7 +1689,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	a.midTurnCollapses++
 	a.stateMu.Unlock()
 
-	fmt.Fprintln(a.Out, Dim(formatCollapseNotice(a.curTurn, wSize, cpLen, w, s.first+1, archive)))
+	a.emitCollapseNotice(formatCollapseNotice(a.curTurn, wSize, cpLen, w, s.first+1, archive))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "collapsed request %d working set (%d bytes → %d bytes checkpoint; full record at %s — host-side path: read it with read_file, a sandbox-shell \"not found\" does not mean it is gone)",
