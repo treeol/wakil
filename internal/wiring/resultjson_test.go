@@ -314,8 +314,8 @@ func TestResultJSON_ContextModules(t *testing.T) {
 	if res.ContextModules != "on" {
 		t.Errorf("context_modules = %q, want %q", res.ContextModules, "on")
 	}
-	if len(res.ModulesLoaded) != 1 || res.ModulesLoaded[0] != "staging" {
-		t.Errorf("modules_loaded = %v, want [staging]", res.ModulesLoaded)
+	if res.ModulesLoaded != "staging" {
+		t.Errorf("modules_loaded = %q, want %q", res.ModulesLoaded, "staging")
 	}
 
 	// Switch off: both fields should be omitted.
@@ -336,7 +336,7 @@ func TestResultJSON_ContextModules(t *testing.T) {
 	if res2.ContextModules != "" {
 		t.Errorf("context_modules = %q, want empty (off)", res2.ContextModules)
 	}
-	if res2.ModulesLoaded != nil {
-		t.Errorf("modules_loaded = %v, want nil (off)", res2.ModulesLoaded)
+	if res2.ModulesLoaded != "" {
+		t.Errorf("modules_loaded = %q, want empty (off)", res2.ModulesLoaded)
 	}
 }

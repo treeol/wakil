@@ -25,6 +25,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
@@ -255,6 +256,13 @@ type ModuleRegistry struct {
 	// loaded tracks which modules have been loaded via load_module or
 	// pre-loaded at session start.
 	loaded map[string]bool
+	// preloadedAtConstruction is a snapshot of the loaded set taken at
+	// construction time, used by moduleCapabilityLine so the preamble's
+	// LSP/browser lines are frozen at session start and never change on a
+	// mid-session rebuild.
+	preloadedAtConstruction map[string]bool
+	// mu guards the loaded map against concurrent access.
+	mu sync.Mutex
 }
 
 // NewModuleRegistry builds a registry from the given config, cwd, and MCP
@@ -263,9 +271,10 @@ func NewModuleRegistry(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRe
 	mods := builtinModules(cfg, cwd)
 	mods = append(mods, mcpModules(mcp)...)
 	r := &ModuleRegistry{
-		modules: mods,
-		byName:  make(map[string]Module, len(mods)),
-		loaded:  make(map[string]bool),
+		modules:                 mods,
+		byName:                  make(map[string]Module, len(mods)),
+		loaded:                  make(map[string]bool),
+		preloadedAtConstruction: make(map[string]bool),
 	}
 	for _, m := range mods {
 		r.byName[m.Name] = m
@@ -284,6 +293,8 @@ func (r *ModuleRegistry) ModuleNames() []string {
 
 // IsLoaded reports whether the named module has been loaded.
 func (r *ModuleRegistry) IsLoaded(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	return r.loaded[name]
 }
 
@@ -294,6 +305,8 @@ func (r *ModuleRegistry) LoadModule(name string) ([]proxy.Tool, string, error) {
 	if !ok {
 		return nil, "", fmt.Errorf("unknown module %q — available: %s", name, strings.Join(r.ModuleNames(), ", "))
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	r.loaded[name] = true
 	return m.Tools, m.Desc, nil
 }
@@ -326,6 +339,8 @@ func (r *ModuleRegistry) ModuleIndex() string {
 // LoadedNames returns the names of all loaded modules, sorted for
 // deterministic output.
 func (r *ModuleRegistry) LoadedNames() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	var names []string
 	for _, m := range r.modules {
 		if r.loaded[m.Name] {
@@ -366,6 +381,13 @@ func BuildToolsWithModules(cfg config.Config, cwd string, mcp *MCPManager, repoL
 		if coreToolNames[t.Function.Name] {
 			core = append(core, t)
 		}
+	}
+
+	// Add Mashūra tools (config-gated, not deferred — they stay in the core
+	// array when the switch is on, matching the plan's "stays config-gated,
+	// not deferred" decision).
+	if mashuraOffered(cfg, repoLevel) {
+		core = append(core, mashuraToolDefs()...)
 	}
 
 	// Add load_module and call_tool.
@@ -509,21 +531,26 @@ func (r *ModuleRegistry) MCPModulePreload(taskText string, userKeywords map[stri
 // so the module's tools are available on the first request without a
 // load_module round trip.
 func (r *ModuleRegistry) PreloadModules(names []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for _, n := range names {
 		if _, ok := r.byName[n]; ok {
 			r.loaded[n] = true
+			r.preloadedAtConstruction[n] = true
 		}
 	}
 }
 
 // moduleCapabilityLine returns the preamble inventory line for a conditional
-// tool group (LSP, browser) when context modules are on. If the module is
-// pre-loaded (loaded at construction time), the full line stays as today. If
-// not, a shorter line names the module to load. The line is frozen at session
+// tool group (LSP, browser) when context modules are on. If the module was
+// pre-loaded at construction time, the full line stays as today. If not, a
+// shorter line names the module to load. The line is frozen at session
 // start — it depends only on construction-time state, never on mid-session
-// loads.
+// loads. This prevents a mid-session preamble rebuild from changing the
+// LSP/browser line after the model loads the module.
 func moduleCapabilityLine(moduleName string, reg *ModuleRegistry, fullLine string) string {
-	if reg.IsLoaded(moduleName) {
+	// Use the construction-time snapshot, not the live loaded set.
+	if reg.preloadedAtConstruction[moduleName] {
 		return fullLine
 	}
 	return fmt.Sprintf("%s tools are available but not loaded — call load_module(%q) to load them.",
@@ -556,61 +583,7 @@ func (a *App) handleLoadModule(ctx context.Context, tc proxy.ToolCall) string {
 	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", args.Name, desc, schemasJSON)
 }
 
-// handleCallTool implements the call_tool tool. It unwraps the inner tool
-// call and dispatches it through executeToolCall — the same path as a direct
-// call. All gates (shell classifier, approvals, grants, sandbox, network
-// policy, destructive and external gates, declined-call counting, trace and
-// result-json accounting) run on the inner name, exactly as a direct call.
-//
-// call_tool must not wrap load_module or call_tool (no nesting), and it must
-// not wrap a core tool that is already in the tool array. Return a clear
-// error for all three cases.
-func (a *App) handleCallTool(ctx context.Context, tc proxy.ToolCall) string {
-	if a.Modules == nil {
-		return "ERROR: context modules are not enabled. Set context_modules to \"on\" in config."
-	}
-	var args struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	}
-	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
-	}
-	if args.Name == "" {
-		return "ERROR: name is required"
-	}
-
-	// Guard 1: no nesting — call_tool must not call itself or load_module.
-	if args.Name == "call_tool" || args.Name == "load_module" {
-		return fmt.Sprintf("ERROR: call_tool must not wrap %q — call it directly", args.Name)
-	}
-
-	// Guard 2: the tool must be a module tool (deferred), not a core tool
-	// that is already in the tool array.
-	if coreToolNames[args.Name] {
-		return fmt.Sprintf("ERROR: tool %q is a core tool already in the tool array — call it directly, not through call_tool", args.Name)
-	}
-
-	// Guard 3: the tool must belong to a loaded module.
-	modName := a.Modules.ToolModule(args.Name)
-	if modName == "" {
-		return fmt.Sprintf("ERROR: tool %q is not in any module. Available modules: %s", args.Name, strings.Join(a.Modules.ModuleNames(), ", "))
-	}
-	if !a.Modules.IsLoaded(modName) {
-		return fmt.Sprintf("ERROR: tool %q belongs to module %q, which is not loaded. Call load_module(%q) first.", args.Name, modName, modName)
-	}
-
-	// Construct an inner ToolCall with the real tool name and arguments.
-	inner := proxy.ToolCall{
-		ID:       tc.ID,
-		Type:     tc.Type,
-		Function: proxy.FunctionCall{Name: args.Name, Arguments: args.Arguments},
-	}
-
-	// Dispatch through executeToolCall — the same path as a direct call.
-	// The wire name stays "call_tool" (for provider pairing); the inner
-	// name is what every gate, trace, and accounting sees because
-	// executeToolCall switches on the inner name.
-	result := a.executeToolCall(ctx, inner)
-	return result.text
-}
+// (handleCallTool was removed — call_tool is now unwrapped at the top of
+// handleToolCall in app.go, so all gates (dedup, hooks, trace, cache
+// invalidation, CapOrStub, result-json) see the inner tool name. The
+// executeToolCall switch no longer has a "call_tool" case.)

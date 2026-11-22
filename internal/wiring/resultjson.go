@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/treeol/wakil/internal/agent"
@@ -47,9 +48,11 @@ type ResultJSON struct {
 	// ContextModules is the context-modules switch state ("on" or "off") for
 	// this run. Omitted when the run did not observe it (nil app).
 	ContextModules string `json:"context_modules,omitempty"`
-	// ModulesLoaded is the list of module names loaded during the session.
-	// Omitted when the switch is off or the run did not observe it.
-	ModulesLoaded []string `json:"modules_loaded,omitempty"`
+	// ModulesLoaded is the semicolon-joined list of module names loaded
+	// during the session. Semicolons (not commas) so CSV readers that split
+	// on commas are not broken. Omitted when the switch is off or no modules
+	// were loaded.
+	ModulesLoaded string `json:"modules_loaded,omitempty"`
 }
 
 // exitReasonName maps a headless exit code to the bench-facing reason
@@ -133,11 +136,15 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 		res.DeclinedCalls = &declined
 		// Context modules: report the switch state and loaded module names.
 		// With the switch off, ContextModules stays "" (omitted by omitempty)
-		// and ModulesLoaded stays nil. With the switch on, the state is "on"
-		// and the loaded names come from the module registry.
+		// and ModulesLoaded stays "". With the switch on, the state is "on"
+		// and the loaded names are semicolon-joined (not comma, which would
+		// break the bench CSV).
 		if app.Modules != nil {
 			res.ContextModules = "on"
-			res.ModulesLoaded = app.Modules.LoadedNames()
+			loaded := app.Modules.LoadedNames()
+			if len(loaded) > 0 {
+				res.ModulesLoaded = strings.Join(loaded, ";")
+			}
 		} else if app.Cfg.ContextModules == "on" {
 			res.ContextModules = "on"
 		}

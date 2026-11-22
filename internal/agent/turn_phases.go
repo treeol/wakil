@@ -546,6 +546,12 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// the breadcrumb — the model must always be able to read_file the
 			// full structured findings from the path marker in the content.
 			pinned := wtools.IsSubagentResult(tc.Function.Name)
+			// load_module results carry tool schemas the model needs to
+			// call deferred tools — pin them so eviction never removes
+			// the schemas while the module is still loaded.
+			if tc.Function.Name == "load_module" {
+				pinned = true
+			}
 			// Skill suggestion (Part B1+B2): feed the tracker. Since 0.4.4 (D2)
 			// the returned text is always the unchanged tool result; the
 			// suggestion is a status notice at turn end, never in-band.

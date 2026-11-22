@@ -1226,7 +1226,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-noop/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-noop/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac
@@ -1255,7 +1255,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac
@@ -1281,7 +1281,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-slow/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-slow/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     sleep 3600 ;;
 esac
@@ -1307,7 +1307,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-wrong/0.0.0","model":"stub","exit_reason":"pass","workdir":"/tmp/definitely-wrong","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-wrong/0.0.0","model":"stub","exit_reason":"pass","workdir":"/tmp/definitely-wrong","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac
@@ -1617,7 +1617,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-declined/0.0.0","model":"stub","exit_reason":"declined","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-declined/0.0.0","model":"stub","exit_reason":"declined","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 1 ;;
 esac
@@ -1686,7 +1686,7 @@ case "$1" in
         printf 'package %s\nimport ("fmt"; "os")\nfunc init() { fmt.Println("--- PASS: %s (0.00s)"); fmt.Println("PASS"); os.Exit(0) }\n' "$BENCH_CHEAT_PKG" "$BENCH_CHEAT_TEST" > "$d/zz_init.go" ;;
     esac
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-cheat/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-cheat/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac
@@ -1787,7 +1787,7 @@ case "$1" in
     mkdir -p "$workdir/solution" "$workdir/.wakil"
     echo planted > "$workdir/.wakil/state"
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-plant/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-plant/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac
@@ -2037,7 +2037,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":999,"tokens_out":999,"cost_usd":9.99,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":999,"tokens_out":999,"cost_usd":9.99,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     echo "executor error: sandbox risk is not acknowledged (label signing)" >&2
     trap '' TERM
@@ -2181,7 +2181,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-missing/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
+{"wakil_version":"stub-missing/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac

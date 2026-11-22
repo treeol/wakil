@@ -397,23 +397,25 @@ func TestHandleLoadModule_Idempotent(t *testing.T) {
 }
 
 // TestHandleCallTool_NoNesting verifies call_tool rejects wrapping itself or
-// load_module.
+// load_module. The unwrap happens in handleToolCall, so the test calls
+// handleToolCall (not handleCallTool, which no longer exists).
 func TestHandleCallTool_NoNesting(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.ContextModules = "on"
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
 	for _, inner := range []string{"call_tool", "load_module"} {
-		result := app.handleCallTool(context.Background(), proxy.ToolCall{
+		result := app.handleToolCall(context.Background(), proxy.ToolCall{
+			ID: "test-call",
 			Function: proxy.FunctionCall{
 				Name:      "call_tool",
 				Arguments: fmt.Sprintf(`{"name":%q,"arguments":"{}"}`, inner),
 			},
 		})
-		if !strings.HasPrefix(result, "ERROR:") {
-			t.Errorf("call_tool wrapping %q should error: got %s", inner, result)
+		if !strings.HasPrefix(result.text, "ERROR:") {
+			t.Errorf("call_tool wrapping %q should error: got %s", inner, result.text)
 		}
-		if !strings.Contains(result, "call it directly") {
-			t.Errorf("error should say 'call it directly' for %q: %s", inner, result)
+		if !strings.Contains(result.text, "call it directly") {
+			t.Errorf("error should say 'call it directly' for %q: %s", inner, result.text)
 		}
 	}
 }
@@ -424,17 +426,18 @@ func TestHandleCallTool_CoreToolRejected(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.ContextModules = "on"
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
-	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+	result := app.handleToolCall(context.Background(), proxy.ToolCall{
+		ID: "test-call",
 		Function: proxy.FunctionCall{
 			Name:      "call_tool",
 			Arguments: `{"name":"read_file","arguments":"{}"}`,
 		},
 	})
-	if !strings.HasPrefix(result, "ERROR:") {
-		t.Errorf("call_tool wrapping a core tool should error: %s", result)
+	if !strings.HasPrefix(result.text, "ERROR:") {
+		t.Errorf("call_tool wrapping a core tool should error: %s", result.text)
 	}
-	if !strings.Contains(result, "core tool") {
-		t.Errorf("error should say 'core tool': %s", result)
+	if !strings.Contains(result.text, "core tool") {
+		t.Errorf("error should say 'core tool': %s", result.text)
 	}
 }
 
@@ -444,20 +447,21 @@ func TestHandleCallTool_ModuleNotLoaded(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.ContextModules = "on"
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
-	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+	result := app.handleToolCall(context.Background(), proxy.ToolCall{
+		ID: "test-call",
 		Function: proxy.FunctionCall{
 			Name:      "call_tool",
 			Arguments: `{"name":"staging_put","arguments":"{}"}`,
 		},
 	})
-	if !strings.HasPrefix(result, "ERROR:") {
-		t.Errorf("call_tool for unloaded module should error: %s", result)
+	if !strings.HasPrefix(result.text, "ERROR:") {
+		t.Errorf("call_tool for unloaded module should error: %s", result.text)
 	}
-	if !strings.Contains(result, "not loaded") {
-		t.Errorf("error should say 'not loaded': %s", result)
+	if !strings.Contains(result.text, "not loaded") {
+		t.Errorf("error should say 'not loaded': %s", result.text)
 	}
-	if !strings.Contains(result, "load_module") {
-		t.Errorf("error should suggest load_module: %s", result)
+	if !strings.Contains(result.text, "load_module") {
+		t.Errorf("error should suggest load_module: %s", result.text)
 	}
 }
 
@@ -467,68 +471,101 @@ func TestHandleCallTool_UnknownTool(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.ContextModules = "on"
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
-	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+	result := app.handleToolCall(context.Background(), proxy.ToolCall{
+		ID: "test-call",
 		Function: proxy.FunctionCall{
 			Name:      "call_tool",
 			Arguments: `{"name":"nonexistent_tool","arguments":"{}"}`,
 		},
 	})
-	if !strings.HasPrefix(result, "ERROR:") {
-		t.Errorf("call_tool for unknown tool should error: %s", result)
+	if !strings.HasPrefix(result.text, "ERROR:") {
+		t.Errorf("call_tool for unknown tool should error: %s", result.text)
 	}
-	if !strings.Contains(result, "not in any module") {
-		t.Errorf("error should say 'not in any module': %s", result)
+	if !strings.Contains(result.text, "not in any module") {
+		t.Errorf("error should say 'not in any module': %s", result.text)
 	}
 }
 
-// TestHandleCallTool_SingleDispatchPath verifies that a call_tool call for a
-// gated tool goes through the same confirm gate as a direct call. The test
-// uses save_skill (a gated, main-agent-only tool from the skills-authoring
-// module): with a declining confirmer it should return the same declined
-// result as a direct call would.
+// TestHandleCallTool_SingleDispatchPath_Gated verifies that a call_tool call
+// for a gated tool goes through the same confirm gate as a direct call. The
+// unwrap happens in handleToolCall so the inner name reaches the handler's
+// Confirm call.
 func TestHandleCallTool_SingleDispatchPath_Gated(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return false })
 	app.Cfg.ContextModules = "on"
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
-	// Load the edit-extras module first.
 	_, _, err := app.Modules.LoadModule("edit-extras")
 	if err != nil {
 		t.Fatalf("LoadModule: %v", err)
 	}
 	// call_tool for move_file with a declining confirmer → declined.
-	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+	result := app.handleToolCall(context.Background(), proxy.ToolCall{
 		ID: "test-call-1",
 		Function: proxy.FunctionCall{
 			Name:      "call_tool",
 			Arguments: `{"name":"move_file","arguments":"{\"src\":\"/work/a\",\"dst\":\"/work/b\"}"}`,
 		},
 	})
-	if !strings.Contains(result, "[declined by user]") {
-		t.Errorf("gated call_tool should be declined, got: %s", result)
+	if !strings.Contains(result.text, "[declined by user]") {
+		t.Errorf("gated call_tool should be declined, got: %s", result.text)
 	}
 }
 
-// TestHandleCallTool_SingleDispatchPath_Destructive verifies that a call_tool
-// call for a destructive shell command is classified as destructive (the
-// shell classifier runs on the inner name).
-func TestHandleCallTool_SingleDispatchPath_Destructive(t *testing.T) {
+// TestHandleCallTool_CoreToolRejected_RunShell verifies that call_tool rejects
+// run_shell (a core tool) — the core-tool guard fires for run_shell too.
+func TestHandleCallTool_CoreToolRejected_RunShell(t *testing.T) {
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
 	app.Cfg.ContextModules = "on"
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
-	// run_shell is a core tool — call_tool should reject it.
-	// This test verifies the core-tool guard fires for run_shell too.
-	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+	result := app.handleToolCall(context.Background(), proxy.ToolCall{
+		ID: "test-call",
 		Function: proxy.FunctionCall{
 			Name:      "call_tool",
 			Arguments: `{"name":"run_shell","arguments":"{\"command\":\"rm -rf /tmp/x\"}"}`,
 		},
 	})
-	if !strings.HasPrefix(result, "ERROR:") {
-		t.Errorf("call_tool wrapping a core tool (run_shell) should error: %s", result)
+	if !strings.HasPrefix(result.text, "ERROR:") {
+		t.Errorf("call_tool wrapping a core tool (run_shell) should error: %s", result.text)
 	}
-	if !strings.Contains(result, "core tool") {
-		t.Errorf("error should say 'core tool': %s", result)
+	if !strings.Contains(result.text, "core tool") {
+		t.Errorf("error should say 'core tool': %s", result.text)
 	}
+}
+
+// TestHandleCallTool_InnerNameReachesGates verifies that the inner tool name
+// (not "call_tool") reaches the trace record. This is the "addition 5" test:
+// trace records, tool_calls in --result-json, declined counts and the bench
+// tools column record the inner tool name, never "call_tool".
+func TestHandleCallTool_InnerNameReachesTrace(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	_, _, err := app.Modules.LoadModule("edit-extras")
+	if err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	// Use a tool that won't be declined by the confirmer (auto-approve).
+	// move_file needs src/dst that exist; use the fake executor's files.
+	// Instead, test with a tool that errors for other reasons but still
+	// records the inner name in the trace.
+	tc := proxy.ToolCall{
+		ID: "test-trace",
+		Function: proxy.FunctionCall{
+			Name:      "call_tool",
+			Arguments: `{"name":"move_file","arguments":"{\"src\":\"/work/a\",\"dst\":\"/work/b\"}"}`,
+		},
+	}
+	result := app.handleToolCall(context.Background(), tc)
+	// The trace entry should record "move_file" not "call_tool".
+	if len(app.recentTraces) == 0 {
+		t.Fatal("expected at least one trace entry")
+	}
+	last := app.recentTraces[len(app.recentTraces)-1]
+	if last.Abbrev != "move" {
+		t.Errorf("trace abbrev = %q, want %q (inner name, not 'subagent' or 'call_to')", last.Abbrev, "move")
+	}
+	// The result should mention move or declined, not call_tool.
+	_ = result // result may be declined or error depending on confirmer
 }
 
 // ── Block 4: MCP modules and keyword pre-load ───────────────────────────────

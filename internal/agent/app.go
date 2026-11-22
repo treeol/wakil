@@ -2369,7 +2369,7 @@ func (a *App) CapOrStub(result, toolName string, turnToolBytesSoFar int) string 
 	// check_pending serves async results — most often full mashūra
 	// answers — so it shares the mashūra exemption; capping it would defeat the
 	// "retrieve the full result on demand" contract.
-	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" || toolName == "wait_for_completion" || toolName == "collapse_context" {
+	if wtools.IsMashuraTool(toolName) || wtools.IsSubagentResult(toolName) || toolName == "check_pending" || toolName == "wait_for_completion" || toolName == "collapse_context" || toolName == "load_module" {
 		return result
 	}
 	if a.Cfg.TurnToolBudget > 0 && turnToolBytesSoFar >= a.Cfg.TurnToolBudget {
@@ -2749,6 +2749,64 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 	// path (e.g. tests, parallel subagent blocks).
 	if prev := stripPrevFromToolCall(&tc); prev != "" {
 		_ = prev // rating already bound via the pre-append strip
+	}
+
+	// Context modules: unwrap call_tool at the top of handleToolCall so
+	// every gate (dedup, hooks, ToolStartMsg, trace, cache invalidation,
+	// CapOrStub, result-json) sees the inner tool name, not "call_tool".
+	// The wire pairing (tool_call_id, tool_calls) uses the original tc.ID,
+	// so the provider sees "call_tool" on the wire — but every internal
+	// gate, trace, and accounting record uses the inner name. This is the
+	// single dispatch path: there is no second code path with its own
+	// checks.
+	if name == "call_tool" && a.Modules != nil {
+		var ctArgs struct {
+			Name      string `json:"name"`
+			Arguments string `json:"arguments"`
+		}
+		if err := json.Unmarshal([]byte(tc.Function.Arguments), &ctArgs); err != nil {
+			result := errResult(fmt.Sprintf("ERROR: could not parse call_tool arguments: %v", err))
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
+		}
+		// Guard 1: no nesting.
+		if ctArgs.Name == "call_tool" || ctArgs.Name == "load_module" {
+			result := errResult(fmt.Sprintf("ERROR: call_tool must not wrap %q — call it directly", ctArgs.Name))
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
+		}
+		// Guard 2: core tools are already in the array.
+		if coreToolNames[ctArgs.Name] {
+			result := errResult(fmt.Sprintf("ERROR: tool %q is a core tool already in the tool array — call it directly, not through call_tool", ctArgs.Name))
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
+		}
+		// Guard 3: the tool must belong to a loaded module.
+		modName := a.Modules.ToolModule(ctArgs.Name)
+		if modName == "" {
+			result := errResult(fmt.Sprintf("ERROR: tool %q is not in any module. Available modules: %s", ctArgs.Name, strings.Join(a.Modules.ModuleNames(), ", ")))
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
+		}
+		if !a.Modules.IsLoaded(modName) {
+			result := errResult(fmt.Sprintf("ERROR: tool %q belongs to module %q, which is not loaded. Call load_module(%q) first.", ctArgs.Name, modName, modName))
+			a.captureToolTrace(tc, result)
+			a.recordRecentTrace(tc, result)
+			return result
+		}
+		// Rewrite tc with the inner tool name and arguments. The ID stays
+		// the same for provider wire pairing. Every gate below now sees the
+		// inner name.
+		tc = proxy.ToolCall{
+			ID:       tc.ID,
+			Type:     tc.Type,
+			Function: proxy.FunctionCall{Name: ctArgs.Name, Arguments: ctArgs.Arguments},
+		}
+		name = tc.Function.Name
 	}
 
 	// Dedup (follow-up): ToolCache serves a repeat refusal only for an explicit
@@ -3456,8 +3514,6 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleCheckSkillTemplate(ctx, tc))
 	case "load_module":
 		return stringToToolResult(a.handleLoadModule(ctx, tc))
-	case "call_tool":
-		return stringToToolResult(a.handleCallTool(ctx, tc))
 	default:
 		return stringToToolResult(a.handleMCPTool(ctx, tc))
 	}
