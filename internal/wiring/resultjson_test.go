@@ -284,3 +284,59 @@ func TestResultJSON_SandboxBackend(t *testing.T) {
 		})
 	}
 }
+
+// TestResultJSON_ContextModules verifies that context_modules and
+// modules_loaded are populated when the switch is on, and omitted when off.
+func TestResultJSON_ContextModules(t *testing.T) {
+	// Switch on with a loaded module.
+	app := fakeApp("http://unused.invalid")
+	app.Client.Model = "openrouter/test"
+	app.Costs = &proxy.CostTracker{}
+	app.Cfg.ContextModules = "on"
+	app.Modules = agent.NewModuleRegistry(app.Cfg, "/work", nil)
+	_, _, err := app.Modules.LoadModule("staging")
+	if err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+
+	p := filepath.Join(t.TempDir(), "r.json")
+	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+		t.Fatalf("writeResultJSON: %v", err)
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var res ResultJSON
+	if err := json.Unmarshal(data, &res); err != nil {
+		t.Fatal(err)
+	}
+	if res.ContextModules != "on" {
+		t.Errorf("context_modules = %q, want %q", res.ContextModules, "on")
+	}
+	if len(res.ModulesLoaded) != 1 || res.ModulesLoaded[0] != "staging" {
+		t.Errorf("modules_loaded = %v, want [staging]", res.ModulesLoaded)
+	}
+
+	// Switch off: both fields should be omitted.
+	app2 := fakeApp("http://unused.invalid")
+	app2.Client.Model = "openrouter/test"
+	app2.Costs = &proxy.CostTracker{}
+	app2.Cfg.ContextModules = "off"
+
+	p2 := filepath.Join(t.TempDir(), "r2.json")
+	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+		t.Fatalf("writeResultJSON: %v", err)
+	}
+	data2, _ := os.ReadFile(p2)
+	var res2 ResultJSON
+	if err := json.Unmarshal(data2, &res2); err != nil {
+		t.Fatal(err)
+	}
+	if res2.ContextModules != "" {
+		t.Errorf("context_modules = %q, want empty (off)", res2.ContextModules)
+	}
+	if res2.ModulesLoaded != nil {
+		t.Errorf("modules_loaded = %v, want nil (off)", res2.ModulesLoaded)
+	}
+}

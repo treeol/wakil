@@ -55,8 +55,8 @@ fi
 usage() {
     cat <<USAGE
 usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
-             [--timeout SECONDS] [--mashura LEVEL] [--no-preflight]
-             [--self-test]
+             [--timeout SECONDS] [--mashura LEVEL] [--context-modules on|off]
+             [--no-preflight] [--self-test]
   or:  $prog --setup
 
   --wakil PATH      wakil binary to run (default: from PATH)
@@ -65,6 +65,7 @@ usage: $prog [--wakil PATH] [--model NAME] [--task NAME] [--runs N]
   --runs N          runs per task (default: 1)
   --timeout SECONDS per-run timeout in seconds (default: 600)
   --mashura LEVEL   auto-counsel: off|low|medium|high (default: off)
+  --context-modules on|off  set WAKIL_CONTEXT_MODULES for the runs (default: off)
   --no-preflight    skip the Go preflight (test use). The run writes its CSV
                     and logs under the cache (wakil-bench/nopreflight), never
                     under bench/results
@@ -95,6 +96,7 @@ only_task=""
 runs=1
 timeout_sec=600
 mashura_level="off"
+context_modules="off"
 self_test=0
 skip_preflight=0
 do_setup=0
@@ -124,6 +126,10 @@ while [ $# -gt 0 ]; do
             [ $# -ge 2 ] || { echo "$prog: --mashura requires a level" >&2; exit 2; }
             case "$2" in off|low|medium|high) ;; *) echo "$prog: --mashura must be off|low|medium|high (got $2)" >&2; exit 2 ;; esac
             mashura_level="$2"; shift 2 ;;
+        --context-modules)
+            [ $# -ge 2 ] || { echo "$prog: --context-modules requires on or off" >&2; exit 2; }
+            case "$2" in on|off) ;; *) echo "$prog: --context-modules must be on or off (got $2)" >&2; exit 2 ;; esac
+            context_modules="$2"; shift 2 ;;
         --self-test) self_test=1; shift ;;
         --no-preflight) skip_preflight=1; shift ;;
         --setup) do_setup=1; shift ;;
@@ -175,7 +181,7 @@ if [ "$skip_preflight" -eq 1 ]; then
     [ "$self_test" -eq 1 ] || results_dir="$cache_home/wakil-bench/nopreflight"
 fi
 
-csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds'
+csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds,context_modules,modules_loaded'
 # CSV is created lazily: --setup and --self-test do not write a real-run
 # CSV (a header-only file would be picked up by find_prev_csv as the
 # "earlier run"). main() creates it before run_all only.
@@ -543,7 +549,9 @@ csv_row() {
         "$(na "$(json_field "$rj" "tokens_cached")")" \
         "$(na "$(json_field "$rj" "cost_usd")")" "$(na "$(json_field "$rj" "tool_calls")")" \
         "$(na "$(json_field "$rj" "collapses")")" "$(na "$(json_field "$rj" "collapses_turn_end")")" \
-        "$(na "$(json_field "$rj" "mashura_rounds")")" >> "$csv_file"
+        "$(na "$(json_field "$rj" "mashura_rounds")")" \
+        "$(na "$(json_field "$rj" "context_modules")")" \
+        "$(na "$(json_field "$rj" "modules_loaded")")" >> "$csv_file"
 }
 
 # prep_workdir <task>: empty and refill the fixed work folder from the
@@ -772,6 +780,7 @@ run_one_locked() {
     # WAKIL_HOST_WORKDIR points the sandbox at the fixed work folder so
     # the agent runs there, not in the configured work_dir.
     export WAKIL_HOST_WORKDIR="$workdir"
+    export WAKIL_CONTEXT_MODULES="$context_modules"
 
     if [ -n "$model_name" ]; then
         WAKIL_MODEL="$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
@@ -1217,7 +1226,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-noop/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-noop/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 0 ;;
 esac
@@ -1246,7 +1255,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0}
+{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 0 ;;
 esac
@@ -1272,7 +1281,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-slow/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-slow/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":0,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     sleep 3600 ;;
 esac
@@ -1298,7 +1307,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-wrong/0.0.0","model":"stub","exit_reason":"pass","workdir":"/tmp/definitely-wrong","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-wrong/0.0.0","model":"stub","exit_reason":"pass","workdir":"/tmp/definitely-wrong","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 0 ;;
 esac
@@ -1608,7 +1617,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-declined/0.0.0","model":"stub","exit_reason":"declined","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-declined/0.0.0","model":"stub","exit_reason":"declined","workdir":"$workdir","seconds":0.0,"tokens_in":10,"tokens_out":5,"cost_usd":0.001,"tool_calls":2,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 1 ;;
 esac
@@ -1677,7 +1686,7 @@ case "$1" in
         printf 'package %s\nimport ("fmt"; "os")\nfunc init() { fmt.Println("--- PASS: %s (0.00s)"); fmt.Println("PASS"); os.Exit(0) }\n' "$BENCH_CHEAT_PKG" "$BENCH_CHEAT_TEST" > "$d/zz_init.go" ;;
     esac
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-cheat/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-cheat/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 0 ;;
 esac
@@ -1778,7 +1787,7 @@ case "$1" in
     mkdir -p "$workdir/solution" "$workdir/.wakil"
     echo planted > "$workdir/.wakil/state"
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-plant/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-plant/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 0 ;;
 esac
@@ -2028,7 +2037,7 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":999,"tokens_out":999,"cost_usd":9.99,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-deaf/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":999,"tokens_out":999,"cost_usd":9.99,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     echo "executor error: sandbox risk is not acknowledged (label signing)" >&2
     trap '' TERM
@@ -2172,7 +2181,7 @@ case "$1" in
       esac
     done
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-missing/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0}
+{"wakil_version":"stub-missing/0.0.0","model":"stub","exit_reason":"pass","seconds":0.0,"tokens_in":1,"tokens_out":1,"cost_usd":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":[]}
 JSON
     exit 0 ;;
 esac
@@ -2356,6 +2365,25 @@ EOF
         exit 1
     fi
     echo "  cached-% (75%) and 4-decimal cost (\$0.0012) OK"
+
+    st_case "== self-test: context_modules CSV columns present =="
+    # The CSV header must include context_modules and modules_loaded.
+    if ! printf '%s\n' "$csv_header" | grep -q 'context_modules'; then
+        echo "self-test FAILED: CSV header missing context_modules" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    if ! printf '%s\n' "$csv_header" | grep -q 'modules_loaded'; then
+        echo "self-test FAILED: CSV header missing modules_loaded" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    # The stub result-json includes context_modules=off, modules_loaded=[].
+    # The csv_row function reads them via json_field, so the CSV rows must
+    # contain "off" in the context_modules column.
+    if ! awk -F, '$1!=""' "$csv_file" | grep -q 'off'; then
+        echo "self-test FAILED: CSV rows missing context_modules=off" >&2
+        rm -rf "$tmpdir" "$_self_work_root"; exit 1
+    fi
+    echo "  context_modules and modules_loaded columns OK"
 
     st_case "== self-test: nothing written into the repo's bench/results =="
     if [ -d "$_saved_results_dir" ] && [ -n "$(find "$_saved_results_dir" -newer "$_st_marker" 2>/dev/null | head -n 1)" ]; then

@@ -44,6 +44,12 @@ type ResultJSON struct {
 	CollapsesTurnEnd *int     `json:"collapses_turn_end"`
 	MashuraRounds    *int     `json:"mashura_rounds"`
 	DeclinedCalls    *int     `json:"declined_calls"`
+	// ContextModules is the context-modules switch state ("on" or "off") for
+	// this run. Omitted when the run did not observe it (nil app).
+	ContextModules string `json:"context_modules,omitempty"`
+	// ModulesLoaded is the list of module names loaded during the session.
+	// Omitted when the switch is off or the run did not observe it.
+	ModulesLoaded []string `json:"modules_loaded,omitempty"`
 }
 
 // exitReasonName maps a headless exit code to the bench-facing reason
@@ -125,6 +131,16 @@ func writeResultJSON(path string, app *agent.App, code int, started time.Time, w
 		// — collapsed/compacted turns would undercount).
 		declined := app.DeclinedCallCount()
 		res.DeclinedCalls = &declined
+		// Context modules: report the switch state and loaded module names.
+		// With the switch off, ContextModules stays "" (omitted by omitempty)
+		// and ModulesLoaded stays nil. With the switch on, the state is "on"
+		// and the loaded names come from the module registry.
+		if app.Modules != nil {
+			res.ContextModules = "on"
+			res.ModulesLoaded = app.Modules.LoadedNames()
+		} else if app.Cfg.ContextModules == "on" {
+			res.ContextModules = "on"
+		}
 	}
 	b, err := json.Marshal(res)
 	if err != nil {
