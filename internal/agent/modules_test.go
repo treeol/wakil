@@ -1121,7 +1121,7 @@ func TestSwitchOff_HooksAreNoOps(t *testing.T) {
 	if len(app.mcpEventBuf) != 0 {
 		t.Errorf("switch off: lifecycle events must not be recorded, got %d", len(app.mcpEventBuf))
 	}
-	if mcp.lifecycle != nil {
+	if mcp.lifecycle.Load() != nil {
 		t.Error("switch off: the manager must not get a lifecycle handler")
 	}
 }

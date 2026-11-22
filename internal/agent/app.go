@@ -1291,6 +1291,21 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 		a.stateMu.RLock()
 		firstTurn := a.preambleDay == ""
 		a.stateMu.RUnlock()
+		// Flush any MCP lifecycle events (connect/disconnect/reconnect)
+		// that arrived on background goroutines. The reconcile runs here so
+		// a server that connected after the registry snapshot becomes a
+		// module and is announced as an appended message before the model
+		// looks for it. On turn 1 the flush runs SILENTLY: ensurePreamble
+		// (below) frames the frozen module index, so an appended
+		// announcement would duplicate it and land before messages[0].
+		if firstTurn {
+			a.Modules.refreshMCPModulesSilently(a.MCP, false)
+			a.stateMu.Lock()
+			a.mcpEventBuf = nil
+			a.stateMu.Unlock()
+		} else {
+			a.flushPendingModuleEvents()
+		}
 		if firstTurn {
 			preload := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
 			if len(preload) > 0 {
@@ -1300,12 +1315,6 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 				}
 			}
 		}
-		// Flush any MCP lifecycle events (connect/disconnect/reconnect)
-		// that arrived on background goroutines. The reconcile runs here so
-		// a server that connected after the registry snapshot becomes a
-		// module and is announced as an appended message before the model
-		// looks for it.
-		a.flushPendingModuleEvents()
 	}
 	a.ensurePreamble()
 	if preloadedSchemas != "" {

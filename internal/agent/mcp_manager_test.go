@@ -990,3 +990,155 @@ func TestModuleRegistry_MCPDisconnect_Unavailable(t *testing.T) {
 		t.Fatalf("disconnect error must say 'server not connected', got: %v", err)
 	}
 }
+
+// TestModuleRegistry_MCPReconnect_ReAnnounces covers the Mashūra round-2
+// finding that a reconnect with a changed tool set was never told to the
+// model: announcedOnce is already true for a pre-existing module, so the
+// update branch was dead code. The refresh must return the module for
+// announcement and clear the loaded flag.
+func TestModuleRegistry_MCPReconnect_ReAnnounces(t *testing.T) {
+	m := newFakeMCPManager(connectedServer("caj", &fakeMCPSession{}, "read_file"))
+	reg := NewModuleRegistry(config.Config{ContextModules: "on"}, t.TempDir(), m)
+	if _, _, err := reg.LoadModule("mcp:caj"); err != nil {
+		t.Fatalf("precondition: load: %v", err)
+	}
+	if !reg.IsLoaded("mcp:caj") {
+		t.Fatal("precondition: mcp:caj must be loaded")
+	}
+
+	// Reconnect lands a different tool set.
+	m.servers[0] = connectedServer("caj", &fakeMCPSession{}, "run_command")
+	announced := reg.refreshMCPModules(m)
+	found := false
+	for _, n := range announced {
+		if n == "mcp:caj" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("reconnect with a changed tool set must re-announce mcp:caj, got %v", announced)
+	}
+	if reg.IsLoaded("mcp:caj") {
+		t.Error("tool-set change must clear the loaded flag (the model has no schemas for the new tools)")
+	}
+	if _, _, err := reg.LoadModule("mcp:caj"); err != nil {
+		t.Fatalf("after re-announce, load_module must succeed: %v", err)
+	}
+}
+
+// TestLateMCPConnect_SafetyNet_ZeroToolServerNoWarning: a connected server
+// with zero tools is excluded by mcpModules; that is not a dropped tool set,
+// so the safety net must not warn or reconcile it into a module.
+func TestLateMCPConnect_SafetyNet_ZeroToolServerNoWarning(t *testing.T) {
+	m := newFakeMCPManager(connectedServer("caj", &fakeMCPSession{}))
+	reg := NewModuleRegistry(config.Config{ContextModules: "on"}, t.TempDir(), m)
+	if _, _, err := reg.LoadModule("mcp:caj"); err == nil {
+		t.Fatal("a zero-tool server must not become a module")
+	}
+	// Reconcile idempotence: still no module.
+	reg.refreshMCPModules(m)
+	if _, _, err := reg.LoadModule("mcp:caj"); err == nil {
+		t.Fatal("zero-tool server must stay moduleless after reconcile")
+	}
+}
+
+// TestFlush_NoAnnounceBeforePreamble: flushing before ensurePreamble must
+// register the module but append nothing to Conv — the frozen preamble
+// index is the announcement, and appending first would put a user message
+// at Conv[0] and duplicate the entry.
+func TestFlush_NoAnnounceBeforePreamble(t *testing.T) {
+	m := newFakeMCPManager(connectedServer("caj", &fakeMCPSession{}, "read_file"))
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.MCP = m
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", m)
+
+	// Pre-preamble: registration folds the manager state silently.
+	app.RegisterMCPModules(m)
+	if len(app.ConvSnapshot()) != 0 {
+		t.Fatalf("registration must not append to Conv before the preamble, got %d messages", len(app.ConvSnapshot()))
+	}
+	if !app.Modules.HasModule("mcp:caj") {
+		t.Fatal("mcp:caj must be registered at construction")
+	}
+	// The frozen index names it once.
+	idx := app.Modules.ModuleIndex()
+	if strings.Count(idx, "mcp:caj") != 1 {
+		t.Fatalf("index must name mcp:caj exactly once:\n%s", idx)
+	}
+}
+
+// TestFlush_AnnouncesLateConnect: a server that connects after the
+// registry was built becomes a module at the next flush and its index line
+// reaches the model as an appended user message.
+func TestFlush_AnnouncesLateConnect(t *testing.T) {
+	m := newFakeMCPManager()
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.MCP = m
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", m)
+	app.RegisterMCPModules(m)
+
+	// The server connects after the snapshot; the turn-start flush folds
+	// it in and announces it.
+	m.servers = append(m.servers, connectedServer("caj", &fakeMCPSession{}, "read_file"))
+	app.flushPendingModuleEvents()
+
+	if !app.Modules.HasModule("mcp:caj") {
+		t.Fatal("late server must be a module after the flush")
+	}
+	conv := app.ConvSnapshot()
+	found := false
+	for _, msg := range conv {
+		if msg.Content != nil && strings.Contains(*msg.Content, "Context module available: mcp:caj") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("late module must be announced as an appended message, Conv has %d messages", len(conv))
+	}
+}
+
+// TestLifecycle_RaceFree: SetLifecycleHandler is called while the manager's
+// connect goroutines are running. Under -race this proves the handler
+// pointer is atomic; the reconcile stays idempotent either way.
+func TestLifecycle_RaceFree(t *testing.T) {
+	m := newFakeMCPManager()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				m.emitLifecycle(mcpLifecycleEvent{name: "x", kind: "connected"})
+			}
+		}()
+	}
+	m.SetLifecycleHandler(func(ev mcpLifecycleEvent) {})
+	wg.Wait()
+}
+
+// TestNewMCPManager_DoubleUnlockRegression: the connect goroutine must
+// unlock m.mu exactly once on the failure path (a previous version left a
+// deferred unlock behind and would panic on the second unlock). This test
+// drives one server through a failing connect, waits for the terminal
+// state (so the test fails, not panics, if the goroutine wedges), and then
+// closes the manager.
+func TestNewMCPManager_DoubleUnlockRegression(t *testing.T) {
+	cfgs := []config.MCPServerConfig{{Name: "caj", Command: "false", Args: []string{}}}
+	m := NewMCPManager(context.Background(), cfgs)
+	defer m.Close()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		m.mu.RLock()
+		s := m.servers[0].Status
+		m.mu.RUnlock()
+		if s == "failed" || s == "connected" {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server stuck in %q after 10s (double-unlock would have wedged it)", s)
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}

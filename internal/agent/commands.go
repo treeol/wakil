@@ -790,12 +790,16 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				// Context modules: BuildTools above discarded its fresh
 				// registry. Refresh the STORED registry instead so the
 				// reconnected server's tools stay consistent (a reconnect
-				// that returns a different tool set updates the module;
-				// a reconnect that fails marks it disconnected). The tool
-				// array itself stays the frozen one when the switch is on
-				// (BuildTools returns the core-only array in that case).
+				// that returns a different tool set updates the module and
+				// re-announces it; a reconnect that fails marks it
+				// disconnected). The tool array itself stays the frozen
+				// one when the switch is on (BuildTools returns the
+				// core-only array in that case). The returned names are
+				// consumed by the next flushPendingModuleEvents, which
+				// observes the same registry state; this closure runs on
+				// the Cmd goroutine, so it never appends to Conv itself.
 				if app.Modules != nil && app.MCP != nil {
-					app.Modules.refreshMCPModules(app.MCP)
+					app.Modules.refreshMCPModulesSilently(app.MCP, true)
 				}
 				return MCPReconnectedMsg{Name: name, Tools: toolList}
 			}

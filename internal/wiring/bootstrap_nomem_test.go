@@ -96,9 +96,6 @@ func TestBuildApp_NoMemory_LeavesNoMemoryModule(t *testing.T) {
 		if modName == "memory" {
 			t.Error("a module named \"memory\" must not exist")
 		}
-		if owned := app.Modules.ToolModule("memory_get"); owned != "" {
-			_ = owned
-		}
 	}
 	if owned := app.Modules.ToolModule("memory_get"); owned != "" {
 		t.Errorf("ToolModule(memory_get) = %q, want \"\" (memory tools are core, never module-owned)", owned)

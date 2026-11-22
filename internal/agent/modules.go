@@ -281,6 +281,11 @@ type ModuleRegistry struct {
 // manager. Returns nil if the switch is off (the caller should not use it).
 func NewModuleRegistry(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRegistry {
 	mods := builtinModules(cfg, cwd)
+	// MCP modules are folded in by the single registry path below; the
+	// manager's snapshot is taken inside mcpModules (under the manager
+	// lock) BEFORE the registry lock, so the two locks never nest in
+	// reverse. The late-connect reconcile (refreshMCPModules) uses the same
+	// fold, so there is no legacy duplicate build left to drift.
 	mods = append(mods, mcpModules(mcp)...)
 	r := &ModuleRegistry{
 		modules:                 mods,
@@ -303,6 +308,14 @@ func NewModuleRegistry(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRe
 	return r
 }
 
+// HasModule reports whether the named module exists in the registry.
+func (r *ModuleRegistry) HasModule(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	_, ok := r.byName[name]
+	return ok
+}
+
 // refreshMCPModules reconciles the registry's MCP modules with the manager's
 // live state. It is the turn-start safety net (and the per-event hook): the
 // manager snapshot is taken inside mcpModules (under the manager lock);
@@ -311,6 +324,17 @@ func NewModuleRegistry(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRe
 // connected server with no module is added. Returns the names of modules
 // whose index line has not yet been announced.
 func (r *ModuleRegistry) refreshMCPModules(m *MCPManager) []string {
+	return r.refreshMCPModulesSilently(m, true)
+}
+
+// refreshMCPModulesSilently is the reconcile used before the preamble
+// exists (at BuildApp registration and at turn 1 before the first
+// ensurePreamble). When announce is false, new modules are registered but
+// NOT returned for announcement — the frozen preamble index is their one
+// announcement, so an appended announcement would duplicate it and, worse,
+// land before messages[0]. After ensurePreamble, announce=true and new
+// modules are returned for the appended announcement path.
+func (r *ModuleRegistry) refreshMCPModulesSilently(m *MCPManager, announce bool) []string {
 	if r == nil || m == nil {
 		return nil
 	}
@@ -327,16 +351,27 @@ func (r *ModuleRegistry) refreshMCPModules(m *MCPManager) []string {
 		if !ok {
 			r.modules = append(r.modules, mod)
 			r.byName[mod.Name] = mod
-			if !r.announcedOnce[mod.Name] {
-				announced = append(announced, mod.Name)
+			if announce {
+				if !r.announcedOnce[mod.Name] {
+					announced = append(announced, mod.Name)
+					r.announcedOnce[mod.Name] = true
+				}
+			} else {
+				// Before the preamble: the frozen index will name this
+				// module, so the late-announcement path must never fire.
 				r.announcedOnce[mod.Name] = true
 			}
 			continue
 		}
 		// Refresh a reconnected server whose tool set changed. The loaded
-		// flag stays — the model may already hold schemas; removed tools
-		// answer "not in any module" rather than a stale call.
-		if len(existing.Tools) != len(mod.Tools) || toolNamesDiffer(existing.Tools, mod.Tools) {
+		// flag is cleared so the gate cannot pass for tools the model
+		// never saw schemas for; the model is told through the returned
+		// announcement (a reconnect updates the module and announces it
+		// again, whether or not it was announced before). A schema- or
+		// description-only change (same names) is refreshed too: the
+		// announced line is the index line, never the schemas, so the
+		// model re-loads and sees current text rather than stale copies.
+		if len(existing.Tools) != len(mod.Tools) || toolNamesDiffer(existing.Tools, mod.Tools) || toolsTextDiffer(existing.Tools, mod.Tools) {
 			existing.Tools = mod.Tools
 			existing.Desc = mod.Desc
 			for i, rm := range r.modules {
@@ -346,7 +381,8 @@ func (r *ModuleRegistry) refreshMCPModules(m *MCPManager) []string {
 				}
 			}
 			r.byName[mod.Name] = existing
-			if !r.announcedOnce[mod.Name] {
+			delete(r.loaded, mod.Name)
+			if announce {
 				announced = append(announced, mod.Name)
 				r.announcedOnce[mod.Name] = true
 			}
@@ -362,6 +398,31 @@ func (r *ModuleRegistry) refreshMCPModules(m *MCPManager) []string {
 		}
 	}
 	return announced
+}
+
+// toolsTextDiffer reports whether two tool slices with the same names carry
+// different descriptions or different parameter JSON (schema-only drift).
+// Same length is assumed by the caller.
+func toolsTextDiffer(a, b []proxy.Tool) bool {
+	am := make(map[string]proxy.Tool, len(a))
+	for _, t := range a {
+		am[t.Function.Name] = t
+	}
+	for _, t := range b {
+		old, ok := am[t.Function.Name]
+		if !ok {
+			return true
+		}
+		if old.Function.Description != t.Function.Description {
+			return true
+		}
+		aj, _ := json.Marshal(old.Function.Parameters)
+		bj, _ := json.Marshal(t.Function.Parameters)
+		if string(aj) != string(bj) {
+			return true
+		}
+	}
+	return false
 }
 
 // toolNamesDiffer reports whether two tool slices carry different names
@@ -657,14 +718,14 @@ func (r *ModuleRegistry) MCPModulePreload(taskText string, userKeywords map[stri
 }
 
 // PreloadModules marks the given module names as loaded (pre-loaded at session
-// start, before the first request). This is used by the MCP keyword pre-load
-// so the module's tools are available on the first request without a
-// load_module round trip.
+// start, before the first request). Disconnected modules are skipped: marking
+// them would leave `loaded = true` with nothing delivered and the gate
+// passing for nothing.
 func (r *ModuleRegistry) PreloadModules(names []string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, n := range names {
-		if _, ok := r.byName[n]; ok {
+		if _, ok := r.byName[n]; ok && !r.disconnected[n] {
 			r.loaded[n] = true
 			r.preloadedAtConstruction[n] = true
 		}
@@ -743,6 +804,14 @@ func (a *App) handleLoadModule(ctx context.Context, tc proxy.ToolCall) string {
 	if args.Name == "" {
 		return "ERROR: name is required. Available modules: " + strings.Join(a.Modules.ModuleNames(), ", ")
 	}
+	// Reconcile-on-miss: if the named module is unknown, the registry may
+	// simply be behind a connect that has not been flushed yet (the flush
+	// runs at turn start). Reconciling here — same reconcile, same
+	// appended-announcement path — makes a server that connected after the
+	// last flush reachable in this very request, not at the next user turn.
+	if !a.Modules.HasModule(args.Name) && a.MCP != nil {
+		a.flushPendingModuleEvents()
+	}
 	tools, desc, err := a.Modules.LoadModule(args.Name)
 	if err != nil {
 		return err.Error()
@@ -752,11 +821,13 @@ func (a *App) handleLoadModule(ctx context.Context, tc proxy.ToolCall) string {
 	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", args.Name, desc, schemasJSON)
 }
 
-// RegisterMCPModules installs the MCP lifecycle consumer on the manager and
-// folds the current manager state into the registry once. Call once at App
-// construction when the switch is on and a manager exists; when the switch
-// is off (or there is no manager) it is a no-op, so switch-off sessions pay
-// nothing and their tool array is unchanged.
+// RegisterMCPModules installs the MCP lifecycle consumer on the manager.
+// Call once at App construction when the switch is on and a manager exists;
+// when the switch is off (or there is no manager) it is a no-op, so
+// switch-off sessions pay nothing and their tool array is unchanged.
+// The reconcile below runs only after ensurePreamble has frozen
+// messages[0]: announcing before that would put a user message at Conv[0]
+// and duplicate the module in the preamble index.
 func (a *App) RegisterMCPModules(m *MCPManager) {
 	if a.Modules == nil || m == nil {
 		return
@@ -766,7 +837,11 @@ func (a *App) RegisterMCPModules(m *MCPManager) {
 		a.mcpEventBuf = append(a.mcpEventBuf, ev)
 		a.stateMu.Unlock()
 	})
-	a.flushPendingModuleEvents()
+	// Fold the manager state that already exists (a server may have
+	// connected before this registration) WITHOUT announcing: the preamble
+	// index — built once, at first turn — is the only announcement for
+	// modules present then.
+	a.Modules.refreshMCPModulesSilently(a.MCP, false)
 }
 
 // flushPendingModuleEvents runs on the agent goroutine at turn start. It
@@ -784,7 +859,7 @@ func (a *App) flushPendingModuleEvents() {
 	a.mcpEventBuf = nil
 	a.stateMu.Unlock()
 	_ = pending // kinds are folded by the reconcile below; the queue bounds
-	// how often refreshMCPModules runs, not what it observes.
+	// how often the reconcile runs, not what it observes.
 
 	announced := a.Modules.refreshMCPModules(a.MCP)
 	for _, name := range announced {
@@ -799,12 +874,12 @@ func (a *App) flushPendingModuleEvents() {
 	}
 	// Safety net: a connected server with tools must have a module. If the
 	// reconcile still left one out (e.g. an event raced startup), warn
-	// loudly; its tools are announced as a module here, never silently
-	// dropped. (The tool array is frozen, so an inline tool array, not a
-	// silent drop, is never synthesized mid-session.)
+	// loudly and reconcile again; its tools are announced through the same
+	// path as a late connect, never silently dropped. (The tool array is
+	// frozen, so no inline tool array is ever synthesized mid-session.)
 	for _, srv := range a.MCP.ServerNames() {
 		modName := "mcp:" + srv
-		if _, ok := a.Modules.byName[modName]; ok {
+		if a.Modules.HasModule(modName) {
 			continue
 		}
 		// A server with zero tools is excluded by mcpModules; that is not
@@ -813,6 +888,14 @@ func (a *App) flushPendingModuleEvents() {
 			continue
 		}
 		diag.Printf("wakil: WARNING: connected MCP server %q has no module in the registry — reconciling", srv)
-		a.Modules.refreshMCPModules(a.MCP)
+		for _, name := range a.Modules.refreshMCPModules(a.MCP) {
+			line, ok := a.Modules.ModuleIndexLine(name)
+			if !ok {
+				continue
+			}
+			a.appendConv(proxy.Message{Role: "user", Content: StrPtr(
+				"Context module available: " + name + "\n" + line +
+					"\nCall load_module(\"" + name + "\") to load its tools, then call_tool(name, arguments) to use them.")})
+		}
 	}
 }

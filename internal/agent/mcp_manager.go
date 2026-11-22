@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/treeol/wakil/internal/browser"
@@ -40,6 +41,14 @@ type mcpLifecycleEvent struct {
 // mcpLifecycleHandler records lifecycle events for later flushing. It never
 // touches the registry or Conv while the manager lock is held.
 type mcpLifecycleHandler func(ev mcpLifecycleEvent)
+
+// lifecyclePtr is the one atomic the manager may read from background
+// connect goroutines and write from BuildApp with no lock involved: the
+// App registers its consumer from BuildApp while NewMCPManager's connects
+// are already in flight.
+type lifecyclePtr struct {
+	atomic.Pointer[mcpLifecycleHandler]
+}
 
 // mcpSession is the subset of *gosdkmcp.ClientSession that MCPManager uses.
 // It exists so tests can inject fake sessions without spawning real MCP
@@ -137,14 +146,16 @@ type MCPManager struct {
 	// lifecycle emits server status changes (connect/failed/closed) to the
 	// registered handler after the manager lock is released, so a slow
 	// consumer can never block the connect goroutine. nil = no consumer.
-	lifecycle mcpLifecycleHandler
+	lifecycle lifecyclePtr
 }
 
 // emitLifecycle notifies the registered handler, if any. Called with no
-// manager lock held.
+// manager lock held; the handler pointer is read through an atomic so the
+// registration write in BuildApp cannot race the background connect
+// goroutines' reads.
 func (m *MCPManager) emitLifecycle(ev mcpLifecycleEvent) {
-	if m.lifecycle != nil {
-		m.lifecycle(ev)
+	if fn := m.lifecycle.Load(); fn != nil {
+		(*fn)(ev)
 	}
 }
 
@@ -153,7 +164,7 @@ func (m *MCPManager) emitLifecycle(ev mcpLifecycleEvent) {
 // a connect that completes before registration is covered by the reconcile
 // pass (refreshMCPModules), which is idempotent.
 func (m *MCPManager) SetLifecycleHandler(fn mcpLifecycleHandler) {
-	m.lifecycle = fn
+	m.lifecycle.Store(&fn)
 }
 
 // currentReady returns the current readiness channel, or nil if none.
@@ -256,14 +267,14 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 			tmp := &MCPServer{Cfg: cfg, Status: "connecting"}
 			err := m.connectOrDefault()(ctx, tmp)
 			m.mu.Lock()
-			defer m.mu.Unlock()
-			defer srv.finishReady(ch)
 			if srv.Status == "closed" {
 				// Close, or a Reconnect that already published, took over:
 				// discard this session.
 				if tmp.Session != nil {
 					_ = tmp.Session.Close()
 				}
+				m.mu.Unlock()
+				srv.finishReady(ch)
 				return
 			}
 			// A Reconnect superseded this attempt (new channel installed):
@@ -272,14 +283,17 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 				if tmp.Session != nil {
 					_ = tmp.Session.Close()
 				}
+				m.mu.Unlock()
+				srv.finishReady(ch)
 				return
 			}
 			if err != nil {
 				srv.Status = "failed"
 				srv.Err = err
+				name := srv.Cfg.Name
 				m.mu.Unlock()
-				defer srv.finishReady(ch)
-				m.emitLifecycle(mcpLifecycleEvent{name: srv.Cfg.Name, kind: "failed"})
+				srv.finishReady(ch)
+				m.emitLifecycle(mcpLifecycleEvent{name: name, kind: "failed"})
 				return
 			}
 			srv.Session = tmp.Session
@@ -291,7 +305,7 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 			srv.Err = nil
 			name := srv.Cfg.Name
 			m.mu.Unlock()
-			defer srv.finishReady(ch)
+			srv.finishReady(ch)
 			m.emitLifecycle(mcpLifecycleEvent{name: name, kind: "connected"})
 		})
 	}
