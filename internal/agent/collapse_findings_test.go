@@ -149,6 +149,13 @@ func TestCommandWord(t *testing.T) {
 		"cd -P secretdir && make":          "make",
 		"cd secretdir":                     "?",
 		"--token=x curl":                   "?",
+		// A value with spaces must never surface as the command word.
+		`AUTH="Bearer sk-live-123456 x" curl u`: "?",
+		`TOKEN=a\ sk-live-123456 curl u`:        "?",
+		`K='a sk-live-123456 c' make`:           "?",
+		"K=`a sk-live-123456` make":             "?",
+		"K=$(a sk-live-123456) make":            "?",
+		"K=$HOME make":                          "?",
 	} {
 		if got := commandWord(in); got != want {
 			t.Errorf("commandWord(%q) = %q, want %q", in, got, want)

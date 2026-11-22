@@ -341,6 +341,12 @@ func commandWord(cmd string) string {
 		f := fields[i]
 		switch {
 		case isAssignmentWord(f):
+			// A value with a quote, a backslash, a backtick or a "$" can hold
+			// spaces that Fields split on, which would make a piece of the
+			// value look like the command word: no command word then.
+			if strings.ContainsAny(f, "'\"\\`$") {
+				return "?"
+			}
 			i++ // VAR=value prefix
 		case f == "cd":
 			// Skip "cd [-options] DIR" up to the && or ; that follows it; no
