@@ -1387,7 +1387,9 @@ Differences:
 briefing. It should **not** get the module system at all: it has no
 conversation, no tools, and no second turn. Its briefing is already
 task-scoped. The only shared piece is that the *main agent* may need the
-`search` module to know how to prepare evidence (§
+`search` module loaded to know how to prepare evidence before calling a panel
+(evidence screening rules live there) — which stage 1 and 2 handle for the
+parent, not for the member.
 
 ## 7.7 When a model needs a module it did not load
 
