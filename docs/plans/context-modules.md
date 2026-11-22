@@ -3252,3 +3252,274 @@ thresholds (those are the bench's job).
   signal 2).
 - Stage 3: writing-style file (§7.5).
 - Stage 4: classifier module-name return, session-config pre-load.
+- Registry/Conv divergence after compaction: a module can be `loaded=true`
+  while its pinned schemas were pruned from `Conv`; the model recovers
+  through idempotent `load_module` (`modules.go:564`), but nothing announces
+  the divergence (R2 collapse integration, plan §7.4).
+- Pre-load after `/clear` or on resume: turn-1 keyword pre-load does not
+  re-run; a later turn's task text is not keyword-scanned (per-turn
+  classification is Stage 4).
+
+## Stage 1 fixes
+
+Context: Stage 1 is implemented on branch `work/context-modules` at `e39c982`;
+bench and host checks pass, but on the host (`rubin`, build from `e39c982`,
+`WAKIL_HISN_BIN` not needed) a session with the `caj` MCP server configured
+reported `no caj__* tools in its tool list`, `load_module("mcp:caj")` →
+`unknown module "mcp:caj"`, and the module index listed only
+`skills-authoring, edit-extras, staging, browser, lsp`. In another session all
+six `caj__*` tools were present. This section is the verified cause, the
+touched functions, the fix blocks with their tests, and the open risks.
+Review material is this section only.
+
+### 1. Verified findings (read at `e39c982`, paths + lines)
+
+**Registry built once, before MCP finishes connecting.** `internal/wiring/bootstrap.go:156`
+creates the manager with `agent.NewMCPManager`, which spawns a background
+goroutine per server (`internal/agent/mcp_manager.go:204`) that sets
+`Status="connecting"` and only later publishes `Status="connected"` +
+`Tools` under `m.mu` (`mcp_manager.go:248-253`). Bootstrap then calls
+`agent.BuildTools(cfg, exe.Cwd(), mcpMgr, "")` (`bootstrap.go:256`) and
+`agent.ModuleRegistryForApp(...)` (`bootstrap.go:257`); i.e. the second
+registry is built immediately after the first (`ModuleRegistryForApp` →
+`BuildToolsWithModules` → `NewModuleRegistry`, `internal/agent/modules.go:414`,
+`:365`, `:270`), which snapshots `mcpModules(mcp)` (`modules.go:170`) — only
+servers already `connected` with `len(tools) > 0` (`mcp_manager.go:448`).
+A server still connecting contributes nothing. That proves the host symptom:
+the registry is never updated afterwards, so a late server never becomes a
+module in that session, and `mcp:caj` is "unknown" — while a session where
+`caj` connected before the snapshot sees it.
+
+**No connect/disconnect/reconnect hook updates the registry.** There is no
+subscriber/callback registration on `MCPManager` (visibility is the poll-based
+live snapshot in `toolsForTurn`, `mcp_manager.go:905`). Disconnect has no
+per-server method — only `Close()` marks all servers `closed`
+(`mcp_manager.go:732`, called from `CloseResources`, `bootstrap.go:518`).
+Reconnect is `/mcp reconnect`-only (`mcp_manager.go:634`), and its result
+`MCPReconnectedMsg` is applied via `SetTools` which only replaces `App.Tools`
+(`internal/wiring/facade.go:899`, `internal/agent/control.go:148`) — no
+registry rebuild. `toolsForTurn`, when the switch is on, returns the frozen
+`a.Tools` and never re-reads live MCP state (`mcp_manager.go:905-911`).
+
+**Pre-load marks modules but delivers no descriptions.** On turn 1 the
+keyword pre-load runs before `ensurePreamble` (`internal/agent/app.go:1278`),
+calls `MCPModulePreload` (`modules.go:508`) and `PreloadModules`
+(`modules.go:533`, marks `loaded` + `preloadedAtConstruction`) — but the
+preloaded schemas are never written into any message. `buildPreambleForNetwork`
+only appends `ModuleIndex()` (`app.go:1990`) and the LSP/browser capability
+lines (`app.go:2045`, `app.go:2061`). The only place schemas reach the model
+is `handleLoadModule` (`modules.go:564`), i.e. a `load_module` round trip —
+so a pre-loaded module costs the same round trip as an unloaded one. The
+pinned `role:"tool"` result that carries the schemas is appended by the normal
+dispatch in `handleToolCall` (`app.go:2762+`); the pre-load path never does
+it. (The golden/cache tests — `TestCacheStability_*` in
+`internal/agent/modules_test.go` — only assert the tool array is unchanged and
+earlier messages are untouched; they do not check pre-load delivery.)
+
+**Dispatch: `call_tool` unwrap is correct, but `executeToolCall` is a second
+caller.** `handleToolCall` unwraps `call_tool` before dedup/hooks/trace and
+rewrites `tc` to the inner name (`app.go:2762-2810`), so every gate sees the
+inner name; the `executeToolCall` switch (`app.go:3365`) has no `call_tool`
+case. `ExecuteToolCall` (`app.go:3333`) is the dispatch behind it and is
+exported — tests and embedders call it directly. Through that path a
+module tool reaches its handler with no loaded-module check (`executeToolCall`
+is a plain switch). The plan's single-dispatch rule therefore does not hold
+for the exported entry point.
+
+**Subagents set no `Modules`.** The child `App` literal
+(`internal/agent/subagent.go:1615`) never sets `Modules`; toolsets come from
+`wtools.EditTools` / `buildSubagentTools` (`app.go:2699`) / `DiscoveryTools`
+(`subagent.go:1535`) — all switch-blind, so subagents run switch-off by
+construction, not by an explicit gate. `buildPreambleForNetwork` requires
+`Modules != nil` for the index (`app.go:1990`). `docs/configuration.md:290`
+claims "Subagents always run with the switch off" — true, but enforced only
+implicitly.
+
+**`--no-memory` strips tools after registry construction, and there is no
+memory module.** Bootstrap strips memory tools from `app.Tools` after both
+`BuildTools` and `ModuleRegistryForApp` have run (`bootstrap.go:274`); memory
+tools are core (`coreToolNames`, `modules.go:40`), so no module references
+them — but nothing asserts that. No `--context-modules` flag exists anywhere
+(`cmd/wakil/run.go` has no such case; `internal/config/config.go` registers
+`prompt-mode` (`config.go:2207`) and `context-mode` (`config.go:2206`) but no
+`context-modules`). The docs claim the flag exists (`docs/configuration.md:290`,
+`config.example.json:197`) and that modules are "persisted per repo" — the
+per-repo persistence (`repostate.go`) has `prompt_mode` but no context-modules
+field.
+
+**Second registry.** `bootstrap.go:256-257` builds two registries per session
+(one discarded inside `BuildTools`, one stored). Both are built from the same
+snapshot, so they agree — the second is not needed as a separate build, only
+as the stored instance. Block 1 removes the duplicate or proves both needed.
+
+### 2. Touched functions (by name)
+
+- `NewMCPManager` (background connect completion path, `mcp_manager.go:204`)
+- `MCPManager.Close` (`mcp_manager.go:732`)
+- `MCPManager.Reconnect` (`mcp_manager.go:634`)
+- `NewModuleRegistry`, `BuildToolsWithModules`,
+  `ModuleRegistryForApp`, `mcpModules` (`modules.go:270,365,414,170`)
+- `ModuleRegistry.LoadModule`, `ModuleIndex`, `MCPModulePreload`,
+  `PreloadModules` (`modules.go:303,329,508,533`)
+- `App.handleLoadModule`, `App.handleToolCall` (call_tool unwrap, `app.go:2762`),
+  `App.ExecuteToolCall` / `App.executeToolCall` (`app.go:3333`, `:3365`)
+- `App.buildPreambleForNetwork` (`app.go:1937`), `App.ensurePreamble`
+  (`app.go:2206`), `moduleCapabilityLine` (`modules.go:551`)
+- `BuildApp` (`internal/wiring/bootstrap.go:249`), `parseRunArgs` +
+  `RunHeadless` (`cmd/wakil/run.go:72`, `:211`), `config.Parse`
+  (`internal/config/config.go:2207` region)
+
+### 3. Blocks with tests
+
+**Block 1 — MCP servers that connect late.** Test first (fake MCP manager
+whose `connectFn` completes after `BuildTools`): `TestLateMCPConnect_*` in
+`internal/agent/mcp_manager_test.go`, run at `e39c982` to show it failing.
+Fix: an MCP lifecycle hook that registers the server's module in the
+registry on connect and marks it unavailable on disconnect/reconnect
+(registry follows the events; the `mcp:<server>` module is added/removed at
+runtime, thread-safe under the registry mutex, `modules.go:250`). A server
+that connects mid-session: its index line reaches the model as an appended
+pinned `role:"tool"` message, never by editing `messages[0]` and never via
+the tool array. A disconnected server: `load_module` and `call_tool` for its
+module return a clear "server not connected" error. Safety net: a reconcile
+pass at turn start; if a connected server has no module, log a warning and
+behave switch-off for that server's tools for that session (never silently
+drop them). The duplicate registry build in `bootstrap.go:256-257` is removed
+(one build, stored on `App.Modules`). Tests: `TestLateMCPConnect_*`,
+`TestModuleRegistry_MCPDisconnect_*`, `TestModuleRegistry_MCPReconnect_*`,
+`TestLateMCPConnect_SafetyNet_*` (warn + switch-off fallback, no silent drop),
+`TestBootstrap_SingleRegistry`.
+
+**Block 2 — Pre-load delivers the tools.** Task text with "trello" must
+produce a first request whose messages already contain the trello schemas in
+the pinned `role:"tool"` form `load_module` returns (same rendering), with no
+`load_module` round trip; `call_tool` to a trello tool then works directly.
+Touch: the turn-1 pre-load path (`app.go:1278`) and
+`ensurePreamble`/`buildPreambleForNetwork` so the pinned schema block is
+appended to `Conv` (appended message, never an edit of an earlier message).
+Tests: `TestPreload_FirstRequestContainsSchemas`,
+`TestPreload_CallToolWithoutLoadModule`. (If block 2's delivery would require
+changing the tool array mid-session, the block stops and reports why —
+cache rule R3.)
+
+**Block 3 — Flag and docs.** Add `wakil --context-modules on|off` (and
+`wakil run --context-modules on|off`) with flag-over-env-over-config
+precedence, mirroring `--prompt-mode` (`config.go:2207`). Fix the docs to
+match what exists: remove or implement the "persisted per repo" claim, name
+the flag and env. Tests: `TestParseRunArgs_ContextModules`,
+`TestConfig_ContextModulesFlagPrecedence`.
+
+**Block 4 — Missing tests.** Subagent tool lists byte-identical with the
+switch on and off; `--no-memory` with the switch on removes all memory tools
+and leaves no memory module. Tests: `TestSubagentTools_ByteIdenticalWithSwitchOnOff`
+(per tier), `TestBuildApp_NoMemory_LeavesNoMemoryModule`.
+
+**Block 5 — Extra tool calls.** Count, per bench run, `load_module` and
+`call_tool` calls and loaded modules from
+`bench/results/20261122T221701-bench.csv`, `…222041-bench.csv` and their
+logs. If the model loads modules the task does not need: improve the index
+line (`load_module` description + one-line descriptions in `builtinModules`/`mcpModules`)
+so a module is only loaded when one of its tools is needed, and add
+`TestModuleIndex_NamesTools` (index text lists each module's tool names). If
+no unneeded loads: record the counts in the final report and change nothing
+here.
+
+**Block 6 — CHANGELOG `[Unreleased]` lines** for the user-visible changes.
+
+### 4. Open risks
+
+1. **Cache-rule collision.** Block 1's "index line as appended message" and
+   block 2's "pre-loaded schemas in the first request" both deliver text as
+   messages, not via the tool array — that keeps R3. If either needs the tool
+   array to change mid-session, the block stops (DO NOT ALTER).
+2. **Registry mutability.** Making the registry dynamic (add/remove modules
+   mid-session) widens the mutex surface (`modules.go:250`). `LoadedNames`,
+   `ToolModule`, `ModuleIndex` all read `modules`/`byName` — every read must
+   stay under the lock; the race-detector gate on the changed packages is the
+   check. Lock ordering: the registry mutex is never held while calling the
+   manager (the manager snapshot is taken first, the lock released, then the
+   registry lock taken); a named concurrency test (connect during
+   `call_tool`/`ModuleIndex`) asserts it, since the race detector does not
+   catch deadlocks.
+3. **Index staleness.** `moduleCapabilityLine` freezes LSP/browser lines at
+   construction (`preloadedAtConstruction`). A late MCP module changes the
+   index after session start; the frozen preamble must not jump — late index
+   lines go as appended pinned messages, and `messages[0]` stays frozen.
+4. **Safety net.** The Block 1 safety net repairs and never silently drops:
+   at turn start the reconcile pass registers the missing `mcp:<server>`
+   module and announces it through the late-connect path. It never tries to
+   deliver the tools inline (the array is frozen) — the tools stay reachable
+   through the module, not the array. A zero-tool connected server is
+   excluded by the `len(tools) > 0` filter (`mcp_manager.go:448`) and must
+   not trip the warning (<-> `TestLateMCPConnect_ZeroToolServerNoWarning`).
+5. **Bench evidence is indirect.** No real model requests in this stage
+   (DO NOT ALTER); block 5 counts come from the two CSVs and their logs only.
+   Whether the tighter index reduces real-model tool calls is unverified
+   until the host bench in the final report is run.
+
+### 5. Mashūra findings (taken / rejected)
+
+Round 1 on this section (3 panels, unanimous verdict "does not close every
+path"). Each finding was verified against the code at `e39c982` before
+folding in; opinions that contradicted the code or the task's hard
+constraints were rejected with reasons. Rejected findings are listed with
+their reason so the record shows what was considered.
+
+**Taken (folded into the blocks above):**
+
+- **(b1) `ExecuteToolCall` bypass has no fix block — 4/4 panels.** Confirmed
+  at `app.go:3333`/`app.go:3365`: the exported dispatch reaches module
+  handlers with no loaded-module check. Now part of Block 2(a) (the gate
+  and unwrap live in `executeToolCall`), with
+  `TestExecuteToolCall_UnloadedModuleToolRejected` and
+  `TestExecuteToolCall_CallToolRejectedDirect`.
+- **(b2) `/mcp reconnect` discards the registry — 3/4 panels.** Confirmed at
+  `internal/agent/commands.go:789`: `BuildTools` builds a fresh registry
+  that is thrown away, and `facade.go:904` applies the core-only array.
+  Block 1's reconnect path now refreshes `App.Modules` in place (via the
+  registry reconcile on `mcp:<server>`), with
+  `TestModuleRegistry_MCPReconnect_*` asserting tool/module consistency. No
+  `SetTools` guard: `commands.go:789` calls `BuildTools`, which returns the
+  core-only array when the switch is on, so no raw MCP tool can enter the
+  array through that path.
+- **(b3) Safety net contradicts Risk 4 — 3/4 panels.** Confirmed (the old
+  wording promised in-session switch-off tools). Reworded: reconcile repairs
+  in the same session through the late-connect announce path. See the new
+  Risk 4.
+- **(b4) Registering a late module may not make it callable — 2/4 panels.**
+  Confirmed: MCP dispatch resolves through the live manager
+  (`tool_handlers.go:2046`, namespaced `"caj__*"` → `MCPManager.CallTool`),
+  not through the frozen `App.Tools`. Block 1 now has the end-to-end test
+  `TestLateMCPConnect_LoadAndCallTool`.
+- **(b5) Hook lost between manager creation and registry build — 2/4
+  panels.** Confirmed (`bootstrap.go:156` vs `:257`). The turn-start
+  reconcile covers the window; `TestLateMCPConnect_BeforeHookRegistration`
+  pins it.
+- **(b6) Reconnect state and `loaded` drift — 2/4 panels.** Block 1 now
+  marks the module unavailable on disconnect, resets/re-derives on
+  reconnect, and returns a clear "server not connected" error from both
+  `load_module` and `call_tool` when the server is down.
+- **(b7) No switch-off golden — 3/4 panels.** `TestSwitchOff_HooksAreNoOps`
+  plus the existing golden tests (which must keep passing unchanged).
+- **(b8) Block 3 "remove or implement" undecided — 3/4 panels.** Decided:
+  **remove** the per-repo persistence claim from the docs (no `repostate`
+  change in Stage 1; Stage 2 owns per-repo), the env var is
+  `WAKIL_CONTEXT_MODULES`, and flag + env + config precedence is tested.
+- **(b9) `--no-memory` test breadth — 1/4 panels.** Block 4 also asserts
+  the index/preamble names no memory tools and no stripped memory tool is
+  callable.
+
+**Rejected (with reason):**
+
+- **Synthetic pinned `role:"tool"` for pre-load.** Rejected: the pre-load
+  schemas are rendered as a `role:"user"` note, and the late-index line as
+  a `role:"user"` announcement; provider pair validity is therefore not a
+  dependency. The plan's own wording (Blocks 1-2) already says "appended
+  pinned messages" without a same-rendering claim.
+- **Compaction may prune the appended messages.** Rejected as a verified
+  fact: the registry's `loaded` state and the `Conv` content can diverge, so
+  a module can be `loaded=true` while its schemas are gone; compaction is
+  out of Stage 1 scope (R2 is Stage 2), and `load_module` is idempotent
+  (`modules.go:564`), so a model can recover by re-loading. Recorded in
+  `## Follow-ups (not in Stage 1)`: registry/Conv divergence after
+  compaction, and pre-load after a `/clear` or resume.
