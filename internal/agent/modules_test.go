@@ -879,3 +879,73 @@ func TestCacheStability_ModuleIndexInPreamble(t *testing.T) {
 		t.Errorf("preamble with switch off should NOT contain module index:\n%s", preamble2)
 	}
 }
+
+// ── Block 7: Measurement helper ─────────────────────────────────────────────
+
+// TestMeasurement_TokenEstimate compares the tool-array size (bytes/4, marked
+// as an estimate) with the switch off and on, for the default config and for
+// a config with two fake MCP servers. The test prints the before/after numbers
+// so the final report can quote them.
+func TestMeasurement_TokenEstimate(t *testing.T) {
+	// Default config (no MCP, no optional groups).
+	cfgDefault := config.DefaultConfig()
+	cfgDefault.ContextModules = "off"
+	offDefault := BuildTools(cfgDefault, "/work", nil, "")
+	offBytes := 0
+	for _, tl := range offDefault {
+		b, _ := json.Marshal(tl)
+		offBytes += len(b)
+	}
+
+	cfgOn := config.DefaultConfig()
+	cfgOn.ContextModules = "on"
+	onDefault, _ := BuildToolsWithModules(cfgOn, "/work", nil, "")
+	onBytes := 0
+	for _, tl := range onDefault {
+		b, _ := json.Marshal(tl)
+		onBytes += len(b)
+	}
+
+	t.Logf("default config: off=%d bytes (~%d est_tok), on=%d bytes (~%d est_tok), saving=%d bytes (~%d est_tok)",
+		offBytes, offBytes/4, onBytes, onBytes/4, offBytes-onBytes, (offBytes-onBytes)/4)
+
+	// With two fake MCP servers.
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards", "get_board", "get_lists", "get_cards", "get_card", "create_card", "move_card", "update_card", "add_comment"),
+		connectedServer("context7", &fakeMCPSession{}, "resolve-library-id", "query-docs"),
+	)
+	cfgMCP := config.DefaultConfig()
+	cfgMCP.ContextModules = "off"
+	offMCP := BuildTools(cfgMCP, "/work", mcp, "")
+	offMCPBytes := 0
+	for _, tl := range offMCP {
+		b, _ := json.Marshal(tl)
+		offMCPBytes += len(b)
+	}
+
+	cfgMCPOn := config.DefaultConfig()
+	cfgMCPOn.ContextModules = "on"
+	onMCP, _ := BuildToolsWithModules(cfgMCPOn, "/work", mcp, "")
+	onMCPBytes := 0
+	for _, tl := range onMCP {
+		b, _ := json.Marshal(tl)
+		onMCPBytes += len(b)
+	}
+
+	t.Logf("two MCP servers: off=%d bytes (~%d est_tok), on=%d bytes (~%d est_tok), saving=%d bytes (~%d est_tok)",
+		offMCPBytes, offMCPBytes/4, onMCPBytes, onMCPBytes/4, offMCPBytes-onMCPBytes, (offMCPBytes-onMCPBytes)/4)
+
+	// The on array must be smaller than the off array in both cases.
+	if onBytes >= offBytes {
+		t.Errorf("default: on (%d) should be smaller than off (%d)", onBytes, offBytes)
+	}
+	if onMCPBytes >= offMCPBytes {
+		t.Errorf("MCP: on (%d) should be smaller than off (%d)", onMCPBytes, offMCPBytes)
+	}
+
+	// The on array with MCP must be the same size as the on array without MCP
+	// (MCP tools are in modules, not in the core array).
+	if onBytes != onMCPBytes {
+		t.Errorf("on with MCP (%d) should equal on without MCP (%d) — MCP tools are in modules", onMCPBytes, onBytes)
+	}
+}
