@@ -763,3 +763,141 @@ Derived strictly from 3.2-3.4:
 
 These are the quantities a module system would move in or out of the prefix;
 they are the inputs to the break-even arithmetic §7 must produce.
+
+---
+
+# Question 4 — The memory block(s)
+
+## 4.1 The symptom and its cause
+
+Every `/resume` row for sessions using memory starts with
+`## Relevant context from memory (untrust…`. The chain:
+
+1. `App.Send` prepends the retrieval block to the user text before storing it
+   (`internal/agent/app.go:1266-1268`):
+   ```go
+   if memCtx := a.retrieveMemoryContext(ctx, stripRetrievalBlock(userText)); memCtx != "" {
+       stored = memCtx + "\n" + stored
+   }
+   ```
+2. `stored` becomes the `user` message content (`app.go:1283`), so the
+   envelope is **persisted with the message**.
+3. The resume picker renders the first user message verbatim:
+   `SessionSummary.Turns()` (`internal/core/sessionclient/facade.go:102-117`)
+   and `agent.SessionTurns` (`internal/agent/session.go:282-293`) both take
+   `DerefStr(m.Content)` of the first `role=="user"` message — **unstripped**.
+   `renderResumePicker` (`internal/tui/resume_picker.go:176-180`) truncates it
+   to 40 chars, which is exactly enough to show the header and nothing else.
+
+So it is a **display bug in the resume picker**: the strip function exists
+(`stripRetrievalBlock`) and is used at index time, at handoff, and at
+skill-creation, but not in the two `Turns()` implementations.
+
+This is a finding to report, not to fix in this session (DO NOT ALTER: no
+product code).
+
+## 4.2 Two artifacts, not one (measured separately)
+
+### (a) The memory digest line — inside `Conv[0]`
+
+Built inline in `buildPreambleForNetwork` (`internal/agent/app.go:2044-2100`),
+from `MemoryStore.Stats(ctx, 5)` (`internal/memory/store.go:1222`). Content:
+
+- `Memory: N active durable entries`
+- `, M mid-tier` when > 0
+- `, P pending proposals` when > 0
+- `Recent: ` up to 5 durable keys (`store.go:1241-1256`, `recentN=5`)
+- `Namespaces: ` up to 15 prefixes with counts (`store.go:74` `prefixCap = 15`,
+  `:1258-1269`), rendered with a 400-byte display budget (`app.go:2084`)
+- `Use memory_search or memory_get to retrieve entries.`
+
+Measured for this session's store, exactly as printed in the preamble above:
+**591 B / 147 est. tokens.**
+
+Properties:
+- Lives in the **cached prefix**, at `messages[0]`.
+- Deliberately **not live** — the comment at `app.go:2039-2043` says the
+  digest is a session-start snapshot and invalidating on every memory write
+  "would destroy prompt-cache prefix stability."
+- Changes only at session start or day rollover.
+- Contains **counts and key names**, no entry content. Key names are
+  proprietary (they name the user's project history).
+
+### (b) The retrieval block — prepended to the user message
+
+Built by `retrieveMemoryContext` (`internal/agent/retrieval.go:51-102`),
+formatted by `formatRetrievedContext` (`:119-170`).
+
+- Cap: `retrievalCap = 2048` parent, `retrievalCapSubagent = 1024`
+  (`retrieval.go:27-28`).
+- Selection: FTS5 OR-query over the user text, up to 3 memory entries + 2
+  skill entries (`:43-46`), active entries only, unconfirmed auto-skills
+  dropped (`:88`).
+- Envelope: header 88 B, end marker 26 B, separator 4 B, per-entry prefix
+  `[key | taint] ` and a **500-byte per-entry value cap** (`:231`).
+- Fully budgeted: the cap covers header, end marker, separators and the
+  truncation notice (`:123-128`).
+- Structural strip markers so retrieved content is never re-indexed
+  (`retrievalBlockHeader`/`retrievalBlockEnd`, `:34`, `:40`; the strip is
+  `stripRetrievalBlock`, `internal/agent/sessionhistory_bridge.go:181`).
+
+Measured, this session's actual block as injected into this request:
+**757 B / 189 est. tokens** (3 entries: a handoff, a ctx entry, a skill).
+
+### Which one is "the memory block"?
+
+Both are. They have opposite cache properties and must be decided separately:
+
+| | Digest (a) | Retrieval (b) |
+|---|---|---|
+| Position | `messages[0]`, inside the cached prefix | first user message, **after** the breakpoint |
+| Changes per turn | no | no (written once, frozen) |
+| Changes per session | at start / day rollover | never after the first turn |
+| Byte-stable across turns | yes | yes |
+| Cost | 147 est. tokens, **always** | ≤512 est. tokens, **once** |
+| Grows with memory size | no (bounded) | no (capped) |
+| Leak surface | key names, namespace names | entry values (already the design intent) |
+
+## 4.3 Is it part of the first user message?
+
+The retrieval block: **yes**, by construction (`app.go:1266-1268` prepends
+before `appendConv`), and it persists in `Conv` exactly as written — it is not
+recomputed for later turns, and the first user message is never rewritten
+(unless compaction/collapse rewrites the turn, at which point the block goes
+with it).
+
+The digest: **no** — it is inside `messages[0]`, the system preamble.
+
+## 4.4 What changes if each becomes its own module
+
+**If the digest becomes an on-demand module** (`memory_status`-style tool or a
+`load_module("memory")`):
+- Saves 147 est. tokens per request until loaded — trivially small.
+- Costs one tool round-trip when the model actually needs memory counts.
+- **Loses** the passive nudge: today the model learns *that memory exists and
+  which namespaces are populated* without asking. Removing it will reduce
+  memory use before the model knows to search. Net: likely a loss on
+  quality, negligible on cost. Recommendation: keep as core, or shrink to one
+  sentence ("Memory: N entries — use memory_search").
+
+**If the retrieval block becomes a module:**
+- It is already effectively a module — injected once, capped, at the first
+  user message, after the cache breakpoint. Moving it "out" would mean
+  deferring it to a tool call, which costs a round-trip and removes the
+  zero-effort context the model currently gets.
+- The real improvement available is **not** modularisation but fixing the
+  resume-picker strip (§4.1) and possibly raising the 500-byte per-entry cap
+  when a high-scoring entry is truncated.
+
+**If the envelope moves into `Conv[0]`** (a tempting "simplification"): it
+would invalidate the prefix every turn, because retrieval depends on the user's
+text. This is strictly worse and the code comment at `retrieval.go:12-18`
+already warns about it.
+
+## 4.5 Findings to report
+
+1. Resume-picker titles show the raw envelope — a display bug with a known
+   fix (strip in `SessionTurns` / `SessionSummary.Turns`).
+2. The digest is bounded and cheap; modularising it is not worth it.
+3. The retrieval block is already correctly placed for caching; the only
+   gains there are correctness (strip) and quality (per-entry cap), not bytes.
