@@ -1145,6 +1145,10 @@ read. The user runs:
 # every trace in the default store, one report
 sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/*.jsonl
 
+# exact module session-union counts (see F1.3.8 for the full set of --union specs)
+sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/*.jsonl \
+  --union "subagents=dispatch_subagent,dispatch_subagents"
+
 # a single session
 sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/<chat-id>.jsonl
 
@@ -1156,6 +1160,9 @@ sh scripts/context_usage.sh after/*.jsonl  > after.tsv
 (The exact directory name should be confirmed with `wakil doctor` or by
 listing `$HOME/.local/share/wakil/` — this session did not open it, per the
 task's rule.)
+
+A broken line in a file is counted and skipped, and the count appears on
+stderr; that is expected for traces written before the fix above.
 
 **Safety note for the user:** the output contains tool names and counts only.
 Do not add `-x`/`set -x` when running it, and do not pipe it through a tool
@@ -2195,10 +2202,14 @@ data replaces that judgement with a measured **session share**: the fraction of
 sessions in which a tool of that module was used at all. Four assumptions do
 not survive:
 
-1. **§7.1 said MCP has no module.** The user's sessions carry `trello__*`
+1. **§7.1's MCP row was a placeholder: one conditional row, no per-server split
+   and no size.** The user's sessions carry `trello__*`
    (9 distinct tools, 153 sessions on `trello__get_lists` alone) and
-   `context7__*`. These are 65-tool requests (§1.3 measured 49 without MCP), so
-   MCP is a *large* real prefix that the design never sized.
+   `context7__*`. The "65 tools" of the earlier draft is now explained: 49
+   default tools plus the MCP servers (§1.3 measured 49 without MCP). The count
+   itself is **inferred, not measured** — traces record tools that were
+   *called*, not tools that were *sent* (see §F1.3.5), so MCP is a large real
+   prefix whose size the design never measured.
 2. **§5.2 put the git tools in a module.** `git_status` is used in 107 sessions
    but `run_shell` in 498 — and git commands are routinely run through
    `run_shell`, so the git group's true necessity is inflated by substitution.

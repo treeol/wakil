@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Trace files are never left with a partial last line.** The trace writer used a fixed 64 KiB buffered writer, which flushed at a byte offset regardless of record boundaries: a record straddling the 65 536-byte mark was written in two parts, so a crash or kill between flushes left an exactly-65 536-byte file whose last line was cut mid-record. Each record and its newline are now one write, a resumed session appends after (never onto) a cut tail, and a session that dropped records because the write channel was full says so once.
+
+### Added
+
+- **`scripts/context_usage.sh` reports usage from trace files that have a broken line.** It used to abort with exit 2 on the first unparsable line and print nothing, so a single cut file made it useless. It now skips and counts broken lines, prints a per-tool `TOOL/CALLS/SESSIONS` table, a session denominator, and (with `--union`) the number of distinct sessions across a tool group. It prints only tool names and integers — never arguments, results or any other trace content.
+
 ## [0.8.9] - 2026-11-22
 
 Upgrading from 0.8.8, in short (details under Added, Fixed and Changed):
