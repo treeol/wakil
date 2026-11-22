@@ -430,3 +430,188 @@ this session may not read (`~/.local/share/wakil` is off limits) — so it stays
 | Style guide message | `requestMessages` | `internal/agent/styleguides.go:412` |
 | Tool definitions | `BuildTools` | `internal/agent/mcp_manager.go:1018` |
 | Wire body | `Client.Stream` | `internal/proxy/client.go:1152` |
+
+---
+
+# Question 2 — What already exists for loading on demand
+
+Wakil already has four on-demand mechanisms and one conditional-group
+mechanism. Only one of them (skills) is a true "load text into context when
+needed" path; the others are variants of "don't add it in the first place."
+
+## 2.1 The core/extension prompt split (`/prompt core`)
+
+**How it works.** Two embedded prompts replace the monolithic one:
+
+| Prompt | File | Bytes | Est. tokens |
+|---|---|---|---|
+| full | `prompts/agent.txt` | 52 858 | 13 214 |
+| core | `prompts/core.txt` | 18 572 | 4 643 |
+| extension | `prompts/extension.txt` | 34 605 | 8 651 |
+
+Core and extension together are 1.05× the full prompt (they overlap slightly —
+`## Core loop` is 3 401 B in full and 3 612 B in core; `## Files` 1 340 vs 936).
+So `core` mode saves 13 214 − 4 643 = **8 571 est. tokens** until the
+extension fires, and after it fires costs 4 643 + 8 651 = 13 294 — marginally
+*more* than full mode.
+
+Section-by-section sizes (measured, `##`-heading spans):
+
+| Section | full | core | extension |
+|---|---|---|---|
+| Global precedence ladder | 2 385 | 2 385 | — |
+| Role | 830 | 830 | — |
+| Core loop | 3 401 | 3 612 | — |
+| Secrets | 3 911 | 3 911 | — |
+| Shell | 2 486 | 2 486 | — |
+| Files | 1 340 | 936 | — |
+| External side-effect gating | 2 872 | 2 872 | — |
+| Honesty Invariants | 860 | 860 | — |
+| Recovery | 277 | 277 | — |
+| Documentation upkeep | 1 353 | — | 1 353 |
+| What "verified" means | 779 | — | 1 007 |
+| Search & Research | 4 987 | — | 4 987 |
+| File vs. Inline | 585 | — | 585 |
+| Skills | 1 617 | — | 1 617 |
+| Tool / Cost Discipline | 620 | — | 620 |
+| Durable Memory | 8 402 | — | 8 402 |
+| Truncated tool results | 2 772 | — | 2 772 |
+| Async execution | 4 446 | — | 4 446 |
+| Subagents | 7 073 | — | 7 073 |
+| Interaction & Output | 1 220 | — | 1 220 |
+
+**Where the code is.** `prompts/embed.go` (three `//go:embed`s),
+`internal/wiring/bootstrap.go:348-351` (loads core+extension only when no
+custom prompt file), `internal/agent/app.go:1957-1964` (picks which one the
+preamble uses), `internal/agent/classifier.go:23` (`classifyRequest`) and
+`:155` (`maybeActivateExtension`).
+
+**Activation rule.** `classifyRequest` is a static Go classifier with no model
+call: a greeting → false; any code/file reference, URL, or backticked snippet
+→ true; any of ~40 task keywords → true; text ≥30 chars → true; otherwise
+false. Its own comment says it is "intentionally over-broad: better to
+activate too often than too rarely."
+
+**Cost per request.** In core mode before activation: Conv[0] loses 8 571
+est. tokens. After activation the extension is a **second system message at
+Conv[1]**, pinned and `Turn==0`, so it is re-sent on every subsequent request
+and survives compaction (`maybeActivateExtension`, `classifier.go:186-207`) —
+i.e. it is a *one-way* load with a permanent cost, exactly the shape the
+design will need for modules.
+
+**Why this is the key precedent.** It is a working, shipped lazy-load that
+already solves: where to insert (after Conv[0], before the user message),
+how to survive compaction (`Pinned` + `Turn==0`), and how to avoid breaking
+`ensurePreamble`'s slot logic. But it has **no unload path** and its cache
+behaviour has never been measured.
+
+## 2.2 Skills (`load_skill`, `list_skills`, `skill_search`, …)
+
+**How it works.** A skill store holds named reference docs. Three access
+tiers:
+
+1. **Automatic retrieval** — `retrieveMemoryContext` searches memory *and*
+   skills by FTS5 on the user's text and injects up to 2 skill entries, each
+   truncated to 500 B, inside the 2 048 B retrieval block
+   (`internal/agent/retrieval.go:43-46`, `:82-95`). This is automatic but
+   *summary-only*: the model sees a key, a taint label and ≤500 B of prose.
+2. **Explicit load** — `load_skill` returns the full skill body. It is
+   **exempt from `ToolResultCap`** (see `capabilities`/`CapOrStub` exemption
+   list together with `read_file_full`), so a large skill is not truncated.
+3. **Template apply** — `apply_skill_template` writes files; the skill body
+   never enters context as prose.
+
+Template skills are deliberately prose-only on retrieval: "Template skills:
+retrieval shows prose only — file bodies are reached through load_skill /
+apply_skill_template, never the preamble" (`retrieval.go:224-226`).
+
+**Cost per request.** Zero in the preambles. The retrieval block costs ≤512
+est. tokens when it fires, in the user message. `load_skill` costs the tool
+definition (899 B) plus whatever is loaded, re-sent per turn thereafter.
+
+**This is the closest existing analogue to a context module** — with one
+crucial difference: skills are global and project-agnostic by policy, while
+context modules would be per-repo or per-feature prompt text.
+
+## 2.3 Deferred / conditional tools
+
+There is **no deferred-tool mechanism**. What exists is conditional
+*registration*: `BuildTools` (`internal/agent/mcp_manager.go:1018-1050`)
+appends groups in a fixed order and each optional group is present or absent
+for the whole session:
+
+| Group | Gate | Bytes (measured) |
+|---|---|---|
+| built-ins (49 tools) | always | 39 563 |
+| `check_pending`, `wait_for_completion`, `collapse_context` | always | (inside built-ins) |
+| search (`searxng_*`, 2 tools) | `searxng_url` set | 1 135 |
+| MCP (`server__tool`, variable) | ≥1 connected server | unbounded (one per server tool) |
+| Mashūra (`mashura__*`, 4 tools) | key present and level ≠ off | not measured here (no key in this environment) |
+| LSP (4 tools) | `lsp_enabled` | 2 575 |
+| browser (8 tools) | `browser_enabled` | 4 685 |
+
+Group sizes by feature, default set (measured):
+
+```
+async             6 tools   4546 B  1136 est_tok
+git               5 tools   2248 B   562 est_tok
+memory            8 tools   5437 B  1359 est_tok
+skills-read       4 tools   2060 B   515 est_tok
+skills-template   3 tools   6394 B  1598 est_tok
+skills-write      3 tools   2542 B   635 est_tok
+staging           5 tools   2304 B   576 est_tok
+subagent          2 tools   4200 B  1050 est_tok
+```
+
+**Cost per request.** Each registered group is re-sent on every request. There
+is no way today to offer a tool only when a task needs it — the closest thing
+is `/auto`-style gating of *execution*, not of definition.
+
+`cache_stable.go:9-13` documents the constraint this creates: groups are
+appended rather than interleaved "so that toggling a conditional group only
+invalidates from that group onward."
+
+## 2.4 Subagents — a *different* context, not a subset of the parent's
+
+Corrected from the plan review. A subagent does **not** inherit the parent's
+prompt or tools:
+
+| Tier | Prompt constant | Bytes | Est. tokens | Tools | Tool bytes |
+|---|---|---|---|---|---|
+| discovery | `subagentSystemPrompt` (`subagent.go:432`) | 1 924 | 481 | `DiscoveryTools` (34) | 25 227 |
+| edit | `subagentEditSystemPrompt` (`:454`) | 2 962 | 740 | `EditTools` (34) | 26 195 |
+| tools | `subagentToolsSystemPrompt` (`:484`) | 2 353 | 588 | `buildSubagentTools` (discovery + search/LSP/browser/allowlisted MCP) | 25 227+ |
+
+Selected at `internal/agent/subagent.go:1533-1541`. No preamble at all
+(`ensurePreamble` no-ops when `InjectDate` is off, `app.go:2154-2158`), so a
+subagent gets **no** AGENTS.md, no date line, no memory digest, no repo map.
+
+Cache detail worth noting: `DiscoveryTools` is described as "the shared prefix
+for cache stability" (`app.go:2642-2646`) — the edit and tools tiers extend the
+same prefix so a parent that dispatches several children pays the cached
+prefix once.
+
+**Cost per request.** ~30k est. tokens per subagent invocation (prompt +
+tools), versus ~25k for the parent's first request. A subagent is *not*
+cheap; it is cheap **relative to the parent re-deriving the same information**.
+
+## 2.5 Context collapse (the one existing "unload" mechanism)
+
+`collapse_context` (`internal/agent/collapse.go`) and mid-turn collapse
+replace finished requests with a summary + archive pointer in long-session
+mode. This is the only mechanism that *removes* bytes from the request after
+they were added, and it is the natural hook for unloading a module — but it
+operates on whole turns, not on individual system messages, and it is
+disabled in standard mode.
+
+## 2.6 What is missing
+
+| Capability | Status |
+|---|---|
+| Load prompt text by tool call | Exists once, statically (`maybeActivateExtension`), no unload |
+| Load prompt text per repo | Missing (AGENTS.md is loaded unconditionally) |
+| Offer a tool only when needed | Missing (only whole-session conditional groups) |
+| Unload prompt text without a collapse | Missing |
+| Per-module cache accounting | Missing (no instrumentation) |
+| Module index for the model | Missing |
+| User-editable writing style file | Partially: `agent_prompt_path` replaces *everything*; `style_guide_paths` replaces code style only. A writable "writing style" module does not exist. |
