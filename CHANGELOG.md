@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.9] - 2026-11-22
+
+Upgrading from 0.8.8, in short (details under Added, Fixed and Changed):
+
+- **Read-only `sed` again for plain bracket scripts.** `sed -n '/[a-z]/p' file` and `sed 's/[0-9]//' file` (a `[...]` or `[^...]` expression in an address or in the pattern of `s///`, the whole script one single-quoted word) no longer need `--allow-destructive`; 0.8.8 gated every script with a `[`. What stays gated: `[[:class:]]`, `[]...]`, double-quoted, unquoted or glued scripts, and a file word with a `[` that is not single-quoted (this last one is stricter than 0.8.8: `sed -n 1p f[1].txt` was read-only there; write `'f[1].txt'`).
+- **Headless runs print the collapse and the "async results delivered" notices again**, each as one `{"type":"output"}` line of its own (0.8.8 lost the turn-end and mid-turn collapse notice). A script that takes the last `output` record as the answer can now get the turn-end notice line.
+- **A collapse checkpoint now has a "Findings so far" part** (files read with line ranges, files written, failed command names with exit status, the agent's last notes; at most 1500 bytes, built by code, no model call). It makes a checkpoint up to 1500 bytes larger, so a small range that collapsed in 0.8.8 may now be skipped by the never-inflate check.
+- **Bench harness:** `scripts/bench.sh --runs N` works on a terminal (no more "already being run by another bench" after run 1); the Go preflight can be skipped only with `--no-preflight` (`BENCH_TEST_SKIP_PREFLIGHT` from 0.8.8 and `BENCH_ALLOW_SKIP_PREFLIGHT`, which was never released, are ignored without a message); `scripts/bench.sh -h` needs the required tools installed (it exits 1 naming the missing ones).
+
+No configuration key changed. `MinHisnVersion` stays 0.6.1.
+
 ### Added
 
 - **A collapse checkpoint now carries a "Findings so far" part, built by code from the archived range.** After a collapse (the `collapse_context` tool, the automatic mid-turn collapse and the turn-end collapse) the note that stays in the context lists the files read with the line ranges requested (merged and sorted), the files written or edited, the commands that failed (command name and exit status, newest first), the agent's own last notes (newest first, each cut to 160 bytes) and the archive path with the one `search_files` call that searches it. It is at most 1500 bytes, cut from the oldest entries with an "(n more)" marker, deterministic, and recomputed over the whole range on a second collapse (one part, never nested). It is built from the tool-call arguments and the agent's own text: file paths and line ranges from `read_file`, `read_file_full` and the edit and write tools, only the command name (never its arguments or `VAR=value` words) from `run_shell`, and from a tool result only the exit status integer of an `ERROR: exit status N` prefix. No tool output or file contents are copied. Only `run_shell` results that start with `ERROR: exit status N` count as failed commands (a timeout, a signal or a declined call is not listed). The agent's own text can still quote such things, and the part is also written into the 7-day memory index entry of the collapse. The kept tail now leaves room for it under the hard-max clamp. No model call and no network. Whether it reduces re-reading is not measured yet (needs a bench run with a model that collapses on `long-read`).
