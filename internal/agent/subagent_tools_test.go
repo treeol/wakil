@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
 )
 
@@ -345,6 +346,53 @@ func TestValidCapabilityIncludesTools(t *testing.T) {
 	}
 	if wtools.CapabilityTools != "tools" {
 		t.Errorf("CapabilityTools = %q, want 'tools'", wtools.CapabilityTools)
+	}
+}
+
+// TestSubagentTools_ByteIdenticalWithSwitchOnOff pins the context-modules
+// contract for subagents: their tool list is byte-identical with the switch
+// on and off, for every tier. Subagent toolsets come from the switch-blind
+// builders (wtools.DiscoveryTools, wtools.EditTools, buildSubagentTools);
+// the child App sets no Modules, so callToolGate is a no-op for them.
+func TestSubagentTools_ByteIdenticalWithSwitchOnOff(t *testing.T) {
+	want := []string{"discovery", "edit", "tools"}
+	for _, tier := range want {
+		var offNames, onNames []string
+		for _, sw := range []string{"off", "on"} {
+			parent := &App{
+				Cfg: config.Config{ContextModules: sw, SubagentMCPServers: []string{"context7"}},
+				MCP: newFakeMCPManager(connectedServer("context7", &fakeMCPSession{}, "query-docs")),
+			}
+			parent.Exec = newFakeExecutor()
+			var tools []proxy.Tool
+			switch tier {
+			case "discovery":
+				tools = wtools.DiscoveryTools(parent.Exec.Cwd())
+			case "edit":
+				tools = wtools.EditTools(parent.Exec.Cwd())
+			case "tools":
+				tools = parent.buildSubagentTools()
+			}
+			names := make([]string, 0, len(tools))
+			for _, tl := range tools {
+				names = append(names, tl.Function.Name)
+			}
+			switch sw {
+			case "off":
+				offNames = names
+			case "on":
+				onNames = names
+			}
+		}
+		if fmt.Sprintf("%v", offNames) != fmt.Sprintf("%v", onNames) {
+			t.Errorf("tier %q: subagent tools differ with the switch on (%v) vs off (%v)", tier, onNames, offNames)
+		}
+		// The child App has no Modules: the gate is a no-op, so a tool that
+		// would be a module tool for the parent dispatches normally.
+		child := &App{IsSubagent: true}
+		if _, gateErr := child.callToolGate(proxy.ToolCall{Function: proxy.FunctionCall{Name: "move_file", Arguments: "{}"}}); gateErr != nil {
+			t.Errorf("tier %q: subagent gate must be a no-op (Modules nil), got: %s", tier, gateErr.text)
+		}
 	}
 }
 

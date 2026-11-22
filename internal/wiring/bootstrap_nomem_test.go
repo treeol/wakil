@@ -1,6 +1,7 @@
 package wiring
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/treeol/wakil/internal/tools"
@@ -48,6 +49,64 @@ func TestBuildApp_NoMemory_StripsMemoryStoreAndTools(t *testing.T) {
 	for _, tool := range app.Tools {
 		if memNames[tool.Function.Name] {
 			t.Errorf("memory tool %q should not be in app.Tools when NoMemory is set", tool.Function.Name)
+		}
+	}
+}
+
+// TestBuildApp_NoMemory_LeavesNoMemoryModule verifies that with the
+// context-modules switch on, --no-memory still removes every memory tool and
+// leaves no memory module behind: no module owns a memory tool, and the
+// module index names no memory tool (the registry is built before the
+// bootstrap strip, so this is the assertion the strip cannot drift from).
+func TestBuildApp_NoMemory_LeavesNoMemoryModule(t *testing.T) {
+	srv := sseServer(t, []string{contentChunk("done")})
+	defer srv.Close()
+
+	cfg := testManagerConfig(t, srv.URL)
+	cfg.WorkDir = t.TempDir()
+	cfg.HostWorkDir = cfg.WorkDir
+	cfg.ContextModules = "on"
+
+	app, res, err := BuildApp(cfg, fakeExec{}, BuildAppOpts{
+		IsHeadless: true,
+		NoMemory:   true,
+	})
+	if err != nil {
+		t.Fatalf("BuildApp: %v", err)
+	}
+	defer func() {
+		app.StopAllBackgroundProcs()
+		CloseResources(app, res)
+	}()
+
+	// The registry must exist (switch on) but own no memory tool.
+	if app.Modules == nil {
+		t.Fatal("Modules = nil with the switch on")
+	}
+	memNames := make(map[string]bool)
+	for _, tool := range tools.MemoryTools() {
+		memNames[tool.Function.Name] = true
+	}
+	for _, tool := range app.Tools {
+		if memNames[tool.Function.Name] {
+			t.Errorf("memory tool %q should not be in app.Tools when NoMemory is set (switch on)", tool.Function.Name)
+		}
+	}
+	for _, modName := range app.Modules.ModuleNames() {
+		if modName == "memory" {
+			t.Error("a module named \"memory\" must not exist")
+		}
+		if owned := app.Modules.ToolModule("memory_get"); owned != "" {
+			_ = owned
+		}
+	}
+	if owned := app.Modules.ToolModule("memory_get"); owned != "" {
+		t.Errorf("ToolModule(memory_get) = %q, want \"\" (memory tools are core, never module-owned)", owned)
+	}
+	idx := app.Modules.ModuleIndex()
+	for name := range memNames {
+		if strings.Contains(idx, name) {
+			t.Errorf("module index must name no memory tool, but it names %q", name)
 		}
 	}
 }
