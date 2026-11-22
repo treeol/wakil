@@ -200,17 +200,6 @@ func filterTools(tools []proxy.Tool, allow map[string]bool) []proxy.Tool {
 	return out
 }
 
-// allModuleNames returns the names of all modules (built-in + MCP), in order.
-func allModuleNames(cfg config.Config, cwd string, mcp *MCPManager) []string {
-	mods := builtinModules(cfg, cwd)
-	mods = append(mods, mcpModules(mcp)...)
-	names := make([]string, 0, len(mods))
-	for _, m := range mods {
-		names = append(names, m.Name)
-	}
-	return names
-}
-
 // loadModuleToolDef returns the load_module tool definition.
 func loadModuleToolDef() proxy.Tool {
 	params, _ := json.Marshal(map[string]interface{}{
