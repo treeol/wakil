@@ -265,7 +265,7 @@ go_found_version() {
     if [ -n "$go_toolchain" ] && [ "$go_toolchain" != local ]; then
         echo "$go_toolchain"
     elif command -v go >/dev/null 2>&1; then
-        _gf=$(cd "$repo_root" && GOFLAGS= GOTOOLCHAIN=local GOPROXY=off go env GOVERSION 2>/dev/null | head -n 1)
+        _gf=$(cd "$repo_root" && GOFLAGS='' GOTOOLCHAIN=local GOPROXY=off go env GOVERSION 2>/dev/null | head -n 1)
         echo "${_gf:-unknown}"
     else
         echo "no go in PATH"
@@ -308,7 +308,7 @@ resolve_go() {
     _rg_err=$(mktemp "${TMPDIR:-/tmp}/bench-resolve.XXXXXX") || return 1
     # GOPROXY=off: resolving must not download either. GOFLAGS= : the caller's
     # flags (-mod=..., -modfile=...) must not steer which toolchain is found.
-    if ! _rg_v=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
+    if ! _rg_v=$(cd "$repo_root" && GOFLAGS='' GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
         _rg_msg=$(head -n 1 "$_rg_err")
         rm -f "$_rg_err"
         [ "$skip_preflight" -ne 1 ] || { go_skip_note "$_rg_msg"; go_toolchain=local; return 0; }
@@ -328,7 +328,7 @@ resolve_go() {
         # must report the version that was just resolved: a caller-exported
         # GOROOT, a wrapper or a shim would otherwise pair this version label
         # with another tree.
-        _rg_root=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOROOT 2>/dev/null) || _rg_root=""
+        _rg_root=$(cd "$repo_root" && GOFLAGS='' GOPROXY=off go env GOROOT 2>/dev/null) || _rg_root=""
         _rg_rv=""
         if [ -n "$_rg_root" ] && [ -x "$_rg_root/bin/go" ]; then
             _rg_rv=$(cd "$repo_root" && env -u GOROOT GOFLAGS= GOENV=off GOPROXY=off GOTOOLCHAIN=local "$_rg_root/bin/go" env GOVERSION 2>/dev/null | head -n 1) || _rg_rv=""
@@ -342,9 +342,9 @@ resolve_go() {
         fi
         go_root="$_rg_root"
     fi
-    go_modcache=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOMODCACHE 2>/dev/null) || go_modcache=""
-    go_cache=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOCACHE 2>/dev/null) || go_cache=""
-    go_path=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOPATH 2>/dev/null) || go_path=""
+    go_modcache=$(cd "$repo_root" && GOFLAGS='' GOPROXY=off go env GOMODCACHE 2>/dev/null) || go_modcache=""
+    go_cache=$(cd "$repo_root" && GOFLAGS='' GOPROXY=off go env GOCACHE 2>/dev/null) || go_cache=""
+    go_path=$(cd "$repo_root" && GOFLAGS='' GOPROXY=off go env GOPATH 2>/dev/null) || go_path=""
 }
 
 # with_go_env <command>...: run a check or setup hook with the resolved Go
@@ -2482,6 +2482,7 @@ EOF
     # resolve_go: a stub go that fails when GOFLAGS is set, and answers with an
     # experiment suffix.
     _rg_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-rggo.XXXXXX")
+    # shellcheck disable=SC2016 # the single quotes are the point: this writes the stub go script, whose $GOFLAGS and $* must stay literal
     printf '#!/bin/sh\n[ -z "$GOFLAGS" ] || { echo "go: GOFLAGS leaked: $GOFLAGS" >&2; exit 1; }\ncase "$*" in\n  "env GOVERSION") echo "go1.26.11 X:aliastypeparams,jsonv2" ;;\n  "env GOROOT") echo "%s/root" ;;\n  "env GOMODCACHE") echo /tmp/m ;;\n  "env GOCACHE") echo /tmp/c ;;\n  "env GOPATH") echo /tmp/p ;;\n  *) exit 1 ;;\nesac\n' "$_rg_dir" > "$_rg_dir/go"
     chmod +x "$_rg_dir/go"
     mkdir -p "$_rg_dir/root/bin"
