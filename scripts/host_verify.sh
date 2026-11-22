@@ -22,6 +22,8 @@ fi
 base_ref="${1:?usage: host_verify.sh [--fast] <base-ref>}"
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+# shellcheck source=host_verify_summary.sh
+. "$repo_root/scripts/host_verify_summary.sh"
 
 # --- header (read go and git info BEFORE redirecting HOME) ---
 go_version=$(go version 2>&1 || echo "go: not found")
@@ -40,6 +42,8 @@ check() {
   # before rc=$? ran (POSIX: a failing unconditioned command
   # exits). Guard with `|| rc=$?` so every check runs and the
   # summary counts all of them.
+  # The log holds both output streams of the command (stdout and stderr), whole:
+  # a command that keeps its own log (go test) prints it in full, never a tail.
   rc=0
   "$@" >"$outdir/$name.log" 2>&1 || rc=$?
   if [ $rc -eq 0 ]; then
@@ -51,7 +55,7 @@ check() {
   else
     echo "FAIL  $name (exit $rc)"
     fail=$((fail+1))
-    tail -15 "$outdir/$name.log" 2>&1 | sed 's/^/  /'
+    hv_summarize "$name" "$outdir/$name.log"
   fi
 }
 
@@ -63,7 +67,7 @@ echo "branch: $(git rev-parse --abbrev-ref HEAD)"
 echo "go: $go_version"
 echo "go.mod: $go_mod_line  GOTOOLCHAIN=$gotoolchain"
 if pgrep -x wakil >/dev/null 2>&1; then
-  echo "WARN: a wakil process is running — some tests may fail"
+  echo "WARN: a wakil process is running — go-test and go-test-race can fail on the testutil guard (tests changed the real Wakil directories); stop it, or set WAKIL_TEST_ALLOW_REAL_DIR_CHANGES=1 for this run"
 fi
 echo "output: $outdir"
 echo ""
@@ -155,25 +159,26 @@ check build-and-version sh -c 'mkdir -p "$TMPROOT/bin" && go build -o "$TMPROOT/
 # runs, not of a trailing `| tail`/`| head` — those return their own
 # (always-zero) status and masked real FAILs (e.g. golangci-lint `unused`
 # findings in the TUI screen harness, 0.8.4 CI lint job). The checks
-# below write to a log and propagate the runner's exit code; the log
-# snippet in `check()` still shows the tail of the output.
-check vet sh -c 'go vet ./... >"$TMPROOT/vet.log" 2>&1; rc=$?; tail -20 "$TMPROOT/vet.log"; exit $rc'
+# below write to a log and propagate the runner's exit code, and print that
+# log whole, so the log kept in the output directory is the full output;
+# `check()` prints the summary of a failure from it (hv_summarize).
+check vet sh -c 'go vet ./... >"$TMPROOT/vet.log" 2>&1; rc=$?; cat "$TMPROOT/vet.log"; exit $rc'
 # .tmp*/ (scratch worktrees and notes, gitignored) is skipped explicitly, not
 # only by being untracked: a force-added file there must not fail the check.
 check gofmt sh -c 'out=$(gofmt -l $(git ls-files "*.go" | grep -v "^\.tmp") 2>&1); if [ -n "$out" ]; then echo "$out"; exit 1; fi; echo "gofmt clean"'
 if command -v golangci-lint >/dev/null 2>&1; then
-  check golangci-lint sh -c 'golangci-lint run >"$TMPROOT/golangci-lint.log" 2>&1; rc=$?; tail -10 "$TMPROOT/golangci-lint.log"; exit $rc'
+  check golangci-lint sh -c 'golangci-lint run >"$TMPROOT/golangci-lint.log" 2>&1; rc=$?; cat "$TMPROOT/golangci-lint.log"; exit $rc'
 else
   echo "SKIP  golangci-lint (not installed)"
   skip=$((skip+1))
 fi
 
 # --- 5. go test ---
-check go-test sh -c 'go test -count=1 ./... >"$TMPROOT/go-test.log" 2>&1; rc=$?; tail -10 "$TMPROOT/go-test.log"; exit $rc'
+check go-test sh -c 'go test -count=1 ./... >"$TMPROOT/go-test.log" 2>&1; rc=$?; cat "$TMPROOT/go-test.log"; exit $rc'
 
 # --- 6. go test -race (skipped with --fast) ---
 if [ "$fast" -eq 0 ]; then
-  check go-test-race sh -c 'go test -race -count=1 -p 2 ./... >"$TMPROOT/go-test-race.log" 2>&1; rc=$?; tail -20 "$TMPROOT/go-test-race.log"; exit $rc'
+  check go-test-race sh -c 'go test -race -count=1 -p 2 ./... >"$TMPROOT/go-test-race.log" 2>&1; rc=$?; cat "$TMPROOT/go-test-race.log"; exit $rc'
 else
   echo "SKIP  go-test-race (--fast)"
   skip=$((skip+1))
@@ -217,6 +222,9 @@ else
   skip=$((skip+1))
 fi
 check bench-selftest sh -c 'mkdir -p "$TMPROOT/bench-cache" && XDG_CACHE_HOME="$TMPROOT/bench-cache" sh scripts/bench.sh --self-test'
+
+# --- 8c. the failure summary of this script ---
+check host-verify-summary sh -c 'sh scripts/host_verify_summary_test.sh'
 
 # --- 9. DefaultConfig diff ---
 check default-config-diff sh -c '
@@ -264,7 +272,7 @@ check release-notes sh -c '
 '
 
 # --- 12. e2e harness tests in cmd/wakil ---
-check e2e-harness sh -c 'go test -count=1 -run "E2E" ./cmd/wakil/ >"$TMPROOT/e2e-harness.log" 2>&1; rc=$?; tail -10 "$TMPROOT/e2e-harness.log"; exit $rc'
+check e2e-harness sh -c 'go test -count=1 -run "E2E" ./cmd/wakil/ >"$TMPROOT/e2e-harness.log" 2>&1; rc=$?; cat "$TMPROOT/e2e-harness.log"; exit $rc'
 
 # --- 13. CHANGELOG unreleased heading ---
 check changelog-heading sh -c '
@@ -295,7 +303,7 @@ if command -v go >/dev/null 2>&1; then
   # resize re-wrap test, the per-frame allocation budget and the
   # benchmark smoke. Part C: resize limit + allocation budget are
   # asserted here, not just logged.
-  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke|TestResizeDeferredRewrap|TestKeypressFrameAllocs" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log" | tail -10; exit $rc'
+  check tui-perf sh -c 'go test -count=1 -run "TestFrameCostRegression|TestBenchHarnessSmoke|TestResizeDeferredRewrap|TestKeypressFrameAllocs" ./internal/tui/ >"$TMPROOT/tui-perf.log" 2>&1; rc=$?; cat "$TMPROOT/tui-perf.log"; exit $rc'
 else
   echo "SKIP  tui-perf (go not available)"
   skip=$((skip+1))
@@ -315,7 +323,7 @@ if command -v go >/dev/null 2>&1; then
   # tests (SGR bytes through the real tea.Program): TestScreen,
   # TestSelection, TestOSC52Escape. Part C: the raw-input drag
   # regression tests run here, so a mid-drag jump fails this gate.
-  check tui-screen sh -c 'go test -count=1 -run "TestScreen|TestSelection|TestOSC52Escape" ./internal/tui/ >"$TMPROOT/tui-screen.log" 2>&1; rc=$?; cat "$TMPROOT/tui-screen.log" | tail -10; exit $rc'
+  check tui-screen sh -c 'go test -count=1 -run "TestScreen|TestSelection|TestOSC52Escape" ./internal/tui/ >"$TMPROOT/tui-screen.log" 2>&1; rc=$?; cat "$TMPROOT/tui-screen.log"; exit $rc'
 else
   echo "SKIP  tui-screen (go not available)"
   skip=$((skip+1))
@@ -405,7 +413,7 @@ if command -v go >/dev/null 2>&1 && command -v hisn >/dev/null 2>&1; then
       go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/ \
         >"$TMPROOT/real-hisn.log" 2>&1
       rc=$?
-      tail -20 "$TMPROOT/real-hisn.log"
+      cat "$TMPROOT/real-hisn.log"
       if ! grep -q "^--- PASS\|^--- FAIL" "$TMPROOT/real-hisn.log"; then
         echo "FAIL: all integration tests skipped with hisn '"$hisn_ver"' (>= '"$min_ver"')"
         exit 1
