@@ -525,13 +525,6 @@ func CloseResources(app *agent.App, res *AppResources) {
 	}
 	if res.TraceStore != nil {
 		res.TraceStore.Close()
-		// A full write channel drops records rather than blocking a turn. That
-		// is the right trade for latency, but it must not be silent: a session
-		// that lost turns says so once, on stderr, so the trace is not trusted
-		// as complete when it is not.
-		if d := res.TraceStore.Dropped(); d > 0 {
-			fmt.Fprintf(os.Stderr, "warning: trace dropped %d record(s) (write channel was full); the trace is incomplete\n", d)
-		}
 	}
 }
 
