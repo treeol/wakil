@@ -4,13 +4,13 @@
 # Builds synthetic Wakil trace files (the internal/trace JSONL shape) that
 # carry a SECRET MARKER in every field the real traces carry user content in:
 # tool arguments, tool results, message content, workspace and model names,
-# and a memory key. Then:
+# a memory key, and an extra field inside a tool_calls entry. Then:
 #
 #   1. checks the counts the script prints are exactly right;
 #   2. checks the output layout is exactly TOOL<TAB>CALLS<TAB>SESSIONS;
 #   3. asserts the marker never appears on stdout OR stderr, on every path:
 #      a normal run, several files, --help, a missing file, an unreadable file,
-#      a directory argument, and a malformed trace.
+#      a directory argument, a non-trace JSON file, and a malformed trace.
 #
 # No Go, no network, no real session data. POSIX sh.
 
@@ -109,12 +109,16 @@ fi
 
 # --- case 4: a tool name that contains shell metacharacters is printed -----
 #
-# proves nothing is evaluated, only printed (the name goes through the same
-# allowlisted path as every other name).
-cat > "$tmp/meta.jsonl" <<EOF
-{"type":"turn","session_id":"s4","ts":"2026-11-22T10:00:05Z","sft_eligible":false,"turn_index":1,"turn_type":"tool_loop","tool_calls":[{"name":"weird\$(touch $tmp/pwned)-name","pre_cap_bytes":1,"post_cap_bytes":1,"capped":false}]}
+# proves nothing is evaluated, only printed. The heredoc is QUOTED so the shell
+# does not expand $(...) at fixture-write time; the literal text is what the
+# script must print, and no file must be created.
+cat > "$tmp/meta.jsonl" <<'EOF'
+{"type":"turn","session_id":"s4","ts":"2026-11-22T10:00:05Z","sft_eligible":false,"turn_index":1,"turn_type":"tool_loop","tool_calls":[{"name":"weird$(touch PWNED_PATH)-name","pre_cap_bytes":1,"post_cap_bytes":1,"capped":false}]}
 EOF
-"$script" "$tmp/meta.jsonl" > "$tmp/meta.out" 2>/dev/null || true
+# Substitute the marker placeholder with a real path after the heredoc, so the
+# fixture is built literally but points at this temp dir.
+sed "s|PWNED_PATH|$tmp/pwned|" "$tmp/meta.jsonl" > "$tmp/meta2.jsonl"
+"$script" "$tmp/meta2.jsonl" > "$tmp/meta.out" 2>/dev/null || true
 if [ -e "$tmp/pwned" ]; then
     fail "tool name was evaluated by the shell"
 fi
@@ -124,8 +128,30 @@ else
     fail "unusual tool name missing from the output"
 fi
 
+# --- case 4b: the marker inside a tool_calls entry never reaches output ----
+#
+# The marker is placed in a tool_calls object's extra field, which is the one
+# place the reader walks that could plausibly echo a whole object.
+cat > "$tmp/intool.jsonl" <<EOF
+{"type":"turn","session_id":"s6","ts":"2026-11-22T10:00:06Z","sft_eligible":false,"turn_index":1,"turn_type":"tool_loop","tool_calls":[{"name":"read_file","pre_cap_bytes":1,"post_cap_bytes":1,"capped":false,"arguments":"$MARKER-in-toolcall","result":"$MARKER-result-in-toolcall"}]}
+EOF
+got=$("$script" "$tmp/intool.jsonl" 2>"$tmp/intool.err")
+printf '%s\n' "$got" > "$tmp/intool.out"
+assert_no_marker "marker inside tool_calls (stdout)" "$tmp/intool.out"
+assert_no_marker "marker inside tool_calls (stderr)" "$tmp/intool.err"
+if [ "$got" = "$(printf 'TOOL\tCALLS\tSESSIONS\nread_file\t1\t1')" ]; then
+    pass "an entry with extra fields still counts"
+else
+    fail "entry with extra fields"
+    printf '  got: %s\n' "$got" >&2
+fi
+
 # --- case 5: help ---------------------------------------------------------
-"$script" --help > "$tmp/help.out" 2>"$tmp/help.err" || true
+if "$script" --help > "$tmp/help.out" 2>"$tmp/help.err"; then
+    pass "--help exits zero"
+else
+    fail "--help exits non-zero"
+fi
 if grep -q 'TOOL' "$tmp/help.out"; then
     pass "--help prints usage"
 else
@@ -156,6 +182,35 @@ else
     pass "a directory argument exits non-zero"
 fi
 assert_no_marker "directory argument (stderr)" "$tmp/dir.err"
+
+# --- case 8b: an unreadable file is an error ---------------------------
+#
+# Skipped when running as root, where -r is always true regardless of mode.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "  SKIP unreadable file (running as root)"
+else
+    printf '{"type":"turn","session_id":"s7","tool_calls":[]}\n' > "$tmp/noread.jsonl"
+    chmod 000 "$tmp/noread.jsonl"
+    if "$script" "$tmp/noread.jsonl" > /dev/null 2>"$tmp/noread.err"; then
+        fail "an unreadable file should exit non-zero"
+    else
+        pass "an unreadable file exits non-zero"
+    fi
+    assert_no_marker "unreadable file (stderr)" "$tmp/noread.err"
+    chmod 644 "$tmp/noread.jsonl"
+fi
+
+# --- case 8c: valid JSON that is not a trace is an error ----------------
+#
+# A non-empty file with no turn record is almost certainly the wrong file; an
+# empty report would hide the mistake.
+printf '{"hello":"world","value":1}\n' > "$tmp/notatrace.jsonl"
+if "$script" "$tmp/notatrace.jsonl" > /dev/null 2>"$tmp/notatrace.err"; then
+    fail "a non-trace JSON file should exit non-zero"
+else
+    pass "a non-trace JSON file exits non-zero"
+fi
+assert_no_marker "non-trace file (stderr)" "$tmp/notatrace.err"
 
 # --- case 9: a malformed trace is an error, and its content never leaks ---
 #

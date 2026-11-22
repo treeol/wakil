@@ -82,7 +82,7 @@ select(type == "object" and .type == "turn")
 '
 
 tmp=$(mktemp "${TMPDIR:-/tmp}/context-usage.XXXXXX")
-trap 'rm -f "$tmp"' EXIT HUP INT TERM
+trap 'rm -f "$tmp" "$tmp.totals"' EXIT HUP INT TERM
 
 for f in "$@"; do
     # Parse this file; on malformed input stop with a message naming only the
@@ -93,9 +93,27 @@ for f in "$@"; do
     fi
 done
 
+# A file of valid JSON that is not a trace (no turn records at all) yields no
+# lines. That is not the same as "the trace has no tool calls": a non-empty
+# file with no turn record is almost certainly the wrong file, and silently
+# reporting an empty table would hide it. Only genuinely empty input is an
+# empty report.
+input_bytes=0
+for f in "$@"; do
+    b=$(wc -c < "$f" 2>/dev/null || echo 0)
+    input_bytes=$((input_bytes + b))
+done
+if [ "$input_bytes" -gt 0 ] && [ ! -s "$tmp" ]; then
+    echo "$prog: no turn records found in the given file(s) — are these Wakil traces?" >&2
+    exit 2
+fi
+
 # Totals: per tool, call count and distinct session count. awk keeps two
 # associative arrays; nothing but the tool name and two integers is printed.
-awk -F '\t' '
+#
+# The pipeline's exit status is checked explicitly: POSIX sh has no pipefail,
+# and without this an awk or sort failure would be masked by the final printf.
+if ! awk -F '\t' '
     $1 == "" { next }
     {
         name = $1
@@ -111,7 +129,15 @@ awk -F '\t' '
             printf "%s\t%d\t%d\n", n, calls[n], sessions[n] + 0
         }
     }
-' "$tmp" | LC_ALL=C sort -t "$(printf '\t')" -k2,2nr -k1,1 | {
+' "$tmp" > "$tmp.totals"; then
+    echo "$prog: failed to total the tool counts" >&2
+    exit 2
+fi
+
+{
     printf 'TOOL\tCALLS\tSESSIONS\n'
-    cat
+    LC_ALL=C sort -t "$(printf '\t')" -k2,2nr -k1,1 "$tmp.totals"
+} || {
+    echo "$prog: failed to sort the report" >&2
+    exit 2
 }

@@ -1072,8 +1072,9 @@ user supplied), never from file content. The awk stage prints only
 `scripts/context_usage_test.sh` builds synthetic traces in which **every**
 content-bearing field carries the marker
 `SECRET-MARKER-4f1c2a-do-not-print`: `tool_arguments`, `tool_result`,
-`message`, `memory_key`, `model`, `workspace`, and a malformed line containing
-it. It then checks ten cases:
+`message`, `memory_key`, `model`, `workspace`, an **extra field inside a
+`tool_calls[]` entry**, and a malformed line containing it. It then checks
+fourteen cases:
 
 ```
 $ sh scripts/context_usage_test.sh
@@ -1081,33 +1082,58 @@ $ sh scripts/context_usage_test.sh
   PASS counts accumulate across two files
   PASS a repeated session id counts once for SESSIONS
   PASS an unusual tool name is printed, not evaluated
+  PASS an entry with extra fields still counts
+  PASS --help exits zero
   PASS --help prints usage
   PASS no arguments exits non-zero
   PASS a missing file exits non-zero
   PASS a directory argument exits non-zero
+  PASS an unreadable file exits non-zero
+  PASS a non-trace JSON file exits non-zero
   PASS a malformed trace exits non-zero
   PASS an empty trace yields the header only
 context_usage_test: all checks passed
 ```
 
-The marker assertion runs on **stdout and stderr** for the normal run, the
-two-file run, `--help`, the missing-file path and the malformed-trace path.
+Corrections after review:
+- The draft's header claimed an unreadable-file case that **did not exist**;
+  case 8b now does (skipped under root, where `-r` is moot).
+- The marker assertion now also runs on stdout for the two-file and
+  in-`tool_calls` cases, not only stderr.
+- The shell-metacharacter fixture heredoc is **quoted** so the expansion the
+  test claims to disprove does not happen at fixture-write time.
+- `--help`'s exit code is asserted, not swallowed.
+- A non-trace JSON file is now an error (case 8c), matching §6.2's claim.
 
 The test was itself checked for brain-deadness: printing every raw record to
-stderr (a deliberate leak) makes it report
+stderr (a deliberate leak) makes it report four failures, including
+`FAIL one file (stderr): the secret marker leaked into the output`. The leak was
+reverted before commit. (This brain-deadness check is a manual step recorded
+here; it is **not** scripted into the test, so it is not reproducible from the
+file alone — a limitation, not a hidden one.)
 
-```
-  FAIL one file (stderr): the secret marker leaked into the output
-  FAIL two files (stderr): the secret marker leaked into the output
-  FAIL malformed trace (stderr): the secret marker leaked into the output
-```
+Also verified: both scripts pass under `sh` (bash) and `dash`, and both are
+accepted by `sh -n`. **`shellcheck` is not installed in this environment**, so
+the `shellcheck -s sh` gate CI runs has **not** been exercised locally — see
+§Unverified.
 
-so the assertion is not vacuous. (The leak was reverted before commit.)
+### Exit-status honesty
 
-Also verified: the script and the test both pass under `sh` (bash) and under
-`dash`, and both are accepted by `sh -n`. **`shellcheck` is not installed in
-this environment**, so the `shellcheck -s sh` gate CI runs has **not** been
-exercised locally — marked in §Unverified.
+POSIX `sh` has no `pipefail`, so the original pipeline
+(`awk … | sort … | { printf; cat; }`) would have masked an `awk` or `sort`
+failure behind the trailing `printf`. The script now writes the totals to a
+temp file, checks `awk`'s status, then checks `sort`'s — so a failure surfaces
+as exit 2 instead of an empty-but-successful report.
+
+### A residual risk on tool names
+
+Tool names are printed verbatim, and MCP tool names are server-supplied
+(`server__tool`), so with an MCP server a *name* is effectively untrusted
+output. The script cannot sanitise it without breaking its purpose; the honest
+statement is: the privacy contract covers everything the trace records *about*
+the conversation, but a hostile MCP server could encode content in a tool
+name. That is a property of the MCP server, not of this script, and it is
+recorded rather than silently accepted.
 
 ## 6.5 The host command for the user
 
@@ -1140,108 +1166,209 @@ that echoes its input.
 
 ## 7.0 The cost model everything else follows from
 
-A request today carries **25 223 est. tokens** of static prefix (15 333
-preamble + 9 890 tools, §1.2/§1.3).
+### 7.0.1 The ledger (corrected)
 
-Under the cache regime measured in §3.2 (two breakpoints: `messages[0]` and the
-moving tail; cache reads at whatever discount the provider applies), the
-arithmetic that governs every decision below is:
+An earlier draft of this section omitted the non-prompt part of the preamble
+and stated 9 261 core tokens. That was wrong by 2 119 est. tokens — the
+AGENTS.md section (1 676) and the digest/date/cwd/environment lines (~443),
+which §7.10 keeps in core. The ledger below is the corrected one, in **one
+unit (estimated tokens)** throughout:
 
-| Quantity | Value |
+| Part | Today | Proposed core | Note |
+|---|---|---|---|
+| Prompt sections | 13 214 | 4 525 | §5.1; assumes Shell/verified/Interaction are each ~halved (**judgement, not measured**) |
+| AGENTS.md section | 1 676 | 1 676 | kept core (§7.10) |
+| Digest + date + cwd + sandbox + repo map + network | 443 | 443 | kept core |
+| Tool definitions | 9 890 | ≈ 4 100 | §5.2 corrected for the double-count (§7.1.1) |
+| Writing style | 0 | 383 | only when a style file/default is active (§7.5) |
+| Module index | 0 | 172 | §7.2 |
+| `load_module` definition | 0 | 81 | |
+| **Total static prefix** | **25 223** | **≈ 11 380** | |
+
+So the **corrected core is ≈ 11 380 est. tokens**, inside the 10-12k target —
+but with less margin than the draft claimed. The load-bearing assumption is
+the prompt cuts: **if the Shell / "verified" / Interaction cuts are rejected,
+core is ≈ 12 555 and the 10-12k target is missed.** Any repo whose AGENTS.md is
+larger than this one's moves further out. §5.4 already warns that a single
+static table misstates the typical case.
+
+| Quantity | Corrected value |
 |---|---|
 | Static prefix today | 25 223 est. tokens/request |
-| Estimated core + style + index + loader | 9 261 est. tokens |
-| Raw prefix reduction | 15 962 est. tokens (**estimate**) |
-| At a 0.1× cache-read discount, the *recurring* saving | ≈ 1 596 token-equiv/request (**estimate**) |
-| One module-load round trip over a 9 261-token cached prefix (+ ~120 output tokens) | ≈ 1 046 token-equiv |
+| Corrected core + style + index + loader | ≈ 11 380 est. tokens |
+| Raw prefix reduction | ≈ 13 843 est. tokens (**estimate**) |
+| Recurring saving at a 0.1× cache-read discount | ≈ 1 384 token-equiv/request (**estimate**) |
+| One module-load round trip over an 11 380-token prefix | ≈ 1 258 token-equiv (see 7.0.2) |
 
-**Consequence, and it is the central finding of this document:** with a 0.1×
-cache-read discount, the recurring saving from shrinking the prefix is about
-**1.6k token-equiv per request**, and **one** module-load round trip costs about
-**1.0k**. So:
+### 7.0.2 The break-even, stated the right way round
 
-- A module must be needed for **about 5+ turns** before loading it pays for
-  itself (break-even table below).
-- Loading a module that turns out **not** to be needed costs the full round
-  trip and saves nothing — it is a **net loss** on that request.
-- Therefore the design must **prefer pre-loading from the task text** (free,
-  deterministic) over model-initiated loading, and must make loading
-  *sticky* (a loaded module stays loaded for the session, so the round trip is
-  amortised).
+The draft got the direction of this wrong, and the correction changes the
+recommendation. Once a module is **loaded**, its bytes are re-sent on every
+subsequent request — so loading it mid-session does **not** amortise; the load
+cost is paid once on top of a cost you then pay anyway.
 
-Break-even table (cache-read 0.1×, load cost 1 046 token-equiv):
+What a mid-session load actually buys is: **the saving on the requests that
+happened before it was loaded**, minus the load cost. Therefore:
 
-| Module size | Saving per turn while unloaded | Break-even (turns) |
+- If a module is needed on the **first** request of a session, loading it later
+  is **strictly worse than having it in core** — no number of later turns
+  recovers it.
+- A mid-session load pays off only when the module was **not** needed for some
+  number of requests, and the alternative was having it in core all along. That
+  is: `requests_without_needing_it × module_size × discount > load_cost`.
+- Pre-loading (from the task text, or from session config) has **no load cost**
+  and is therefore always correct when the prediction is right — which is why
+  §7.3 makes it the default and §7.5's style file is static.
+
+Recalculated table — "how many requests must a module be **not needed** before
+one mid-session load repays itself" (cache-read 0.1×, load ≈ 1 258
+token-equiv):
+
+| Module size | Saved per request while unloaded | Requests without needing it to break even |
 |---|---|---|
-| 2 100 (memory) | 210 | 5.0 |
-| 1 768 (subagents) | 177 | 5.9 |
-| 1 246 (search) | 125 | 8.4 |
-| 1 111 (async) | 111 | 9.4 |
-| 936 (capture_skill_template) | 94 | 11.2 |
-| 693 (long-session) | 69 | 15.1 |
-| 562 (git) | 56 | 18.6 |
-| 440 (collapse_context) | 44 | 23.8 |
-| 338 (documentation upkeep) | 34 | 30.9 |
-| 172 (the index itself) | 17 | 60.8 |
+| 2 100 (memory) | 210 | 6.0 |
+| 1 768 (subagents) | 177 | 7.1 |
+| 1 246 (search) | 125 | 10.1 |
+| 1 111 (async) | 111 | 11.3 |
+| 936 (capture_skill_template) | 94 | 13.4 |
+| 693 (long-session) | 69 | 18.2 |
+| 562 (git) | 56 | 22.5 |
+| 440 (collapse_context) | 44 | 28.6 |
+| 338 (documentation upkeep) | 34 | 37.0 |
+| 172 (the index itself) | 17 | 74.0 |
 
-**Read this honestly:** for short sessions (the bench's tasks are mostly
-one-turn), *nothing* pays off unless it is pre-loaded. The saving in the bench
-is the **prefix reduction on the first request plus per-iteration re-sends**,
-not module loading. This is why stage 1 is tools (which shrink the prefix
-without any loading at all) and why §8 measures tokens, not round trips.
+**Load cost, honestly priced** (this was understated too):
 
-**And the honest counter-case:** if the provider does *not* discount cache
-reads heavily (a local endpoint with automatic prefix caching, or no caching at
-all), the same 15 962-token reduction saves ~16k token-equiv **every request**,
-and module loading becomes attractive. The design must therefore be
-**conditional on the endpoint**, not universally right. §7.9 stages it so that
-the cheap wins land first.
+- the cached prefix re-read: `11 380 × 0.1 ≈ 1 138` token-equiv, and on a later
+  request it is `core + conversation so far`, not just core;
+- **plus** the tool call's output tokens. The draft priced 120 output tokens
+  at 1:1; output typically bills at 3-5× **uncached input**, so 120 output
+  tokens is ≈ 360-600 input-token-equiv (**recall, unverified for this
+  provider** — must be read from `internal/proxy/cost.go` and the provider's
+  rate card before it is trusted);
+- **plus** the cache-write premium when the module's bytes are first inserted
+  (**recall: ~1.25×**, unverified);
+- **plus** the module's own bytes on that request.
+
+`11 380 × 0.1 + 480 ≈ 1 618` token-equiv with the output multiplier included,
+rather than 1 258. The table above uses the conservative 1 258; the real
+figure is worse, which strengthens the conclusion.
+
+**Consequence, and it is the central finding:** for short sessions — which is
+every bench task except `rename` — **module loading does not pay for itself at
+all.** The real, unconditional win is the **prefix reduction** (stage 1 + 2),
+which needs no model cooperation and no round trip. Module *loading* is a
+long-session mechanism, and the design must say so plainly rather than sell it
+as a general saving.
+
+**The honest counter-case, corrected.** The draft claimed "if there is no cache
+discount, module loading becomes attractive." That is wrong for the same reason:
+with no discount, a mid-session load costs the **entire prefix** (≥ 11k) and
+saves at most one module (≤ 2.1k) per request — it never repays. What a missing
+discount changes is that the **prefix reduction becomes 10× more valuable**
+(≈ 13 843 token-equiv per request instead of ≈ 1 384), which makes stages 1-2
+*more* worth doing and module loading *no* more attractive. The design is
+therefore **unconditionally right about stages 1-2** and **conditional about
+loading**.
 
 ## 7.1 The module list
 
-Twelve modules. Sizes are the measured prompt-section and tool-group sizes from
-§5, rounded; all are **estimates**.
+> **Consistency note (corrected after review).** An earlier draft of this
+> section contradicted §5. The rules now applied, once, and used consistently
+> below and in §7.2:
+>
+> - **`dispatch_subagent` / `dispatch_subagents` are CORE** (they are the
+>   entry points for the most common verb) — the `subagents` module carries
+>   only the *prompt section*, not these two definitions. §7.1's earlier
+>   "1 768 + 1 050" double-counted; the module is 1 768 only.
+> - **The five async tools are CORE** (`check_pending`,
+>   `wait_for_completion`, `read_process_log`, `kill_process`,
+>   `run_background`). The `async` module carries **only the prompt section**
+>   (1 111), not 4 546 B of tools. Earlier draft double-counted.
+> - **`delete_file` is core** (it pairs with `write_file`/`edit_file`).
+>   `edit-extras` = `move_file` + `write_binary_file` only.
+> - **"What verified means" is core (compact)**; `implement` = Documentation
+>   upkeep only.
+> - **The memory digest line stays core** (§4.4); the `memory` module carries
+>   the prompt section + the 8 memory tool definitions, and the digest stays
+>   in the prefix.
+> - **`memory_search` and `list_skills` stay core** as discovery handles, even
+>   though their sibling tools are deferred.
 
-| Module | Contains | Bytes | Est. tokens | Loaded by |
-|---|---|---|---|---|
-| `memory` | Durable Memory section + 8 memory tool defs + digest line | ≈ 8 400 + 5 437 + 591 | 2 100 + 1 359 + 147 | pre-load if the task mentions memory/remember; else loader |
-| `subagents` | Subagents section + `dispatch_subagent(s)` defs | ≈ 7 073 + 4 200 | 1 768 + 1 050 | pre-load on any delegation verb |
-| `search` | Search & Research + searxng tools | ≈ 4 987 + 1 135 | 1 246 + 283 | pre-load on "search/find/web" |
-| `async` | Async execution section + async tool defs | ≈ 4 446 + 4 546 | 1 111 + 1 136 | pre-load if a tool result spills or a background job starts |
-| `skills` | Skills section + 10 skill tool defs | ≈ 1 617 + 10 996 | 404 + 2 749 | pre-load on skill verbs |
-| `long-session` | Truncated results/collapse section + `collapse_context` | ≈ 2 772 + 1 762 | 693 + 440 | pre-load when `context_mode: long-session` (free: known at startup) |
-| `git` | 5 git tool defs | 2 248 | 562 | pre-load if the repo has `.git` |
-| `staging` | 5 staging tool defs | 2 304 | 576 | loader only (subagent handoff is rare in the parent) |
-| `edit-extras` | `move_file`, `write_binary_file`, `delete_file` | ≈ 2 229 | 557 | loader only |
-| `implement` | Documentation upkeep + "what verified means" | ≈ 2 132 | 532 | pre-load on implement verbs |
-| `write` | File vs. Inline | 585 | 146 | loader only |
-| `misc` | `math_eval`, `open_url` | 1 064 | 266 | loader only |
+Twelve modules. Sizes are the measured §5 values, rounded; all are
+**estimates**.
 
-**Core stays** (never unloaded): the precedence ladder, Role, Core loop,
-Secrets, Shell, Files, External side-effect gating, Honesty Invariants,
-Recovery, Interaction & Output (compact), plus the ~16 always-used tools
-(`read_file`, `read_file_full`, `list_dir`, `search_files`, `find_files`,
-`run_shell`, `write_file`, `edit_file`, `run_background`, `kill_process`,
-`read_process_log`, `check_pending`, `wait_for_completion`, `load_skill`,
-`load_module`, and the git tools *only* if §7.9 stage 1 shows they are needed).
+| Module | Contains | Bytes | Est. tokens |
+|---|---|---|---|
+| `memory` | Durable Memory section + 8 memory tool defs (digest stays core) | ≈ 8 400 + 5 437 | 2 100 + 1 359 = **3 459** |
+| `subagents` | Subagents section **only** (both dispatch tools are core) | ≈ 7 073 | **1 768** |
+| `search` | Search & Research section + searxng tools | ≈ 4 987 + 1 135 | 1 246 + 283 = **1 529** |
+| `async` | Async execution section **only** (all 5 tools are core) | ≈ 4 446 | **1 111** |
+| `skills` | Skills section + 8 skill tool defs (list/search stay core) | ≈ 1 617 + 8 912 | 404 + 2 228 = **2 632** |
+| `long-session` | Truncated results/collapse section + `collapse_context` | ≈ 2 772 + 1 762 | 693 + 440 = **1 133** |
+| `git` | 5 git tool defs | 2 248 | **562** |
+| `staging` | 5 staging tool defs | 2 304 | **576** |
+| `edit-extras` | `move_file`, `write_binary_file` | ≈ 1 624 | **406** |
+| `implement` | Documentation upkeep only | 1 353 | **338** |
+| `write` | File vs. Inline | 585 | **146** |
+| `misc` | `math_eval`, `open_url` | 1 064 | **266** |
+| *(conditional)* `browser` | 8 browser tools | 4 685 | 1 171 |
+| *(conditional)* `lsp` | 4 LSP tools | 2 575 | 643 |
+| *(conditional)* `mashura` | 4 Mashūra tools | not measured (no key) | — |
+| *(conditional)* `mcp` | per-server tools | unbounded | — |
 
-### Is 10-12k reachable?
+**MCP/LSP/Browser/Mashūra now have modules** — the earlier draft omitted them,
+which contradicted §5.2's "where the design pays off most." They are
+config-gated as today, so their module is simply the mechanism that keeps them
+out of the core array.
 
-**Yes, at ~9 261 est. tokens** — but only by cutting *both* the prompt and the
-tools, and it is an estimate built from other estimates. To be precise about
-what it depends on:
+### 7.1.1 The core tool list, and its sum
 
-- prompt core 4 525 (from §5.1, which assumes the Shell, "verified" and
-  Interaction sections are each cut by roughly half — **not measured**, a
-  judgement),
-- tools core 4 100 (from §5.2: keeping ~16 tools and shortening the two
-  dispatch descriptions),
-- style 383, index 172, loader 81.
+Core tools (§5.2 + the rules above), measured from the per-tool table:
 
-If the Shell/verified/Interaction cuts are rejected, core prompt is ~5 700 and
-the total is ~10 400 — still inside the target. If the tool cuts are rejected,
-the total is ~15 700 and the target is **not** reachable. The tool side is the
-load-bearing assumption.
+| Tool | Bytes |
+|---|---|
+| `read_file` | 1 069 |
+| `read_file_full` | 844 |
+| `list_dir` | 805 |
+| `search_files` | 791 |
+| `find_files` | 599 |
+| `run_shell` | 786 |
+| `write_file` | 563 |
+| `edit_file` | 1 032 |
+| `delete_file` | 605 |
+| `run_background` | 915 |
+| `kill_process` | 395 |
+| `read_process_log` | 382 |
+| `check_pending` | 650 |
+| `wait_for_completion` | 442 |
+| `dispatch_subagent` (shortened ≈ −50 %) | ≈ 1 140 |
+| `dispatch_subagents` (shortened ≈ −50 %) | ≈ 960 |
+| `memory_search` | 671 |
+| `list_skills` | 291 |
+| `load_skill` | 899 |
+| `load_module` (new) | ≈ 325 |
+| **Total** | **≈ 15 164 B ≈ 3 791 est. tokens** |
+
+So the corrected core tool figure is **≈ 3 800 est. tokens**, not 4 100. The
+§7.0 ledger uses 4 100 as a conservative upper bound (it leaves room for
+`context_mark` when pruning is on, which adds ≈ 1 518 est. tokens on top —
+another reason prune-on must be measured separately).
+
+### 7.1.2 Is 10-12k reachable?
+
+**Yes at ≈ 11 380 est. tokens**, but with two explicit dependencies:
+
+1. **The prompt cuts** in §5.1 (Shell, "verified", Interaction each roughly
+   halved) are a **judgement, not a measurement**. Reject them and core is
+   ≈ 12 555 — outside the target.
+2. **AGENTS.md stays core** (§7.10), so any repo with a bigger AGENTS.md is
+   outside the target by definition. This is an accepted limitation, not an
+   oversight.
+
+If the tool side keeps `dispatch_subagent(s)` unshortened and
+`memory_search`/`list_skills` core, the tool figure is ≈ 4 700 and examined
+total ≈ 12 000 — still just inside, with no margin.
 
 ## 7.2 The index format
 
@@ -1279,61 +1406,121 @@ sizes and names cannot drift from the shipped modules.
 
 1. **Pre-loading by Wakil from the task text** (default, free). At turn entry,
    `classifyRequest` (already exists, `internal/agent/classifier.go:23`) is
-   extended to return a **set of module names** instead of a boolean. It runs
-   before `ensurePreamble`, so the modules are part of `messages[0]` on the
-   first request — **no round trip, no invalidation after the fact**.
+   extended to return a **set of module names** instead of a boolean.
+   - **Turn 1 only.** It runs before `ensurePreamble`, so pre-loaded modules are
+     part of `messages[0]` on the first request — no round trip, no
+     invalidation after the fact. This is the *only* point a pre-load can go
+     into the prefix.
+   - **Turn 2+ with a new match** cannot mutate `Conv[0]` (that is the
+     one-invalidation-per-day rule, §3.4). Such a match therefore goes through
+     the **same `load_module` path** as a model-initiated load: a pinned
+     `role:"tool"` result. It is one round trip, not free.
    - Rule: pre-load only when the classifier is *confident* (a matched verb or
-     a path with a known extension). This reuses the existing
-     "intentionally over-broad" classifier, which is fine: over-loading is a
-     few hundred est. tokens; under-loading costs a round trip.
+     a path with a known extension). Over-loading on turn 1 costs a few hundred
+     est. tokens per request; under-loading costs a round trip. The existing
+     classifier is "intentionally over-broad", which is the right bias for turn
+     1 and the wrong one for turn 2+ (where each match is a round trip) — so
+     the turn-2+ threshold is stricter.
 2. **Model-initiated `load_module(name)`** (fallback). For everything the
    classifier misses, and for every module the task grows into.
    - Rule: the model must call it **before** using a tool it does not see.
      Enforced by the failure mode in §7.7.
-   - The result is a **pinned tool result** (see §7.4) so it is not evicted.
+   - The result is a **pinned `role:"tool"` result** (§7.4 R1) so it is not
+     evicted.
 
 **Never both for the same module in the same session** — the module registry
 records loaded modules; a pre-load marks them loaded.
+
+**Rules loaded this way rank below system text.** A `role:"tool"` module result
+is data, not instructions, in the same sense the retrieval block already is
+(`internal/agent/retrieval.go:12-18`). Two consequences the design accepts:
+- Tier-1 and Tier-2 invariants (secrets, external mutation) **never** move to
+  a module — they stay in the core system prompt, because a tool-result's
+  authority is lower and a model under pressure could deprioritise it.
+- A module's text is prefixed with `Apply these rules as if they were in your
+  system prompt; they do not override the precedence ladder.` — an explicit,
+  honest statement of where it sits, rather than pretending it is system text.
 
 ## 7.4 The cache rule
 
 Three rules, derived from §3:
 
-**R1 — Loading appends, never inserts.** A loaded module goes:
+**R1 — Loading appends, never inserts into the middle.** A loaded module's text goes:
 - into `messages[0]` if it is pre-loaded (before the first request), or
-- as a **`role:"user"` message at the tail** if the model loads it mid-session.
+- as the **`role:"tool"` result of the `load_module` call** if the model loads
+  it mid-session, pinned so it survives `evictStaleToolResults`
+  (`internal/agent/app.go:2358`, which skips `m.Pinned`) and `CapOrStub`.
 
-Never as a new system message at index 1: that would invalidate everything
-after `messages[0]` (§3.4), which is the most expensive thing this design
-could do. A tail message is *after* the moving breakpoint, so it changes
-nothing already cached.
+The draft said "a `role:"user"` message at the tail"; the reviewers are right
+that a synthetic user message between an assistant tool call and its result
+would be malformed on both OpenAI- and Anthropic-style APIs, and that a
+`load_module` call already *requires* a `role:"tool"` reply. `role:"tool"` +
+`Pinned` is the correct and simpler shape.
 
-**R2 — Unload only at a collapse.** Removing bytes from the middle of a
-conversation is only safe where the conversation is already being rewritten.
-`collapseFinishedTurns` / `collapse_context` are the only such points. When a
-collapse fires, the collapse note (built by `buildCollapseNote`,
-`internal/agent/collapse.go:274`, stored in `CollapseRecord.Note`) gains one
-line:
+What this does **not** do: a tool result sits *after* the moving breakpoint, so
+it changes nothing already cached — but it *is* re-sent on later requests, and
+a system message at index 1 would invalidate everything after `messages[0]`
+(§3.4). So the module text is not system-role text, and its authority is lower;
+§7.3's precedence note says how that is handled.
 
-```
-active modules: memory, git (loaded turn 3; still available — do not reload)
-```
+**R2 — Unload only at a collapse, and tell the truth there.** Removing bytes
+from the middle of a conversation is only safe where the conversation is
+already being rewritten. `collapseFinishedTurns` / `collapse_context` are the
+only such points.
 
-and the module registry drops modules not used since the previous collapse.
-The note is the model's memory of what it still has; without it a collapse
-would silently unload and the model would either re-load (paying twice) or
-proceed without rules it needs.
+The draft's R2 said a collapse note would read "still available — do not
+reload" while the registry dropped the module. That is a **falsehood the model
+would act on**: a tail-loaded module's text is inside the collapsed span, so
+after collapse it is *gone*. Corrected rule:
 
-**R3 — Never mutate `tools` mid-session.** §3.3 leaves the tools-cache
-position unverified; if tools are inside the cacheable prefix, adding one
-mid-session busts everything. So deferred tools are **not** added to the array
-mid-session. Instead:
-- the tool *schemas* stay in the array only for **core** tools;
-- a single always-present **loader/dispatcher** (`load_module`) carries the
-  module text;
-- if a tool must be callable, it is either core (in the array from the first
-  request) or reached through a stable generic entry. The exact shape is
-  decided by §7.9 stage 1's measurement, not guessed here.
+- **Pre-loaded modules** (in `messages[0]`) cannot be unloaded without
+  invalidating the prefix, so they are **never** unloaded. They are in the
+  core prefix for the session by construction.
+- **Tail-loaded modules** are gone once their turn is collapsed. The collapse
+  note must say so:
+  `modules loaded this session and since collapsed away: memory, git — call load_module(name) again if still needed.`
+- **Nothing is silently dropped.** The registry keeps the names (so a reload is
+  cheap and the model is not confused), drops the *text*, and the note states
+  exactly that.
+- "Used since the last collapse" is defined only for modules with a tool
+  (`memory`, `git`, `staging`, `skills`, `search`, …). **Prompt-only modules**
+  (`implement`, `write`, `long-session`) have no signal, so they are treated as
+  used if they were pre-loaded and never unloaded — i.e. their unload is a
+  no-op.
+
+Net effect: in practice **nothing is unloaded mid-session**; a collapse simply
+tells the model which loaded modules it lost. That is a weaker claim than the
+draft made, and it is the only claim the mechanics support.
+
+**R3 — Tools are split once, at session start; mid-session a generic dispatcher
+is used.** The draft's R3 said "never mutate `tools` mid-session" and then left
+Stage 1's mechanism undefined — a contradiction all three reviewers caught.
+Resolved as follows:
+
+- `tools` is **fixed for the session** at `BuildTools` time: core tools only.
+  It never grows mid-session (that is the cache protection R3 was for).
+- A deferred tool is invoked through **one always-present generic
+  dispatcher**, `load_module` — i.e. `load_module(name)` both loads a module's
+  *rules* and returns the *schemas* of its tools, and the actual call goes
+  through a second always-present entry, `call_tool(name, arguments)`.
+- **The trade-off is stated, not hidden:** a generic dispatcher loses
+  provider-side JSON-schema validation and per-tool argument checking. That is
+  the price of keeping `tools` byte-stable. It is mitigated by validating
+  `call_tool`'s arguments against the schema Wakil already holds before
+  dispatching, and by gating a `call_tool` call exactly as the named tool would
+  be gated (`IsGatedTool` lookup on the inner name — the gate list is a single
+  source in `internal/tools/tools.go`).
+- **This is a real decision, and it has an alternative:** if §3.3's
+  measurement shows `tools` is **not** in the cacheable prefix, then R3 is
+  unnecessary and deferred tools can be added to the array directly, keeping
+  full schema validation. §7.9 Stage 1 therefore *starts* by measuring that,
+  and the dispatcher exists only if the measurement says tools are cached.
+
+So Stage 1 is no longer circular: it first measures the tools-cache position,
+then either (a) adds tools mid-session (if uncached) or (b) ships the
+dispatcher (if cached). The design commits to (b) as the default because it is
+safe under either answer, and lists (a) as the simpler variant if the
+measurement permits.
 
 ## 7.5 The writing style as a user-editable file
 
@@ -1344,19 +1531,30 @@ style. Neither is the right home.
 Design:
 
 - One file: `${XDG_CONFIG_HOME:-$HOME/.config}/wakil/writing-style.md`.
-- Loaded as its **own system message at index 1**, before the index — a
-  fixed, session-stable position (the style does not depend on the task), so
-  it costs one prefix and never invalidates mid-session.
+- **Folded into `messages[0]`, not a separate index-1 message.** The draft put
+  it at index 1, which §3.4 itself calls a shipped invalidation hazard and
+  which collides with the code style-guide message's slot. The writing style is
+  session-static (it does not depend on the task), so it belongs in the stable
+  prefix: `buildPreambleForNetwork` appends it after the core prompt and before
+  AGENTS.md, so it is inside `messages[0]` and costs nothing after the first
+  request.
+- **Size cap.** A user file can be arbitrary; cap the section at 4 096 B
+  (≈1 024 est. tokens) and mark truncation in the section header, exactly as
+  `agentsMDMaxFile` does (`internal/agent/agentsmd.go:21`).
 - **Precedence**: Wakil's safety rules > AGENTS.md > the user's style file >
   built-in default. Same ladder the prompt already states.
 - **Never overwritten by a prompt update**: the file is user-owned and outside
   the repo. A binary update that changes `prompts/agent.txt` does not touch it.
   The built-in default ships embedded (`prompts/style.txt`) and is used when
   the file is absent — same precedence shape as `loadAgentPrompt`
-  (`internal/wiring/bootstrap.go:649`) already implements for the agent prompt,
-  including the version-line mechanism.
+  (`internal/wiring/bootstrap.go:649`).
+- **No version line on the user's file.** The draft proposed reusing
+  `loadAgentPrompt`'s version mechanism; that would make an unversioned user
+  file a second-class citizen and risks a silent fallback to the default. A
+  writing style is prose, not a contract — no version, no fallback: absent file
+  → default, present file → user's, always.
 - `wakil init` writes the default on request; `wakil config show` reports which
-  one is active (source + version), mirroring `/prompt status`
+  one is active (source), mirroring `/prompt status`
   (`internal/agent/commands.go:361-372`).
 
 This is the smallest change of the four stages and the most clearly valuable:
@@ -1393,24 +1591,39 @@ parent, not for the member.
 
 ## 7.7 When a model needs a module it did not load
 
-**Detection.** Two signals, both cheap:
-1. **Unknown tool call.** `executeToolCall` falls through `default:
-   handleMCPTool` (`internal/agent/app.go:3407-3408`), which returns
+**Detection.** Three signals, not two — the draft's single unknown-tool signal
+is unreliable, because a model that never learned a tool exists usually does
+not call it by name; it substitutes a core tool or answers without it.
+
+1. **Unknown tool call** (rare but exact). `executeToolCall` falls through
+   `default: handleMCPTool` (`internal/agent/app.go:3407-3408`), which returns
    `ERROR: unknown tool "name"` for a non-MCP name
-   (`internal/agent/tool_handlers.go:2077`). Today that message is a dead end.
-   Replace it, for names that belong to a module's tool set, with:
+   (`internal/agent/tool_handlers.go:2077`). For names that belong to a
+   module's tool set, replace it with:
    `ERROR: tool "memory_put" belongs to module "memory", which is not loaded.
    Call load_module("memory") and then retry.`
-2. **Self-report.** The model says it cannot find a rule. Nothing to build;
-   the index makes this rare.
+2. **Substitution signal** (the common case). The model calls a *core* tool in
+   a way that only makes sense if it had the module: e.g. `run_shell` with a
+   `git` command while `git` is unloaded, or `write_file` to a `*.md` while
+   `implement` is unloaded. This is a heuristic and is **not** a hard gate;
+   it appends one line to the tool result: `(the git module is not loaded —
+   load_module("git") for the structured git tools)`. Cheap, truthful, and it
+   does not block the model's workaround.
+3. **Self-report.** The model says it cannot find a rule. The index makes this
+   rare.
 
-**Fallback.** `load_module` is always available (it is core), so recovery is
-one call. The registry also auto-loads on an unknown-tool hit for that module
-when `/auto` is active — but only after returning the error, so the model
-learns the mapping rather than being rescued silently.
+**Fallback.** `load_module` is always core, so recovery is one call.
 
-**What must not happen:** silently answering without the rules. That is the
-failure mode the plan review's C3/C4 flagged and it is worse than a round trip.
+**What must not happen:** silently answering without the rules — and for
+prompt-only modules (`memory`, `implement`) there is *no tool call to fail*, so
+signal 1 cannot fire at all. The design accepts this: for those modules the
+mitigation is pre-loading (§7.3) and the index being explicit, not detection.
+This is stated as a **known limitation**, not solved.
+
+**`/auto` interaction — corrected.** The draft had `/auto` auto-load after the
+error, which makes the model's next `load_module` call a redundant round trip.
+Resolved: **there is no auto-load.** The error text always names the module and
+the call. One mechanism, one message, no contradiction.
 
 ## 7.8 What this costs when it goes wrong
 
@@ -1431,49 +1644,73 @@ Stated plainly, because the user asked for "more expensive or less reliable":
 Ordered so each stage is independently valuable and each later stage can be
 skipped if the bench says no.
 
+### Stage 0 — Measure first (precondition, no code)
+
+**What.** Two measurements that can invert the design, both before any change:
+
+1. **Is `tools` inside the provider's cacheable prefix?** §3.3 could not answer
+   this from Wakil's code. Capture one real request body per pinned provider
+   and check whether the provider reports cache hits when only `messages`
+   change but `tools` stays byte-identical. If tools are cached, R3's
+   dispatcher is required; if not, deferred tools may be added directly.
+2. **What is the noise floor?** Run the current bench twice with nothing
+   changed (§8.7) and diff. Without this the §8.4 thresholds are guesses.
+
+**Files touched.** None (measurement). Findings appended to this document.
+
+**Why it is stage 0.** Reviewers correctly noted that Stage 1 was ordered first
+while §7.11 lists two facts (tools-cache position, minimum cacheable prefix)
+that can invert it.
+
 ### Stage 1 — Tools first
 
 **What.** Split `BuildTools` output into core tools and module tools. Core
-stays in `tools`; module tools are reachable only after `load_module`.
-Add the `load_module` definition.
+stays in `tools`; module tools are reached through `call_tool(name, arguments)`
+plus `load_module(name)` returning the module's schemas — or, if Stage 0 shows
+tools are not cached, by adding them to the array directly (simpler, keeps
+schema validation).
 
 **Files touched.** `internal/agent/mcp_manager.go` (BuildTools split),
-`internal/agent/turn_phases.go:250` (tool assembly),
-`internal/agent/tool_handlers.go` (unknown-tool message), a new
-`internal/agent/modules.go` (registry), `docs/tools.md` (parity test),
-`docs/configuration.md` if a knob is added.
+`internal/agent/turn_phases.go:250` (tool assembly), a new
+`internal/agent/modules.go` (registry + `call_tool` dispatch + gating),
+`internal/agent/tool_handlers.go` (unknown-tool message), `docs/tools.md`
+(parity test), `docs/configuration.md` if a knob is added.
 
 **Tests.** `internal/tools/toolsmd_parity_test.go` must keep passing; a new
-`internal/agent/modules_test.go` for the registry and the unknown-tool
-message; the golden no-op test for cache_control
-(`internal/proxy/cache_control_test.go`) must stay green, proving a
-core-only request is byte-identical when no module is loaded.
+`internal/agent/modules_test.go` for the registry, the dispatcher's gating
+parity (a `call_tool` for a gated inner tool must gate identically), and the
+unknown-tool message; a test that the core-only `tools` array is **byte-identical
+to a `BuildTools` call with no optional groups and no module tools** — i.e. the
+existing default-config behaviour minus the deferred definitions; and a test
+that no module tool name appears in the core array.
 
-**Expected saving.** 9 890 → ≈ 4 100 est. tokens of tool definitions,
+**Expected saving.** 9 890 → ≈ 3 800-4 100 est. tokens of tool definitions,
 **≈ 5 800 est. tokens off every request** (estimate), with no round trip. This
-is the largest single, unconditional win and it needs no model cooperation.
+is the largest single, unconditional win. It needs no model cooperation **for
+requests that use only core tools** — for any request that uses memory, git,
+skills, staging or delegation it needs one `load_module` + one `call_tool`, so
+the earlier "no model cooperation" claim was too strong and is retracted.
 
-**Risk.** A model that cannot see `memory_put` may try to write memory anyway
-and fail. The error message is the mitigation; §8 measures it.
+**Risk.** The output-token cost of `call_tool` (arguments as a string) and the
+lost schema validation. §8 must add a task that actually needs a deferred tool.
 
 ### Stage 2 — Prompt modules
 
 **What.** Split `prompts/agent.txt` into core + twelve module files. Ship the
-index. Extend `classifyRequest` to return module names (pre-load).
+index and `load_module`'s prose half. **No pre-loading** — that is Stage 4.
 
 **Files touched.** `prompts/*.txt` (one per module), `prompts/embed.go`,
-`internal/agent/classifier.go`, `internal/agent/app.go`
-(`buildPreambleForNetwork`), `internal/agent/app_state.go` (prompt mode),
-`internal/agent/commands.go` (`/prompt`, new `/modules`),
+`internal/agent/app.go` (`buildPreambleForNetwork`), `internal/agent/app_state.go`
+(prompt mode), `internal/agent/commands.go` (`/prompt`, new `/modules`),
 `docs/configuration.md` if a knob appears.
 
 **Tests.** `internal/agent/split_prompt_test.go` (the existing split-prompt
 suite is the template), `internal/agent/app_preamble_cost_test.go` (section
-order and presence), a new test that the index names match the embedded
-modules, and the `prompts/embed_test.go` size bounds.
+order and presence), a new test that the generated index names match the
+embedded module files (no drift), and `prompts/embed_test.go` size bounds.
 
 **Expected saving.** 13 214 → ≈ 4 525 est. tokens of prompt,
-**≈ 8 700 est. tokens off every request** (estimate) — but only if the Shell /
+**≈ 8 700 est. tokens off every request** (estimate) — only if the Shell /
 "verified" / Interaction cuts survive review. Without those cuts, ≈ 7 500.
 
 ### Stage 3 — The writing-style file
@@ -1481,37 +1718,37 @@ modules, and the `prompts/embed_test.go` size bounds.
 **What.** §7.5.
 
 **Files touched.** `prompts/style.txt` (new, embedded),
-`internal/wiring/bootstrap.go` (`loadStylePrompt`, mirroring
-`loadAgentPrompt`), `internal/agent/app.go` (insert at index 1),
-`internal/agent/styleguides.go` (keep separate — this is prose style, not code
-style), `internal/initcmd/write.go` (write the default on request),
-`docs/configuration.md`.
+`internal/wiring/bootstrap.go` (`loadWritingStyle`), `internal/agent/app.go`
+(append inside `buildPreambleForNetwork`), `internal/initcmd/write.go` (write
+the default on request), `docs/configuration.md`.
 
-**Tests.** `internal/wiring/bootstrap_prompt_test.go` is the template
-(precedence: file > embedded; version comparison; missing file → default).
-A test that the style file is never written by any update path.
+**Tests.** A precedence test (file > embedded; absent file → default; no
+version fallback), a size-cap/truncation test mirroring the AGENTS.md one, and
+a test that no update path writes the file.
 
-**Expected saving.** **Zero by itself** — it is a usability change. It adds
-≤1 535 B (383 est. tokens) when a style is active. Do not sell it as a saving.
+**Expected saving.** **Zero by itself** — it is a usability change, and it
+*adds* ≤1 024 est. tokens when a file is present. Do not sell it as a saving.
 
-### Stage 4 — Pre-loading from the task text
+### Stage 4 — Pre-loading from the task text and session config
 
-**What.** The classifier's module-name return (half of stage 2) plus a
-startup-time pre-load of modules the *session configuration* already
-determines: `long-session` when `context_mode` says so, `git` when the
-workspace is a git repo, `search` when `searxng_url` is set.
+**What.** The classifier's module-name return, plus a startup-time pre-load for
+modules the *session configuration* already determines: `long-session` when
+`context_mode` says so, `git` when the workspace is a git repo, `search` when
+`searxng_url` is set, `browser`/`lsp`/`mashura` when enabled.
 
-**Files touched.** `internal/agent/classifier.go`,
-`internal/agent/modules.go`, `internal/wiring/bootstrap.go` (session-time
-preload inputs).
+**Files touched.** `internal/agent/classifier.go`, `internal/agent/modules.go`,
+`internal/wiring/bootstrap.go` (session-time preload inputs).
 
-**Tests.** A table-driven classifier test (module names per task text),
-and a boot test asserting `long-session`/`git` are pre-loaded without a model
-call.
+**Tests.** A table-driven classifier test (module names per task text), and a
+boot test asserting `long-session`/`git` are pre-loaded without a model call.
 
-**Expected saving.** Removes the round trip for the modules the config already
-determines — worth ≈ 1 046 token-equiv per avoided load, and it is the only
-stage that makes module loading worthwhile in short sessions.
+**Expected saving.** Removes the round trip for modules the config already
+determines — one avoided `load_module` per session, worth the load cost in
+§7.0.2. **Honest caveat (from review):** the `git`/`search`/`browser` config
+pre-loads mostly restore today's state (those tools are present today), so
+their "saving" is illusory — they are correctness-preserving, not wins. The
+real Stage 4 win is only for modules the *task text* predicts and the config
+does not.
 
 ## 7.10 AGENTS.md and taint — an explicit decision
 
@@ -1628,34 +1865,39 @@ on a task with no module need is the signal.
 
 ## 8.5 Per-stage expectations (estimates, to be falsified)
 
-| Stage | `tokens_in` short tasks | `tokens_in` `long-read` | pass rate | cache-% |
+| Stage | `tokens_in` short tasks | `tokens_in` `long-read` | pass rate | uncached tokens |
 |---|---|---|---|---|
-| 1 tools | −18 to −23 % | −5 to −10 % | unchanged | unchanged |
-| 2 prompt modules | −25 to −35 % | −10 to −15 % | unchanged | unchanged |
-| 3 style file | 0 (adds ≤383 tok if used) | 0 | unchanged | unchanged |
-| 4 pre-loading | no change vs stage 2 on 1-turn tasks; **better `tool_calls`** on multi-step | better `tool_calls` | unchanged or better | unchanged |
+| 0 (measure) | no change | no change | no change | records the noise floor |
+| 1 tools | −15 to −18 % | −4 to −8 % | unchanged | lower |
+| 2 prompt modules | a further −20 to −30 % | a further −8 to −12 % | unchanged | lower |
+| 3 style file | +≤1 024 tok if a file is present; 0 otherwise | same | unchanged | may rise by the style bytes only |
+| 4 pre-loading | no change vs stage 2 on 1-turn tasks; **fewer `tool_calls`** on multi-step | fewer `tool_calls` | unchanged or better | unchanged |
 
 Stage 3 is measured only for **non-regression**; it is a usability change and
 must not be reported as a saving.
 
+**The earlier draft's −25 to −35 % for stage 2 was a guess stacked on the
+uncorrected ledger**; the corrected numbers are lower because §7.0.1 restored
+2 119 est. tokens of non-prompt preamble to core and §7.1.1 corrected the tool
+double-count.
+
 ## 8.6 What the bench cannot measure here
 
-1. **Single-turn tasks cannot show module-load amortisation.** `add-flag`,
-   `fix-test`, `steps` and `long-read` are effectively one prompt with tool
-   loops; only `rename` has enough turns for a load to pay off (§7.0's
-   break-even is 5-31 turns). **This is why the task says harder tasks are a
-   precondition for fine comparisons.**
-2. **Provider cache behaviour.** If the pinned provider has a minimum
-   cacheable prefix or does not report `cache_creation_input_tokens`, the
-   cached-% column is meaningless. Must be checked once and recorded.
-3. **Module-load frequency.** No CSV column counts `load_module` calls. Stage 4
-   should add one to `ResultJSON` (`internal/wiring/resultjson.go`) — a new
-   `modules_loaded` field — or the per-tool counts in the trace (readable with
-   `scripts/context_usage.sh`, once the user runs it) stand in.
+1. **Single-turn tasks cannot show module-load amortisation** — and §7.0.2
+   says amortisation does not exist anyway. `add-flag`, `fix-test`, `steps` and
+   `long-read` are effectively one prompt with tool loops; only `rename` has
+   enough requests for a mid-session load to have any chance. **Harder tasks
+   are a precondition for fine comparisons** (task statement).
+2. **Provider cache behaviour.** If the pinned provider has a minimum cacheable
+   prefix or does not report `cache_creation_input_tokens`, the cached columns
+   are meaningless. Must be checked once (Stage 0) and recorded.
+3. **Module-load frequency.** No CSV column counts `load_module` calls. Stage 1
+   must add `modules_loaded` to `ResultJSON`
+   (`internal/wiring/resultjson.go`) — the draft deferred this to Stage 4,
+   which was wrong: Stage 1's risk is exactly loader misuse.
 4. **Quality.** The bench checks artifacts, not whether the agent skipped a
-   rule it should have followed. `long-read` is the closest proxy (it fails
-   loudly if the model does not read all files), but "did it obey the memory
-   rules" is not measured by any task.
+   rule it should have followed. This is **the design's core risk** and the
+   bench does not measure it (§8.8 adds a task that at least approximates it).
 
 ## 8.7 The one experiment worth running first
 
@@ -1663,5 +1905,145 @@ Before any stage: run `scripts/bench.sh --runs 5` on current master twice with
 **the same model, provider pinned, and nothing changed**, and diff the two
 CSVs. That gives the **noise floor** for `tokens_in` and `cost_usd` on this
 machine/provider — without it, the thresholds in §8.4 are guesses. If the
-noise floor is above 5 %, the 20 % threshold is too tight for a 5-run sample
-and the protocol needs more runs or a paired comparison.
+noise floor is above the stage's expected saving (§8.5), the thresholds are too
+tight for a 5-run sample and the protocol needs more runs or a paired
+comparison.
+
+## 8.8 The missing task: a reliability probe
+
+Reviewers correctly noted that **no bench task needs a module**, so the suite
+measures only the zero-module path and false-positive loads — not whether the
+model succeeds when it *must* load one, which §7.11 calls design-fatal.
+
+Proposal (new tasks; separate work per the task statement's "harder tasks are
+planned separately"):
+
+- **`memory-note`**: a task whose check requires the agent to `memory_put` a
+  value and then `memory_get` it in a later turn of the same session. Memory
+  tools are in the `memory` module, so the task **cannot pass** unless the
+  model loads it (by pre-load, by the unknown-tool error, or from the index).
+- **`git-history`**: a task whose check requires `git_log`/`git_show` output,
+  with `run_shell` also available — this measures the *substitution* failure
+  (the model runs `git log` through a shell instead of loading the module),
+  which the design accepts as a non-fatal but costly path.
+- **`long-read` unchanged**: it needs no module, so it stays the
+  false-positive-load probe.
+
+Without these, Stage 1 cannot be declared safe to ship, whatever the token
+numbers say.
+
+---
+
+# 9. The second Mashūra round — findings and disposition
+
+The final round asked "what is wrong, missing or risky in this design?" Three
+reviewers ran. Every BLOCKING point was checked against the document (and the
+code where the claim was about code) and folded in above. This table records
+what changed so the trail is auditable.
+
+## 9.1 BLOCKING findings — taken
+
+| # | Finding | Where fixed |
+|---|---|---|
+| 1 | Core total omitted 2 119 est. tokens of non-prompt preamble (AGENTS.md + digest + environment); 9 261 was wrong | §7.0.1 rewritten as one ledger; corrected core ≈ 11 380, reduction ≈ 13 843 |
+| 2 | Stage 1 had no mechanism; R3 forbade mid-session tools while Stage 1 promised them (circular) | §7.4 R3 now specifies `load_module` + `call_tool`, states the schema-validation trade-off and gate parity, and adds Stage 0 as the measurement that decides the variant |
+| 3 | Inventory self-contradictions (async tools both core and in the `async` module; dispatch tools both core and in `subagents`; `delete_file`, "verified", digest) | §7.1 consistency note + rewritten module table + §7.1.1 core tool sum |
+| 4 | Break-even inverted; load cost omitted output-token multiplier, cache write, and conversation growth | §7.0.2 rewritten ("requests without needing it"), load cost re-priced, counter-case corrected |
+| 5 | Load injection role contradictory (`role:"user"` vs pinned tool result); a user message between tool call and result is malformed | §7.4 R1 now `role:"tool"` + `Pinned`; §7.3 states the authority caveat and the Tier-1/2 carve-out |
+| 6 | Pre-load at turn entry only reaches `messages[0]` on turn 1; turn 2+ unspecified | §7.3 now says turn 1 → prefix, turn 2+ → same `load_module` path, with a stricter threshold |
+| 7 | R2 incoherent: "still available — do not reload" was false after collapse; "used" undefined for prompt-only modules | §7.4 R2 rewritten: pre-loaded modules never unloaded, tail-loaded ones reported as lost, prompt-only unload is a no-op |
+| 8 | Bench criteria cannot pass (cached-% falls by design) or cannot detect the main risk | §8.4 rewritten (absolute uncached tokens; budget not "any rise"; 18 % corrected for `--no-memory`); §8.8 adds reliability tasks |
+| 9 | §7.5 style at index 1 repeats a documented hazard and collides with the code-style slot | §7.5 now folds into `messages[0]` with a size cap and no version fallback |
+| 10 | Stage 2 and Stage 4 overlapped on the classifier | §7.9: all pre-loading moved to Stage 4 |
+| 11 | Detection depends on the model naming a hidden tool — unreliable; prompt-only modules have no signal | §7.7 adds the substitution signal, and states the prompt-only limitation explicitly |
+
+## 9.2 BLOCKING findings — reviewed and **not** taken, with reasons
+
+| Finding | Why not taken |
+|---|---|
+| "A generic dispatcher can bypass per-tool approval gates" (muse-wonder) | Valid concern, addressed rather than dismissed: §7.9 Stage 1 requires the dispatcher to look up `IsGatedTool` on the inner name so gating is identical. Recorded as a **test requirement**, not a design gap. |
+| "Output tokens cost 3-5×, so 120 output tokens ≈ 600" | Accepted as the *direction* (§7.0.2 uses the conservative 1 258 and notes the real figure is worse), but the exact multiplier is **unverified** — it is a provider rate-card fact, marked as such rather than asserted. |
+| "`modules_loaded` should be added in Stage 4" (gemini) | Accepted but re-assigned: §8.6.3 now says **Stage 1**, because Stage 1's risk is loader misuse. |
+| "Add `memory-note`/`git-history` bench tasks now" | Out of scope: the task statement says harder tasks are planned separately. §8.8 proposes them and states the precondition. |
+
+## 9.3 Non-blocking — listed, not folded in
+
+1. **No usage data was collected** — every "Needed by" entry in §5.2 is a
+   judgement. §6.5 gives the user the command; that is stage 0 of a *data*
+   iteration, not of this document.
+2. **`context_usage.sh` has no session denominator or
+   requests-before-first-use figure**, so it cannot directly feed §7.0.2's
+   break-even. Adding those is a future change; the script's current contract
+   (names + counts only) is deliberate.
+3. **§7.5's "383 tokens" is the Go *code*-guide size**, used as a stand-in for
+   a writing-style file of unknown size. §7.5 now caps the user file at 4 096 B
+   (≈1 024 est. tokens) and the ledger's 383 is only the embedded default.
+4. **Precedence "safety > AGENTS.md > style" is asserted as text only** —
+   nothing enforces it among same-role messages. True for AGENTS.md today too;
+   not a new gap, but worth stating.
+5. **Subagent `tools` tier gets `search`** without `load_module`; §7.6 keeps
+   that deliberate (children do not load modules) but the delivery is "baked
+   into the child's fixed set", which is one more place a tier list must be
+   maintained.
+6. **MCP/LSP/browser/Mashūra modules are listed in §7.1 but not sized for
+   Mashūra** (no key in this environment). An estimate would be a fabrication;
+   the row says "not measured".
+7. **`--no-memory` in the bench** means the bench's baseline is not the TUI's
+   default; §5.4 and §8.4 now say so, but the two are never measured side by
+   side here.
+
+---
+
+# Open questions
+
+1. **Is `tools` inside the provider's cacheable prefix?** (§3.3, §7.11.1,
+   Stage 0). The single largest unknown: it decides between the dispatcher and
+   direct mid-session tool addition.
+2. **What is the provider's cache-read discount, cache-write premium, output
+   multiplier, TTL, and minimum cacheable prefix?** (§7.0.2). All are
+   load-bearing for every number in §7, and all are currently recall.
+3. **Do the Shell / "verified" / Interaction prompt cuts survive review?**
+   (§5.1, §7.0.1, §7.1.2). Without them the 10-12k target is missed.
+4. **Can a model reliably load a module it needs?** (§7.11.4, §8.8). Unknown
+   until `memory-note`/`git-history` exist.
+5. **Where do real traces live?** (§6.5). This session did not open
+   `~/.local/share/wakil`, so the host command uses a path to be confirmed.
+6. **Should `git` be core or a module?** §5.2 proposes a module; in practice
+   almost every repo has `.git`, so it would be pre-loaded almost always — that
+   makes it effectively core and the module a no-op. Not resolved.
+7. **Does the 39k-token claim in the task have a source?** Measured here at
+   25 223 for preamble+tools; the gap needs a real trace (§1.6).
+
+# Unverified
+
+- **Cache prefix order (tools → system → messages)** and whether tools are
+  cached: provider-side behaviour, not derivable from Wakil's code.
+- **All pricing rates** in §7.0.2 (0.1× read, 1.25× write, 3-5× output): recall,
+  not read from a rate card or from `internal/proxy/cost.go`'s actual formula.
+- **`shellcheck -s sh`** has not been run on the two new scripts — not
+  installed in this environment. CI runs it; local verification is `sh -n`
+  plus execution under `bash` and `dash`.
+- **The trace directory path** in §6.5.
+- **The 2 119-token non-prompt preamble split** (1 676 AGENTS.md + 443 other)
+  is derived by subtracting two measured totals, not by measuring each line
+  separately; it is consistent but not independently confirmed.
+- **The prompt-cut figures** in §5.1 core (4 525 est. tokens) are a judgement
+  about what could be cut, not a measurement of a cut prompt.
+- **Mashūra tool definition sizes**: no OpenRouter key in this environment, so
+  the four `mashura__*` definitions were not measured.
+- **`internal/counsel` caching behaviour** was read for `UseCache` but not
+  exercised (no key).
+- **The 39k / 15k / 13.7k figures from the task**: 15k supported, 13.7k and
+  39k not reproduced; see §1.6.
+
+# Appendix A — the measurement program
+
+`tmp/measure/main.go` (gitignored, deleted before the session ends). It is not
+product code; it exists so every tool-size figure above is reproducible.
+Outline:
+
+```go
+base := agent.BuildTools(config.DefaultConfig(), cwd, nil, "")
+b, _ := json.Marshal(base)          // 39 563 B for the default 49-tool set
+// per-tool: json.Marshal(one tool)  // the per-tool table in §1.3
+```
