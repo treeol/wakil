@@ -247,3 +247,186 @@ From the same round, deferred to the design section as discussion points:
 - Missing-module fallback needs its own bench task, not just a design rule.
 - Tool schema JSON escaping overhead and per-message framing are real but
   small; measure once in Q1 rather than model twice.
+
+---
+
+# Question 1 — What goes into a request today
+
+All measurements below were run in this session. Byte counts are `wc -c` or
+exact `len()` over the bytes that reach the wire; token counts are
+**estimates** at `bytes / 4` (no token counter exists in the tree —
+`grep -rn "EstimateTokens|TokenCount" internal/` has no non-test hit).
+
+## 1.1 The order of parts
+
+A request has two top-level fields that matter: `messages` and `tools`
+(`internal/proxy/client.go:1197-1253`, the `wireBody` struct). Inside
+`messages`, the order is:
+
+```
+messages[0]  = system  ← the preamble, built by buildPreambleForNetwork
+messages[1]  = user    ← the first user message, with the retrieval block
+                          prepended to its content
+ ...
+```
+
+When `/prompt core` is active and the classifier fires, a **second system
+message is inserted at index 1** (`maybeActivateExtension`,
+`internal/agent/classifier.go:155-208`), so the shape becomes
+`[system, system, user, ...]`.
+
+A style guide, when enabled, is inserted as **another system message directly
+after `messages[0]`** at request-build time, not in `Conv`
+(`requestMessages`, `internal/agent/styleguides.go:412-428`).
+
+The `tools` array is a sibling field, not a message.
+
+## 1.2 `messages[0]` — the preamble, part by part
+
+Assembled by `(*App).buildPreambleForNetwork`, `internal/agent/app.go:1931-2105`,
+called from `buildPreamble` (`:1927`) and installed by `ensurePreamble`
+(`:2156`) once per turn (`internal/agent/app.go:1269`). Parts in emission
+order:
+
+| # | Part | Emitted when | Bytes | Est. tokens | Assembled by |
+|---|---|---|---|---|---|
+| 1 | Context-pruning section | `context_prune` on (default **off**) | 0 by default | 0 | `pruneSystemSection` (`app.go:1949`) |
+| 2 | Agent prompt — `prompts/agent.txt` with its version line stripped | full mode (default), or a custom `agent_prompt_path` | 52 858 | 13 214 | `loadAgentPrompt` (`internal/wiring/bootstrap.go:649`), embedded via `prompts/embed.go:27` |
+| 3 | AGENTS.md section | a readable AGENTS.md at/above cwd, bounded by the workspace root | 6 704 | 1 676 | `loadAgentsMD` (`internal/agent/agentsmd.go`), rendered at `:239-241` |
+| 4 | Date line | `InjectDate` on (all non-subagent sessions) | 131 | 32 | `app.go:1932-1933` |
+| 5 | Working-directory line | an executor or `work_dir` is set | 44 | 11 | `app.go:1997-2003` |
+| 6 | Sandbox tool inventory | executor reports sandbox tools | 146 | 36 | `app.go:2004-2010` |
+| 7 | LSP inventory line | `LSPEnabled` (default off) | 300 | 75 | `app.go:2011-2017` |
+| 8 | Browser inventory line | `BrowserEnabled` (default off) | 331 | 82 | `app.go:2018-2025` |
+| 9 | Repo-map summary line | executor present and `InjectDate` on | 171 | 42 | `injectRepoMap` (`app.go:2030-2037`) |
+| 10 | Memory digest line | a memory store with ≥1 entry | 591 | 147 | `app.go:2044-2100` |
+| 11 | Network mode line | always | 48 | 12 | `networkModeLine` (`app.go:2125`) |
+
+Measured preamble total in this session (this repo, this environment,
+`prompt_mode: full`, prune off, LSP/browser off, memory populated):
+
+```
+prompts/agent.txt                52858 B  13214 est_tok   (wc -c 52879, minus the stripped version line + trailing newline)
+AGENTS.md rendered                6704 B   1676 est_tok   (6544 B file + header/preamble)
+date line                          131 B     32 est_tok
+cwd line                            44 B     11 est_tok
+sandbox tools line                 146 B     36 est_tok
+repo-map line                      171 B     42 est_tok
+memory digest line                 591 B    147 est_tok
+network line                        48 B     12 est_tok
+--------------------------------------------------------------
+TOTAL Conv[0]                    61333 B  15333 est_tok
+```
+
+Counting method for the literal lines (date/cwd/LSP/browser/network/sandbox):
+each string was copied from source and measured with `len(s.encode())` — the
+date line used this session's actual date, and the memory digest used this
+session's actual digest as printed in the system preamble. They are quoted,
+not estimated from the source text.
+
+`wc -c` on the same file disagrees (52 879 vs 52 858) by exactly the
+`# prompt-version: 1\n` line plus the trailing newline that
+`loadAgentPrompt` strips (`internal/wiring/bootstrap.go:649`, `:657-670`).
+
+## 1.3 `tools` — the serialised tool definitions
+
+Measured by marshalling the real `[]proxy.Tool` that `BuildTools`
+(`internal/agent/mcp_manager.go:1018`) returns, with `json.Marshal`, over
+`config.DefaultConfig()`:
+
+```
+defaults (builtins only)         count=49 json_bytes= 39563 est_tokens= 9890
+defaults + search+lsp+browser    count=63 json_bytes= 47972 est_tokens=11993
+  delta over builtins: 8409 B (2102 est_tok)
+discovery-subagent               count=34 json_bytes= 25227 est_tokens= 6306
+```
+
+The ten largest definitions in the default set:
+
+| Tool | Bytes | Est. tokens |
+|---|---|---|
+| `capture_skill_template` | 3 746 | 936 |
+| `dispatch_subagent` | 2 279 | 569 |
+| `apply_skill_template` | 1 941 | 485 |
+| `dispatch_subagents` | 1 921 | 480 |
+| `collapse_context` | 1 762 | 440 |
+| `memory_put` | 1 613 | 403 |
+| `save_skill` | 1 203 | 300 |
+| `read_file` | 1 069 | 267 |
+| `edit_file` | 1 032 | 258 |
+| `run_background` | 915 | 228 |
+
+The measurement program lives in `tmp/measure/main.go` (gitignored, not
+product code) and is reproduced in Appendix A.
+
+**Caveat (from the plan review, C6):** these figures exclude the
+context-pruning mutation of tool schemas (`stripPrevFromToolCall`) because
+prune is off by default; with prune on the "prev" property is added to every
+tool that takes it, which grows each definition. The design must re-measure
+with prune on before quoting a saving.
+
+## 1.4 The other request parts
+
+| Part | Where | Bytes | Est. tokens | Notes |
+|---|---|---|---|---|
+| Retrieval (memory/skill) block | prepended to the **user** message content, `internal/agent/app.go:1266-1268` | ≤ 2 048 (parent), ≤ 1 024 (subagent) | ≤ 512 / ≤ 256 | `retrievalCap`/`retrievalCapSubagent`, `internal/agent/retrieval.go:27-28` |
+| Workflow directive | prepended before the retrieval block, `app.go:1261-1265` | task-dependent | — | only when a workflow is active |
+| Style guide message | extra system message at index 1, `styleguides.go:412-428` | 1 535 for the built-in Go guide (`google-style-guides/go.md` 1 421 B + header) | 383 | only when `style_guides_enabled` and a language is selected |
+| Chat `metadata` | body field, `client.go:1254-1267` | a few dozen B | <20 | proxy shape only |
+
+## 1.5 Headless (`wakil run`) vs TUI
+
+Measured by reading the bootstrap path, not by running the binary:
+
+- Both paths call the **same** `BuildApp` (`internal/wiring/bootstrap.go:247`),
+  which builds the same `App`, the same prompt, the same `BuildTools` set.
+- Headless differs in exactly three ways that affect request size:
+  1. `IsHeadless: true` (`internal/wiring/headless.go:284`) — no TUI, and no
+     human to re-send a prompt; it does not alter the preamble.
+  2. `--no-memory` (bench uses it, `scripts/bench.sh:777`) strips the memory
+     tools and leaves `MemoryStore` nil, so the **memory digest line and the
+     memory tool definitions are absent**. On this repo that removes 591 B
+     from the preamble plus the 10 memory tool definitions.
+  3. No style guide is loaded unless configured.
+- Therefore the bench's typical headless request is *smaller* than the TUI's,
+  by the memory digest + memory tools. The bench CSV is written from the same
+  `ResultJSON` either way (`internal/wiring/resultjson.go:80`).
+
+Measured sizes of the memory tool group (from the per-tool table):
+`memory_put` 1 613 + `memory_promote_from_staging` 812 + `memory_search` 671
++ `memory_list` 632 + `memory_promote` 541 + `memory_reject` 409 +
+`memory_get` 398 + `memory_forget` 361 = **5 437 B ≈ 1 359 est. tokens**.
+
+## 1.6 The claim to verify
+
+The task states ~39k input tokens, ~15k system prompt, ~13.7k tool
+definitions. Measured here:
+
+| Claim | Measured | Verdict |
+|---|---|---|
+| ~15k system prompt | 15 333 est. tokens (Conv[0] only) | **supported** (estimate, bytes/4) |
+| ~13.7k tool definitions | 9 890 est. tokens (default set), 11 993 with all optional groups | **not supported** — the claim is ~40 % high for the default set; it matches nothing measured |
+| ~39k input tokens per request | 15 333 + 9 890 = **25 223 est. tokens** for preamble+tools, before any conversation | **not supported as a floor**; 39k would require ~14k tokens of conversation/skills/system-reminder already present |
+
+The discrepancy is itself a finding: either the 39k figure came from a
+session with a long conversation, extra MCP tools, or a style guide, or the
+13.7k figure counted a different set. Answering it needs a real trace, which
+this session may not read (`~/.local/share/wakil` is off limits) — so it stays
+**unverified**, and Q8's bench column `tokens_in` is the way to settle it.
+
+## 1.7 Functions that assemble each part (index)
+
+| Part | Function | File:line |
+|---|---|---|
+| Agent prompt text | `loadAgentPrompt` | `internal/wiring/bootstrap.go:649` |
+| Core/extension split | `buildPreambleForNetwork` + `maybeActivateExtension` | `internal/agent/app.go:1957-1964`, `classifier.go:155` |
+| AGENTS.md | `loadAgentsMD` | `internal/agent/agentsmd.go` (render at `:239`) |
+| Date / cwd / inventory | `buildPreambleForNetwork` | `internal/agent/app.go:1931-2037` |
+| Repo map | `injectRepoMap` | `internal/agent/repomap.go` |
+| Memory digest | `buildPreambleForNetwork` (inline) | `internal/agent/app.go:2044-2100` |
+| Network line | `networkModeLine` | `internal/agent/app.go:2125` |
+| Preamble installation | `ensurePreamble` | `internal/agent/app.go:2156` |
+| Retrieval block | `retrieveMemoryContext` / `formatRetrievedContext` | `internal/agent/retrieval.go:51`, `:119` |
+| Style guide message | `requestMessages` | `internal/agent/styleguides.go:412` |
+| Tool definitions | `BuildTools` | `internal/agent/mcp_manager.go:1018` |
+| Wire body | `Client.Stream` | `internal/proxy/client.go:1152` |
