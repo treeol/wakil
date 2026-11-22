@@ -2065,3 +2065,241 @@ base := agent.BuildTools(config.DefaultConfig(), cwd, nil, "")
 b, _ := json.Marshal(base)          // 39 563 B for the default 49-tool set
 // per-tool: json.Marshal(one tool)  // the per-tool table in §1.3
 ```
+
+---
+
+# Follow-up 1 — real usage data, MCP modules, two bugs
+
+Branch `work/context-modules` at `a3ee4ca`. Local only. This section is the plan;
+the blocks below it are the implementation.
+
+## F1.0 State check
+
+```
+$ git status --short
+(no output)
+$ git rev-parse HEAD
+a3ee4ca7b7bed2c272292fcb47485c0d864776b8
+$ git describe --tags
+v0.8.9-12-ga3ee4ca7
+$ git branch --show-current
+work/context-modules
+$ git stash list
+stash@{0}: WIP on work/0.8.3: 1c1b300 fix: approvals carry over, resume paths agree, grant key works
+stash@{1}: On master: phase-F: signing_guard checkGitConfigSub goto->joinedValueFlag (pre-existing, not Phase A)
+```
+
+Both stashes left alone.
+
+## F1.1 Verified findings
+
+### F1.1.1 The 64 KiB cut — cause, with path and line
+
+`internal/trace/trace.go:165`:
+
+```go
+bw := bufio.NewWriterSize(f, 64*1024)
+```
+
+`drainTo` writes each record with `bw.Write(b)` (`:167`) and then a newline
+(`:170`). `bufio.Writer` flushes **when its buffer fills**, at whatever byte
+offset it happens to be — it does not respect record boundaries. A record that
+straddles the 65 536-byte mark has its first part written in one flush and its
+remainder in the next, so if the process dies (or the file is read) between the
+two, the last line is a partial record. That is exactly the observed 65 536-byte
+file with a truncated final line.
+
+Reproduced in this session (`/tmp/bufio2.go`, a throwaway):
+
+```
+kill-sim: file size=65536 (buffer 65536) last 40 bytes="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaa{\"type\":\"t"
+```
+
+The file is exactly 65 536 bytes and the last line is `{"type":"t` — a record
+cut mid-way, byte-identically the shape the user reported.
+
+There is **no size cap and no rotation** in the trace writer: `Open` uses
+`O_APPEND` (`:83`), nothing checks file size, and `grep -rn "65536|64 \* 1024"`
+over `internal/ cmd/ scripts/` finds only `agentsmdMaxTotal`, `gitDiffCapBytes`,
+`captureMaxFileBytes` and sandbox MiB limits — none of them a trace cap. So the
+64 KiB is an artefact of the **buffer size**, not of a deliberate limit. That
+matters: it means the fix is not "rotate" but "never split a record".
+
+Two further, related facts from the same file:
+
+- On a **full channel** a record is dropped and counted
+  (`Write`, `:127-131`, `dropped.Add(1)`), never written partially — so the
+  drop path is honest, but `Dropped()` (`:136`) is read by **no production
+  caller** (`grep -rn "\.Dropped\b"` hits only `trace_test.go`). A long session
+  can therefore lose turns silently, which block 1 also has to fix.
+- `Close` flushes (`:174`), so a clean shutdown never leaves a partial line; the
+  bug needs a kill, a crash, or an OOM. Those are exactly the cases where the
+  trace is the only evidence, which is why it matters.
+
+### F1.1.2 Every reader of trace files in the repo
+
+Searched with `grep -rn "TraceDir|\.jsonl|trace.Record|json.Unmarshal"` over
+`cmd/ internal/ scripts/`:
+
+| Reader | Path | Handles a broken last line? |
+|---|---|---|
+| trace package's own tests | `internal/trace/trace_test.go` | n/a (writes cleanly in-process) |
+| `scripts/context_usage.sh` | whole file via `jq -r` | **No** — one bad line aborts the whole file (block 2) |
+| everything else | — | **there is no other production reader** |
+
+That is a finding in itself: today no Go code reads trace files back. The
+"reader must skip an unparsable last line" requirement therefore applies to
+(a) `scripts/context_usage.sh` and (b) the trace package itself, which should
+gain a reader so future code cannot get this wrong. `internal/timeline` also
+writes under `TraceDir` (`cmd/wakil/main.go:176`) but produces one
+`json.MarshalIndent` document via a temp file + rename (`timeline.go:398-405`),
+so it is atomic and not affected.
+
+### F1.1.3 The shape of `tool_calls` as the writer produces it
+
+`internal/trace/trace.go:43` and `:55-60`:
+
+```go
+ToolCalls []ToolTrace `json:"tool_calls,omitempty"`
+type ToolTrace struct {
+    Name         string `json:"name"`
+    PreCapBytes  int    `json:"pre_cap_bytes"`
+    PostCapBytes int    `json:"post_cap_bytes"`
+    Capped       bool   `json:"capped"`
+}
+```
+
+So `tool_calls` is a **list of objects**, each with a `name` string. It is
+**omitted entirely** when empty (`omitempty`). `scripts/context_usage.sh`
+already targets `.tool_calls[].name`, which is correct — its bug is only that a
+single unparsable line kills the whole file, not that it reads the wrong shape.
+
+### F1.1.4 `scripts/context_usage.sh` as it stands
+
+`scripts/context_usage.sh:96-102` runs `jq -r "$jq_prog" "$f"` and treats any
+non-zero exit as "not a readable JSONL trace" and **exit 2**, printing nothing.
+On a file cut mid-line, `jq` exits non-zero at the bad line — so the whole file
+is lost, which is exactly what the user saw: one bad file in 2810 and the tool
+refused to report on any of them.
+
+`jq` has no built-in "skip bad lines" for a whole-file read, so the fix must
+read line by line (or use `jq --seq`/`-R` with a parse-per-line), count the
+skipped lines, and report them. This also satisfies the DO NOT ALTER rule that
+the script "never prints ... any field other than tool name, counts and the
+number of skipped lines and files".
+
+### F1.1.5 Design sections 5 and 7 — what the usage data changes
+
+The design in §5/§7 assumed "needed by" per module was a judgement. The usage
+data replaces that judgement with a measured **session share**: the fraction of
+sessions in which a tool of that module was used at all. Four assumptions do
+not survive:
+
+1. **§7.1 said MCP has no module.** The user's sessions carry `trello__*`
+   (9 distinct tools, 153 sessions on `trello__get_lists` alone) and
+   `context7__*`. These are 65-tool requests (§1.3 measured 49 without MCP), so
+   MCP is a *large* real prefix that the design never sized.
+2. **§5.2 put the git tools in a module.** `git_status` is used in 107 sessions
+   but `run_shell` in 498 — and git commands are routinely run through
+   `run_shell`, so the git group's true necessity is inflated by substitution.
+3. **§7.1 kept the memory tools deferred.** `memory_put` appears in 173
+   sessions, `memory_get` 135, `memory_promote` 125, `memory_search` 115 — the
+   memory group is used in roughly a third of sessions, which changes its
+   arithmetic.
+4. **§5.1 deferred the Subagents section.** `dispatch_subagent(s)` appear in
+   239 + 212 sessions — over 45 % of tool-using sessions.
+
+## F1.2 Touched files and functions (by name)
+
+| Block | Files | Functions / regions |
+|---|---|---|
+| 1 | `internal/trace/trace.go` | `drainTo` (line integrity), `Write`/`Dropped` (surface drops), `Open` (header unchanged), new `Read`/`ReadFile` reader that skips a broken tail |
+| 1 | `internal/trace/trace_test.go` | new: over-64 KiB session parses clean; kill-sim produces no partial line; drop counter surfaces |
+| 2 | `scripts/context_usage.sh` | `main` loop: per-line parse, skip + count; final skipped-lines/files summary |
+| 2 | `scripts/context_usage_test.sh` | new cases: cut mid-line; valid record after a broken one; marker in every non-name field |
+| 3 | `docs/plans/context-modules.md` | new F1.3 saving table; §5.1/§5.2/§7.1 re-decisions; MCP module section; restated totals; stage order |
+| 4 | `CHANGELOG.md` | two `[Unreleased]` lines |
+
+No change to `prompts/`, no change to which tools a request sends, no Go change
+outside `internal/trace`.
+
+## F1.3 The blocks
+
+### Block 1 — trace files are never written partially
+
+- `drainTo` must write **whole records**: buffer the record bytes and issue one
+  `Write` of `record + "\n"` so `bufio` can still split *across* records but a
+  flush can never land inside one. Concretely: write the newline into the same
+  buffer as the payload (append `"\n"` to `b` before `bw.Write`), and — because
+  `bufio` flushes at a byte offset regardless — use a writer that flushes only
+  between records. The simplest correct form is to stop using a fixed-size
+  `bufio.Writer` for record payloads: accumulate into a `bytes.Buffer` and
+  `f.Write(append(b, '\n'))` per record (one syscall per record, which is fine
+  at trace volumes), or use `bufio.Writer.Write` for the payload and
+  `Flush()` after each record.
+- Surface silent loss: `Close` (or a new `CloseReporting`) logs/carries
+  `Dropped()`; the session teardown reports a non-zero drop count once
+  (a diagnostic line, not a rewrite of old files).
+- If a size cap is ever wanted it must rotate or stop **at a line boundary**
+  and write a marker record; this fix adds **no cap**, because none exists
+  today and adding one is out of scope.
+- Reader: add `Read(path)` / `ReadFile` that scans lines, skips a final
+  unparsable line, and reports how many it skipped — so the "skip the broken
+  tail" rule lives in one place.
+- **Test, failing before the fix:** write >64 KiB of records through the store,
+  close, assert every line parses and the count matches; and a kill-sim
+  assertion that no flushed line is partial. Show it red first.
+
+### Block 2 — `scripts/context_usage.sh` skips broken lines
+
+- Read per line, `jq -c` each; a line that fails to parse is **counted and
+  skipped**, never fatal.
+- Unchanged output contract: `TOOL<TAB>CALLS<TAB>SESSIONS`, plus a final
+  summary of skipped lines and files-with-skips.
+- Handle exactly the writer's shape (`tool_calls` = list of objects with
+  `name`, omitted when empty).
+- Extend the test with: a file cut mid-line; a valid record after a broken one;
+  the secret marker in every field that is not the tool name.
+- Document the host command in the script header and in this document.
+
+### Block 3 — design updated with real usage data
+
+- Saving rule, per module:
+  `saving = size × (1 − share) − load_cost × share`, where `share` is the
+  session share that needs it, and `load_cost` is the size plus one round trip
+  for a mid-session load, or the size alone when pre-loaded on turn 1.
+- Re-decide with numbers: Subagents / Durable Memory / Async prompt sections;
+  the memory tool group; the mashura tools; the git tools; the skill-authoring
+  tools including `capture_skill_template`.
+- MCP servers as modules — one module per configured server, one index line,
+  loaded on demand or pre-loaded from keywords ("board", "card", "trello").
+  Size measured from repo fixtures if any exist, else "unmeasured" + the host
+  command.
+- Restate total saving for this user's typical session and for a
+  default-config session, method shown.
+- Re-order the stages if the numbers change it.
+
+### Block 4 — CHANGELOG `[Unreleased]`
+
+One line for the trace fix, one for the usage script.
+
+## F1.4 Open risks
+
+- One syscall per record may reduce throughput on very chatty sessions; trace
+  volume is small (`~67 lines / 64 KiB`), so this is accepted, and measured if
+  it ever matters.
+- Dropping `bufio` changes flush behaviour; a test must prove that a clean
+  `Close` still writes every queued record.
+- The usage data is **one user**, and that user always loads the
+  `task-workflow` skill, which inflates `load_skill` (144 sessions) and biases
+  the skills module's share upward. Every derived share inherits that bias; the
+  document must say so next to the table.
+- `run_shell` in 35 % of sessions could equally mean "the git module is
+  unnecessary" or "the model substitutes shell for git tools because it cannot
+  see them" — the data cannot distinguish the two, so the git decision must be
+  stated as conditional.
+- MCP sizes are unknown; a Trello server can be 9 tools and ~10 KB, but that is
+  an estimate until measured.
+- The saving formula treats `share` as independent of loading; in practice
+  loading is sticky, so the formula is an upper bound on the module's benefit
+  and a lower bound on its cost. Stated, not hidden.
