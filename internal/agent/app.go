@@ -1280,9 +1280,13 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 	}
 	// Context modules MCP pre-load: on the first request of a session
 	// (preambleDay is empty), match the task text against MCP server
-	// keywords and pre-load matching modules before ensurePreamble so the
-	// pre-loaded state is reflected in messages[0]. This is a turn-1-only
+	// keywords and pre-load matching modules BEFORE ensurePreamble so the
+	// pre-loaded state is reflected in messages[0]. Pre-loaded schemas are
+	// delivered as an appended user-role message after ensurePreamble (same
+	// form load_module returns), so the first request already carries them
+	// and no load_module round trip is needed. This is a turn-1-only
 	// pre-load; turn 2+ matches go through load_module (one round trip).
+	preloadedSchemas := ""
 	if a.Modules != nil && !a.IsSubagent {
 		a.stateMu.RLock()
 		firstTurn := a.preambleDay == ""
@@ -1291,6 +1295,9 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 			preload := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
 			if len(preload) > 0 {
 				a.Modules.PreloadModules(preload)
+				if s, ok := a.Modules.PreloadedSchemas(preload); ok {
+					preloadedSchemas = s
+				}
 			}
 		}
 		// Flush any MCP lifecycle events (connect/disconnect/reconnect)
@@ -1301,6 +1308,11 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 		a.flushPendingModuleEvents()
 	}
 	a.ensurePreamble()
+	if preloadedSchemas != "" {
+		// Appended AFTER the preamble so messages[0] stays frozen; the
+		// tool array is not touched.
+		a.appendConv(proxy.Message{Role: "user", Content: StrPtr(preloadedSchemas)})
+	}
 	// Split-prompt activation: in core mode, classify the user message and
 	// append the extension prompt as a second system message (Turn==0, Pinned)
 	// when a task is detected. Once activated, it stays for the session — no
@@ -2770,56 +2782,21 @@ func (a *App) handleToolCall(ctx context.Context, tc proxy.ToolCall) toolResult 
 	// CapOrStub, result-json) sees the inner tool name, not "call_tool".
 	// The wire pairing (tool_call_id, tool_calls) uses the original tc.ID,
 	// so the provider sees "call_tool" on the wire — but every internal
-	// gate, trace, and accounting record uses the inner name. This is the
-	// single dispatch path: there is no second code path with its own
-	// checks.
+	// gate, trace, and accounting record uses the inner name. The
+	// loaded-module gate itself lives in callToolGate (executeToolCall),
+	// so this unwrap and the direct ExecuteToolCall path agree; the
+	// captureToolTrace/recordRecentTrace calls below run for the unwrap
+	// errors so the trace sees the same failures the old code produced.
+	// A "call_tool" passed directly to ExecuteToolCall is unwrapped by
+	// callToolGate too, so a nested call_tool can never recurse.
 	if name == "call_tool" && a.Modules != nil {
-		var ctArgs struct {
-			Name      string `json:"name"`
-			Arguments string `json:"arguments"`
+		tc2, gateErr := a.callToolGate(tc)
+		if gateErr != nil {
+			a.captureToolTrace(tc, *gateErr)
+			a.recordRecentTrace(tc, *gateErr)
+			return *gateErr
 		}
-		if err := json.Unmarshal([]byte(tc.Function.Arguments), &ctArgs); err != nil {
-			result := errResult(fmt.Sprintf("ERROR: could not parse call_tool arguments: %v", err))
-			a.captureToolTrace(tc, result)
-			a.recordRecentTrace(tc, result)
-			return result
-		}
-		// Guard 1: no nesting.
-		if ctArgs.Name == "call_tool" || ctArgs.Name == "load_module" {
-			result := errResult(fmt.Sprintf("ERROR: call_tool must not wrap %q — call it directly", ctArgs.Name))
-			a.captureToolTrace(tc, result)
-			a.recordRecentTrace(tc, result)
-			return result
-		}
-		// Guard 2: core tools are already in the array.
-		if coreToolNames[ctArgs.Name] {
-			result := errResult(fmt.Sprintf("ERROR: tool %q is a core tool already in the tool array — call it directly, not through call_tool", ctArgs.Name))
-			a.captureToolTrace(tc, result)
-			a.recordRecentTrace(tc, result)
-			return result
-		}
-		// Guard 3: the tool must belong to a loaded module.
-		modName := a.Modules.ToolModule(ctArgs.Name)
-		if modName == "" {
-			result := errResult(fmt.Sprintf("ERROR: tool %q is not in any module. Available modules: %s", ctArgs.Name, strings.Join(a.Modules.ModuleNames(), ", ")))
-			a.captureToolTrace(tc, result)
-			a.recordRecentTrace(tc, result)
-			return result
-		}
-		if !a.Modules.IsLoaded(modName) {
-			result := errResult(fmt.Sprintf("ERROR: tool %q belongs to module %q, which is not loaded. Call load_module(%q) first.", ctArgs.Name, modName, modName))
-			a.captureToolTrace(tc, result)
-			a.recordRecentTrace(tc, result)
-			return result
-		}
-		// Rewrite tc with the inner tool name and arguments. The ID stays
-		// the same for provider wire pairing. Every gate below now sees the
-		// inner name.
-		tc = proxy.ToolCall{
-			ID:       tc.ID,
-			Type:     tc.Type,
-			Function: proxy.FunctionCall{Name: ctArgs.Name, Arguments: ctArgs.Arguments},
-		}
+		tc = tc2
 		name = tc.Function.Name
 	}
 
@@ -3375,9 +3352,89 @@ func (a *App) canonicalReadPath(ctx context.Context, p string) string {
 	return filepath.Clean(p)
 }
 
+// callToolGate validates a call_tool (or bare module-tool) call against the
+// registry. It returns ("", nil) when the call may proceed, or the toolResult
+// error to return instead. It is the ONE loaded-module gate: it lives here so
+// every caller of ExecuteToolCall — the live model loop through
+// handleToolCall, subagents, tests, embedders — is checked identically, and
+// a module tool can never be dispatched without its module being loaded.
+// When Modules is nil (switch off, subagents), it is a no-op.
+func (a *App) callToolGate(tc proxy.ToolCall) (proxy.ToolCall, *toolResult) {
+	if a.Modules == nil {
+		return tc, nil
+	}
+	if tc.Function.Name != "call_tool" {
+		// A bare module tool name (not through call_tool): if it belongs to
+		// a module, the module must be loaded — otherwise the model is
+		// guessing at a schema it was never handed.
+		if modName := a.Modules.ToolModule(tc.Function.Name); modName != "" {
+			if a.Modules.IsDisconnected(modName) {
+				r := errResult(fmt.Sprintf("ERROR: tool %q belongs to module %q, whose MCP server is not connected", tc.Function.Name, modName))
+				return tc, &r
+			}
+			if !a.Modules.IsLoaded(modName) {
+				r := errResult(fmt.Sprintf("ERROR: tool %q belongs to module %q, which is not loaded. Call load_module(%q) first.", tc.Function.Name, modName, modName))
+				return tc, &r
+			}
+		}
+		return tc, nil
+	}
+	var ctArgs struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &ctArgs); err != nil {
+		r := errResult(fmt.Sprintf("ERROR: could not parse call_tool arguments: %v", err))
+		return tc, &r
+	}
+	// Guard 1: no nesting.
+	if ctArgs.Name == "call_tool" || ctArgs.Name == "load_module" {
+		r := errResult(fmt.Sprintf("ERROR: call_tool must not wrap %q — call it directly", ctArgs.Name))
+		return tc, &r
+	}
+	// Guard 2: core tools are already in the array.
+	if coreToolNames[ctArgs.Name] {
+		r := errResult(fmt.Sprintf("ERROR: tool %q is a core tool already in the tool array — call it directly, not through call_tool", ctArgs.Name))
+		return tc, &r
+	}
+	// Guard 3: the tool must belong to a loaded module.
+	modName := a.Modules.ToolModule(ctArgs.Name)
+	if modName == "" {
+		r := errResult(fmt.Sprintf("ERROR: tool %q is not in any module. Available modules: %s", ctArgs.Name, strings.Join(a.Modules.ModuleNames(), ", ")))
+		return tc, &r
+	}
+	if a.Modules.IsDisconnected(modName) {
+		r := errResult(fmt.Sprintf("ERROR: tool %q belongs to module %q, whose MCP server is not connected", ctArgs.Name, modName))
+		return tc, &r
+	}
+	if !a.Modules.IsLoaded(modName) {
+		r := errResult(fmt.Sprintf("ERROR: tool %q belongs to module %q, which is not loaded. Call load_module(%q) first.", ctArgs.Name, modName, modName))
+		return tc, &r
+	}
+	// Rewrite tc with the inner tool name and arguments. The ID stays the
+	// same for provider wire pairing.
+	return proxy.ToolCall{
+		ID:       tc.ID,
+		Type:     tc.Type,
+		Function: proxy.FunctionCall{Name: ctArgs.Name, Arguments: ctArgs.Arguments},
+	}, nil
+}
+
 // executeToolCall is the dispatch switch behind ExecuteToolCall.
 func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
 	name := tc.Function.Name
+
+	// Context modules: the loaded-module gate + call_tool unwrap live HERE,
+	// the single dispatch. handleToolCall (the live model path) also unwraps
+	// at the top so dedup/hooks/trace see the inner name — but the gate is
+	// enforced here, so a direct ExecuteToolCall on an unloaded module tool
+	// is rejected identically.
+	tc2, gateErr := a.callToolGate(tc)
+	if gateErr != nil {
+		return *gateErr
+	}
+	tc = tc2
+	name = tc.Function.Name
 
 	// Phase enforcement: reject tool calls that violate the workflow write-containment
 	// invariant. The error is a regular tool result so the model reads it and can

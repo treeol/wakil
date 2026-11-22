@@ -986,3 +986,142 @@ func TestMeasurement_TokenEstimate(t *testing.T) {
 		t.Errorf("on with MCP (%d) should equal on without MCP (%d) — MCP tools are in modules", onMCPBytes, onBytes)
 	}
 }
+
+// ── Block 2: pre-load delivers the tools; the gate lives in executeToolCall ─
+
+// TestPreload_FirstRequestContainsSchemas: a task text with "trello" must
+// produce a first request whose messages already contain the trello
+// schemas, in the same form load_module returns — and a call_tool to a
+// trello tool then works without load_module.
+func TestPreload_FirstRequestContainsSchemas(t *testing.T) {
+	mcp := newFakeMCPManager(connectedServer("trello", &fakeMCPSession{}, "get_boards", "get_card"))
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.MCP = mcp
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
+
+	task := "add a card to the trello board"
+	preload := app.Modules.MCPModulePreload(task, app.Cfg.MCPModuleKeywords)
+	if len(preload) != 1 || preload[0] != "mcp:trello" {
+		t.Fatalf("pre-load for %q = %v, want [mcp:trello]", task, preload)
+	}
+	app.Modules.PreloadModules(preload)
+
+	schemas, ok := app.Modules.PreloadedSchemas(preload)
+	if !ok {
+		t.Fatal("PreloadedSchemas returned ok=false for a pre-loaded module")
+	}
+	for _, want := range []string{`Module "mcp:trello" loaded`, `"name": "trello__get_boards"`, `"name": "trello__get_card"`} {
+		if !strings.Contains(schemas, want) {
+			t.Errorf("pre-loaded schemas missing %q:\n%s", want, schemas)
+		}
+	}
+	// The schemas must be byte-identical to what load_module returns.
+	tools, desc, err := app.Modules.LoadModule("mcp:trello")
+	if err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	schemasJSON, _ := json.MarshalIndent(tools, "", "  ")
+	wantBlock := fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", "mcp:trello", desc, schemasJSON)
+	if schemas != wantBlock {
+		t.Errorf("pre-loaded schemas differ from load_module form:\nwant:\n%s\ngot:\n%s", wantBlock, schemas)
+	}
+
+	// And a call_tool to a trello tool works without load_module.
+	result := app.handleToolCall(context.Background(), proxy.ToolCall{
+		ID:       "test-call-preload",
+		Function: proxy.FunctionCall{Name: "call_tool", Arguments: `{"name":"trello__get_boards","arguments":"{}"}`},
+	})
+	if strings.HasPrefix(result.text, "ERROR") || strings.Contains(result.text, "not loaded") {
+		t.Errorf("call_tool to a pre-loaded module tool must work without load_module, got: %s", result.text)
+	}
+}
+
+// TestExecuteToolCall_UnloadedModuleToolRejected: the exported dispatch
+// reaches the same gate as handleToolCall — a direct ExecuteToolCall on an
+// unloaded module tool is rejected, never dispatched.
+func TestExecuteToolCall_UnloadedModuleToolRejected(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.ExecuteToolCall(context.Background(), proxy.ToolCall{
+		ID:       "test-direct",
+		Function: proxy.FunctionCall{Name: "staging_put", Arguments: `{"key":"k","value":"v"}`},
+	})
+	if !strings.HasPrefix(result.text, "ERROR:") || !strings.Contains(result.text, "not loaded") {
+		t.Errorf("direct ExecuteToolCall on an unloaded module tool must be rejected, got: %s", result.text)
+	}
+}
+
+// TestExecuteToolCall_LoadedModuleToolDispatches: once the module is loaded
+// the direct dispatch reaches the handler (here: a declining confirmer).
+func TestExecuteToolCall_LoadedModuleToolDispatches(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return false })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	if _, _, err := app.Modules.LoadModule("edit-extras"); err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	result := app.ExecuteToolCall(context.Background(), proxy.ToolCall{
+		ID:       "test-direct-loaded",
+		Function: proxy.FunctionCall{Name: "move_file", Arguments: `{"src":"/work/a","dst":"/work/b"}`},
+	})
+	if !strings.Contains(result.text, "[declined by user]") {
+		t.Errorf("loaded module tool via direct ExecuteToolCall must reach its handler, got: %s", result.text)
+	}
+}
+
+// TestExecuteToolCall_CallToolRejectedDirect: call_tool passed directly to
+// ExecuteToolCall (skipping handleToolCall) is unwrapped by the same gate,
+// not dispatched to a nonexistent "call_tool" handler.
+func TestExecuteToolCall_CallToolRejectedDirect(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.ExecuteToolCall(context.Background(), proxy.ToolCall{
+		ID:       "test-direct-calltool",
+		Function: proxy.FunctionCall{Name: "call_tool", Arguments: `{"name":"call_tool","arguments":"{}"}`},
+	})
+	if !strings.HasPrefix(result.text, "ERROR:") || !strings.Contains(result.text, "must not wrap") {
+		t.Errorf("call_tool wrapping call_tool via direct dispatch must be rejected, got: %s", result.text)
+	}
+}
+
+// TestExecuteToolCall_BareModuleToolNameEnforced: a bare module tool name
+// (not through call_tool) is only dispatched when its module is loaded, so
+// the model cannot guess at a schema it was never handed.
+func TestExecuteToolCall_BareModuleToolNameEnforced(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.ExecuteToolCall(context.Background(), proxy.ToolCall{
+		ID:       "test-bare",
+		Function: proxy.FunctionCall{Name: "move_file", Arguments: `{"src":"/work/a","dst":"/work/b"}`},
+	})
+	if !strings.HasPrefix(result.text, "ERROR:") || !strings.Contains(result.text, "not loaded") {
+		t.Errorf("bare module tool with module not loaded must be rejected, got: %s", result.text)
+	}
+}
+
+// TestSwitchOff_HooksAreNoOps: with the switch off, RegisterMCPModules and
+// the pre-load path are no-ops and the tool array is unchanged (the golden
+// tests assert byte identity; this asserts the hooks do not exist).
+func TestSwitchOff_HooksAreNoOps(t *testing.T) {
+	mcp := newFakeMCPManager(connectedServer("trello", &fakeMCPSession{}, "get_boards"))
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "off"
+	offTools := BuildTools(app.Cfg, "/work", mcp, "")
+	app.Tools = offTools
+	app.Modules = ModuleRegistryForApp(app.Cfg, "/work", mcp)
+	if app.Modules != nil {
+		t.Fatalf("switch off: ModuleRegistryForApp must return nil, got %v", app.Modules)
+	}
+	app.MCP = mcp
+	app.RegisterMCPModules(mcp) // must be a no-op
+	if len(app.mcpEventBuf) != 0 {
+		t.Errorf("switch off: lifecycle events must not be recorded, got %d", len(app.mcpEventBuf))
+	}
+	if mcp.lifecycle != nil {
+		t.Error("switch off: the manager must not get a lifecycle handler")
+	}
+}

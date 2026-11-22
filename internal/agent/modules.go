@@ -671,6 +671,45 @@ func (r *ModuleRegistry) PreloadModules(names []string) {
 	}
 }
 
+// ModuleSchemasBlock renders one module's tool schemas in the exact form
+// handleLoadModule returns, so a pre-loaded module needs no load_module
+// round trip: the model already has the schemas on the first request, and a
+// call_tool to any of its tools passes the loaded check. The block is
+// delivered as an appended user-role message, never by editing an earlier
+// message and never by changing the tool array.
+func (r *ModuleRegistry) ModuleSchemasBlock(name string) (string, bool) {
+	r.mu.Lock()
+	m, ok := r.byName[name]
+	r.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	schemasJSON, _ := json.MarshalIndent(m.Tools, "", "  ")
+	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", name, m.Desc, schemasJSON), true
+}
+
+// PreloadedSchemas renders the schemas block for every module in names that
+// exists and is not disconnected, joined by a blank line, in the order
+// given. Names that do not resolve are skipped.
+func (r *ModuleRegistry) PreloadedSchemas(names []string) (string, bool) {
+	if r == nil || len(names) == 0 {
+		return "", false
+	}
+	var blocks []string
+	for _, n := range names {
+		if r.IsDisconnected(n) {
+			continue
+		}
+		if block, ok := r.ModuleSchemasBlock(n); ok {
+			blocks = append(blocks, block)
+		}
+	}
+	if len(blocks) == 0 {
+		return "", false
+	}
+	return strings.Join(blocks, "\n\n"), true
+}
+
 // moduleCapabilityLine returns the preamble inventory line for a conditional
 // tool group (LSP, browser) when context modules are on. If the module was
 // pre-loaded at construction time, the full line stays as today. If not, a
