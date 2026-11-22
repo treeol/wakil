@@ -1550,3 +1550,118 @@ Listed so the review can attack the load-bearing assumptions:
    is a reliability regression regardless of the token saving.
 5. If the Shell/verified/Interaction cuts are rejected, the 10-12k target is
    reachable only through the tool side alone, which is a thinner margin.
+
+---
+
+# Question 8 — Measurement on the bench
+
+## 8.1 What the harness already gives us
+
+`bench/results/*.csv`, one row per run, 16 columns
+(`scripts/bench.sh:178`):
+
+```
+date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,
+tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,
+mashura_rounds
+```
+
+`tokens_cached` exists, and `print_table` already computes a **cached-%**
+column (`scripts/bench.sh:1021-1023`). So the harness **can** detect a cache
+regression — which corrects the earlier draft's claim (§C6 in the plan was
+based on a stale result file).
+
+`tokens_in` and `tokens_cached` come from the proxy's usage accounting
+(`internal/proxy/cost.go:71`, `internal/wiring/resultjson.go:95-104`).
+
+## 8.2 The task set and what each measures
+
+| Task | Shape | What it isolates |
+|---|---|---|
+| `add-flag` | 1 turn, small repo, one file edit + test | baseline prefix cost; does the model find `edit_file`/`run_shell` without the index pointing at them? |
+| `fix-test` | bug hunt, needs `search_files` + `read_file` + test run | one iteration of read/test iteration; `search` module decision |
+| `rename` | many-package refactor, needs `search_files`, `edit_file`, build | **longest** task; the one where module loading can amortise |
+| `steps` | six numbered steps, six artifacts | many short tool rounds; stress on per-turn prefix re-send |
+| `long-read` | ~60 files of prose, needs `read_file_full` ×60 + `write_file` | **the best module test**: many turns, high prefix re-send, and it needs no module at all (so a load would be pure loss) |
+
+## 8.3 The protocol per stage
+
+For each stage (1 tools, 2 prompt modules, 3 style file, 4 pre-loading):
+
+```
+scripts/bench.sh --wakil ./wakil-before --runs 5 --model <pinned> > before.txt
+scripts/bench.sh --wakil ./wakil-after  --runs 5 --model <pinned> > after.txt
+```
+
+- **5 runs** per task per binary (single-run deltas are noise; the harness
+  supports `--runs N`).
+- **Same model string** for both, and the provider pinned
+  (`provider.order`/`only`), because a different upstream route changes cache
+  behaviour and invalidates the comparison. This is a **precondition**, per the
+  task's note — pinning the provider and adding harder tasks are separate work.
+- Compare with the harness's own table plus a direct CSV diff on:
+  `tokens_in`, `tokens_cached`, `cost_usd`, `tool_calls`, `result`.
+
+## 8.4 Columns and thresholds
+
+| Column | Success | Regression |
+|---|---|---|
+| `result` = pass rate | ≥ baseline pass rate | **any** task that passed before and fails after, on ≥2 of 5 runs |
+| `tokens_in` (median of 5) | ≥ 20 % lower on tasks where no module was loaded | any task higher |
+| `tokens_cached` (median) | cached-% at or above baseline | cached-% drop > 5 points on a multi-turn task (a cache-busting bug) |
+| `cost_usd` (median) | ≥ 15 % lower | higher |
+| `tool_calls` (median) | ≤ baseline + 1 | > baseline + 1 on a task that needs no module (extra round trips = the loader is being misused) |
+| `exit_reason` | no new `error`/`backend_failure` | any new failure reason |
+
+**Why 20 % on `tokens_in` for stage 1:** the tool split removes 5 800 of
+25 223 est. tokens ≈ 23 % of the static prefix, but `tokens_in` also counts
+conversation, so the observed drop will be smaller on long tasks. 20 % on
+short tasks is the honest expectation; on `long-read` a 5-10 % drop is normal.
+
+**Why "any task higher" is a regression, not a warning:** an unconditional
+prefix reduction cannot legitimately raise `tokens_in`; if it does, something
+was added (index, loader, or a module) that should not have been.
+
+**Why `tool_calls` matters as much as tokens:** the whole risk of this design
+is that the model loads modules it does not need. `tool_calls > baseline + 1`
+on a task with no module need is the signal.
+
+## 8.5 Per-stage expectations (estimates, to be falsified)
+
+| Stage | `tokens_in` short tasks | `tokens_in` `long-read` | pass rate | cache-% |
+|---|---|---|---|---|
+| 1 tools | −18 to −23 % | −5 to −10 % | unchanged | unchanged |
+| 2 prompt modules | −25 to −35 % | −10 to −15 % | unchanged | unchanged |
+| 3 style file | 0 (adds ≤383 tok if used) | 0 | unchanged | unchanged |
+| 4 pre-loading | no change vs stage 2 on 1-turn tasks; **better `tool_calls`** on multi-step | better `tool_calls` | unchanged or better | unchanged |
+
+Stage 3 is measured only for **non-regression**; it is a usability change and
+must not be reported as a saving.
+
+## 8.6 What the bench cannot measure here
+
+1. **Single-turn tasks cannot show module-load amortisation.** `add-flag`,
+   `fix-test`, `steps` and `long-read` are effectively one prompt with tool
+   loops; only `rename` has enough turns for a load to pay off (§7.0's
+   break-even is 5-31 turns). **This is why the task says harder tasks are a
+   precondition for fine comparisons.**
+2. **Provider cache behaviour.** If the pinned provider has a minimum
+   cacheable prefix or does not report `cache_creation_input_tokens`, the
+   cached-% column is meaningless. Must be checked once and recorded.
+3. **Module-load frequency.** No CSV column counts `load_module` calls. Stage 4
+   should add one to `ResultJSON` (`internal/wiring/resultjson.go`) — a new
+   `modules_loaded` field — or the per-tool counts in the trace (readable with
+   `scripts/context_usage.sh`, once the user runs it) stand in.
+4. **Quality.** The bench checks artifacts, not whether the agent skipped a
+   rule it should have followed. `long-read` is the closest proxy (it fails
+   loudly if the model does not read all files), but "did it obey the memory
+   rules" is not measured by any task.
+
+## 8.7 The one experiment worth running first
+
+Before any stage: run `scripts/bench.sh --runs 5` on current master twice with
+**the same model, provider pinned, and nothing changed**, and diff the two
+CSVs. That gives the **noise floor** for `tokens_in` and `cost_usd` on this
+machine/provider — without it, the thresholds in §8.4 are guesses. If the
+noise floor is above 5 %, the 20 % threshold is too tight for a 5-run sample
+and the protocol needs more runs or a paired comparison.
