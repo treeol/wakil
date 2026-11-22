@@ -68,10 +68,12 @@ The Go tasks (`add-flag`, `fix-test`, `rename`, and `long-read`'s setup) need th
 toolchain their `go.mod` names (the same as the repo's `go.mod`) in the
 **local cache**. `scripts/bench.sh` resolves it once at start, in the repo
 root with your environment (`GOPROXY=off go env GOVERSION`; the host's own Go
-may be older, it then uses the toolchain it already downloaded), and every
-check and `setup.sh` runs with `GOTOOLCHAIN` set to that exact version and
-`GOPROXY=off`, with the Go cache locations resolved the same way. **A check
-never downloads a toolchain or a module.** Run `go version` once inside the
+may be older, it then uses the toolchain it already downloaded) and remembers
+where that toolchain is on disk (`go env GOROOT`). Every Go command of a check,
+of a `setup.sh` and of the preflight runs that toolchain's own `bin/go` with
+`GOTOOLCHAIN=local` and `GOPROXY=off`, so it works with any `HOME`; the Go
+cache locations are resolved the same way. **A check never downloads a
+toolchain or a module.** Run `go version` once inside the
 repo while online to fetch the toolchain; a host with `GOSUMDB=off` cannot
 switch toolchains (Go verifies the cached one against the checksum database).
 
@@ -183,7 +185,7 @@ allow-list of standard-library packages (so agent code cannot reach `os`,
 `syscall`, `runtime`, `unsafe`, `embed` or cgo, and cannot call `os.Exit`) or
 that carries assembly, C or cgo files (the import closure is walked, so a package in a `_x` or `.x` directory, which `./...` skips, is checked too); copies the task's `hidden/` tests in
 and runs them with a fixed Go environment (`GOFLAGS=-buildvcs=false`,
-`GOWORK=off`, `GOENV=off`, `GOTOOLCHAIN=<the resolved version>`,
+`GOWORK=off`, `GOENV=off`, `GOTOOLCHAIN=local` with the resolved toolchain's `bin/go` first on `PATH`,
 `CGO_ENABLED=0`, `GOPROXY=off`; see "Go requirement"). The test run must exit 0, print no `--- FAIL`, and print a
 `--- PASS: <name>` line for every named hidden test. The self-test covers a
 `TestMain` that exits 0 and an `init()` that prints a `PASS` line and exits,
@@ -268,7 +270,7 @@ approval wordings; folder freshness, `.wakil/` preservation and path
 stability.
 
 The Go toolchain cases: every go call of a check and of `setup.sh` carries the
-resolved `GOTOOLCHAIN` and `GOPROXY=off` (`toolchain-pinned`); the status
+resolved toolchain's `bin/go` and `GOPROXY=off` (`toolchain-pinned`), and a check passes with an empty `HOME` and a failing `go` on `PATH` (`go-empty-home`); a failed case prints the `check:` reason and the log tail (`failure-report`); the status
 mapping (`rc-mapping`, `verdict-required`, `preflight-real-go`); a hanging
 `add-flag` binary (`binary-hang`, `binary-exit`); and `bench/lib/toolchain_cases.sh`, which
 runs a copy of the harness with a stub `go` that prints the Go 1.25.1 error
