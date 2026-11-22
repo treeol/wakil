@@ -12,6 +12,7 @@ package trace
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -162,16 +163,51 @@ func (s *Store) Close() {
 func (s *Store) drainTo(f *os.File) {
 	defer s.wg.Done()
 	defer f.Close()
-	bw := bufio.NewWriterSize(f, 64*1024)
+	// Write one record per syscall. A fixed-size bufio.Writer flushes at a byte
+	// offset regardless of record boundaries, so a record straddling the flush
+	// point used to be written in two parts — a kill between flushes left a
+	// half-written final line (the 65536-byte trace files on users' hosts).
+	// Writing the record and its newline as ONE buffer guarantees every flushed
+	// byte range ends on a line boundary, at the cost of one write per record
+	// (trace volume is small: ~67 lines per 64 KiB).
 	for b := range s.ch {
-		if _, err := bw.Write(b); err != nil {
+		buf := make([]byte, 0, len(b)+1)
+		buf = append(buf, b...)
+		buf = append(buf, '\n')
+		if _, err := f.Write(buf); err != nil {
 			diag.Printf("trace: write error: %v", err)
-		}
-		if err := bw.WriteByte('\n'); err != nil {
-			diag.Printf("trace: write error: %v", err)
+			continue
 		}
 	}
-	if err := bw.Flush(); err != nil {
-		diag.Printf("trace: flush error: %v", err)
+}
+
+// ReadFile parses every line of a trace file, skipping lines that do not
+// parse (a file cut mid-record by an older writer, or a torn tail) and
+// returning how many were skipped.
+func ReadFile(path string) ([]Record, int, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, err
 	}
+	defer f.Close()
+	var recs []Record
+	skipped := 0
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var r Record
+		if err := json.Unmarshal(line, &r); err != nil {
+			skipped++
+			continue
+		}
+		recs = append(recs, r)
+	}
+	if err := sc.Err(); err != nil {
+		return recs, skipped, err
+	}
+	return recs, skipped, nil
 }
