@@ -999,12 +999,13 @@ Conditional groups (not in the default set):
 
 | Bucket | Bytes | Est. tokens |
 |---|---|---|
-| Core tools (proposed) | ≈ 16 500 | ≈ 4 100 |
-| On-demand tools | ≈ 23 000 | ≈ 5 800 |
+| Core tools (proposed) | ≈ 14 200 | ≈ 3 550 |
+| On-demand tools | ≈ 25 400 | ≈ 6 340 |
 | **Total today** | **39 563** | **9 890** |
 
-So the tool side has ~5 800 est. tokens of movable bytes — but the index and
-the loader tool cost some of that back (§7).
+So the tool side has ≈ 6 340 est. tokens of movable bytes — but the index and
+the loader tool cost ≈ 253 back (§7). §7.1.1 is the reconciled core list; this
+table is the pre-reconciliation split and the two agree on the total.
 
 ## 5.4 Caveat
 
@@ -1179,26 +1180,26 @@ unit (estimated tokens)** throughout:
 | Prompt sections | 13 214 | 4 525 | §5.1; assumes Shell/verified/Interaction are each ~halved (**judgement, not measured**) |
 | AGENTS.md section | 1 676 | 1 676 | kept core (§7.10) |
 | Digest + date + cwd + sandbox + repo map + network | 443 | 443 | kept core |
-| Tool definitions | 9 890 | ≈ 4 100 | §5.2 corrected for the double-count (§7.1.1) |
+| Tool definitions | 9 890 | ≈ 3 550 | §5.2 corrected for the double-count (§7.1.1) |
 | Writing style | 0 | 383 | only when a style file/default is active (§7.5) |
 | Module index | 0 | 172 | §7.2 |
 | `load_module` definition | 0 | 81 | |
-| **Total static prefix** | **25 223** | **≈ 11 380** | |
+| **Total static prefix** | **25 223** | **≈ 10 830** | |
 
-So the **corrected core is ≈ 11 380 est. tokens**, inside the 10-12k target —
-but with less margin than the draft claimed. The load-bearing assumption is
+So the **corrected core is ≈ 10 830 est. tokens**, inside the 10-12k target —
+and the target is met with ~1 200 tokens of margin. The load-bearing assumption is
 the prompt cuts: **if the Shell / "verified" / Interaction cuts are rejected,
-core is ≈ 12 555 and the 10-12k target is missed.** Any repo whose AGENTS.md is
+core is ≈ 12 005 and the 10-12k target is missed.** Any repo whose AGENTS.md is
 larger than this one's moves further out. §5.4 already warns that a single
 static table misstates the typical case.
 
 | Quantity | Corrected value |
 |---|---|
 | Static prefix today | 25 223 est. tokens/request |
-| Corrected core + style + index + loader | ≈ 11 380 est. tokens |
-| Raw prefix reduction | ≈ 13 843 est. tokens (**estimate**) |
-| Recurring saving at a 0.1× cache-read discount | ≈ 1 384 token-equiv/request (**estimate**) |
-| One module-load round trip over an 11 380-token prefix | ≈ 1 258 token-equiv (see 7.0.2) |
+| Corrected core + style + index + loader | ≈ 10 830 est. tokens |
+| Raw prefix reduction | ≈ 14 393 est. tokens (**estimate**) |
+| Recurring saving at a 0.1× cache-read discount | ≈ 1 439 token-equiv/request (**estimate**) |
+| One module-load round trip over a 10 830-token prefix | ≈ 1 360 token-equiv (see 7.0.2) |
 
 ### 7.0.2 The break-even, stated the right way round
 
@@ -1221,25 +1222,25 @@ happened before it was loaded**, minus the load cost. Therefore:
   §7.3 makes it the default and §7.5's style file is static.
 
 Recalculated table — "how many requests must a module be **not needed** before
-one mid-session load repays itself" (cache-read 0.1×, load ≈ 1 258
+one mid-session load repays itself" (cache-read 0.1×, load ≈ 1 360
 token-equiv):
 
 | Module size | Saved per request while unloaded | Requests without needing it to break even |
 |---|---|---|
-| 2 100 (memory) | 210 | 6.0 |
-| 1 768 (subagents) | 177 | 7.1 |
-| 1 246 (search) | 125 | 10.1 |
-| 1 111 (async) | 111 | 11.3 |
-| 936 (capture_skill_template) | 94 | 13.4 |
-| 693 (long-session) | 69 | 18.2 |
-| 562 (git) | 56 | 22.5 |
-| 440 (collapse_context) | 44 | 28.6 |
-| 338 (documentation upkeep) | 34 | 37.0 |
-| 172 (the index itself) | 17 | 74.0 |
+| 3 459 (memory) | 346 | 3.9 |
+| 2 750 (skills) | 275 | 4.9 |
+| 1 768 (subagents) | 177 | 7.7 |
+| 1 529 (search) | 153 | 8.9 |
+| 1 133 (long-session) | 113 | 12.0 |
+| 1 111 (async) | 111 | 12.3 |
+| 562 (git) | 56 | 24.2 |
+| 406 (edit-extras) | 41 | 33.5 |
+| 338 (documentation upkeep) | 34 | 40.3 |
+| 172 (the index itself) | 17 | 80.6 |
 
 **Load cost, honestly priced** (this was understated too):
 
-- the cached prefix re-read: `11 380 × 0.1 ≈ 1 138` token-equiv, and on a later
+- the cached prefix re-read: `10 830 × 0.1 ≈ 1 083` token-equiv, and on a later
   request it is `core + conversation so far`, not just core;
 - **plus** the tool call's output tokens. The draft priced 120 output tokens
   at 1:1; output typically bills at 3-5× **uncached input**, so 120 output
@@ -1250,8 +1251,8 @@ token-equiv):
   (**recall: ~1.25×**, unverified);
 - **plus** the module's own bytes on that request.
 
-`11 380 × 0.1 + 480 ≈ 1 618` token-equiv with the output multiplier included,
-rather than 1 258. The table above uses the conservative 1 258; the real
+`10 830 × 0.1 + 480 ≈ 1 563` token-equiv with the output multiplier included,
+rather than 1 360. The table above uses the conservative 1 360; the real
 figure is worse, which strengthens the conclusion.
 
 **Consequence, and it is the central finding:** for short sessions — which is
@@ -1266,7 +1267,7 @@ discount, module loading becomes attractive." That is wrong for the same reason:
 with no discount, a mid-session load costs the **entire prefix** (≥ 11k) and
 saves at most one module (≤ 2.1k) per request — it never repays. What a missing
 discount changes is that the **prefix reduction becomes 10× more valuable**
-(≈ 13 843 token-equiv per request instead of ≈ 1 384), which makes stages 1-2
+(≈ 14 393 token-equiv per request instead of ≈ 1 439), which makes stages 1-2
 *more* worth doing and module loading *no* more attractive. The design is
 therefore **unconditionally right about stages 1-2** and **conditional about
 loading**.
@@ -1304,7 +1305,7 @@ Twelve modules. Sizes are the measured §5 values, rounded; all are
 | `subagents` | Subagents section **only** (both dispatch tools are core) | ≈ 7 073 | **1 768** |
 | `search` | Search & Research section + searxng tools | ≈ 4 987 + 1 135 | 1 246 + 283 = **1 529** |
 | `async` | Async execution section **only** (all 5 tools are core) | ≈ 4 446 | **1 111** |
-| `skills` | Skills section + 8 skill tool defs (list/search stay core) | ≈ 1 617 + 8 912 | 404 + 2 228 = **2 632** |
+| `skills` | Skills section + 7 skill tool defs (list/search/load stay core) | ≈ 1 617 + 9 386 | 404 + 2 346 = **2 750** |
 | `long-session` | Truncated results/collapse section + `collapse_context` | ≈ 2 772 + 1 762 | 693 + 440 = **1 133** |
 | `git` | 5 git tool defs | 2 248 | **562** |
 | `staging` | 5 staging tool defs | 2 304 | **576** |
@@ -1348,20 +1349,20 @@ Core tools (§5.2 + the rules above), measured from the per-tool table:
 | `list_skills` | 291 |
 | `load_skill` | 899 |
 | `load_module` (new) | ≈ 325 |
-| **Total** | **≈ 15 164 B ≈ 3 791 est. tokens** |
+| **Total** | **≈ 14 164 B ≈ 3 541 est. tokens** |
 
-So the corrected core tool figure is **≈ 3 800 est. tokens**, not 4 100. The
+So the corrected core tool figure is **≈ 3 550 est. tokens**, not 4 100. The
 §7.0 ledger uses 4 100 as a conservative upper bound (it leaves room for
 `context_mark` when pruning is on, which adds ≈ 1 518 est. tokens on top —
 another reason prune-on must be measured separately).
 
 ### 7.1.2 Is 10-12k reachable?
 
-**Yes at ≈ 11 380 est. tokens**, but with two explicit dependencies:
+**Yes at ≈ 10 830 est. tokens**, but with two explicit dependencies:
 
 1. **The prompt cuts** in §5.1 (Shell, "verified", Interaction each roughly
    halved) are a **judgement, not a measurement**. Reject them and core is
-   ≈ 12 555 — outside the target.
+   ≈ 12 005 — outside the target.
 2. **AGENTS.md stays core** (§7.10), so any repo with a bigger AGENTS.md is
    outside the target by definition. This is an accepted limitation, not an
    oversight.
@@ -1631,7 +1632,7 @@ Stated plainly, because the user asked for "more expensive or less reliable":
 
 | Failure | Cost |
 |---|---|
-| Model loads a module it did not need | ≈ 1 046 token-equiv + the module's bytes re-sent per turn |
+| Model loads a module it did not need | ≈ 1 360 token-equiv (more if output bills above input) + the module's bytes re-sent per turn |
 | Model fails to load a needed module | one wasted tool call, then the error message teaches it |
 | A module inserted as a system message at index 1 | one whole-prefix invalidation — avoided by R1 |
 | Tools mutated mid-session | one whole-prefix invalidation (if tools are in the prefix) — avoided by R3 |
@@ -1685,7 +1686,7 @@ existing default-config behaviour minus the deferred definitions; and a test
 that no module tool name appears in the core array.
 
 **Expected saving.** 9 890 → ≈ 3 800-4 100 est. tokens of tool definitions,
-**≈ 5 800 est. tokens off every request** (estimate), with no round trip. This
+**≈ 6 340 est. tokens off every request** (estimate), with no round trip. This
 is the largest single, unconditional win. It needs no model cooperation **for
 requests that use only core tools** — for any request that uses memory, git,
 skills, staging or delegation it needs one `load_module` + one `call_tool`, so
@@ -1778,10 +1779,11 @@ Listed so the review can attack the load-bearing assumptions:
 
 1. If tools are **not** in the cacheable prefix, R3 is unnecessary and stage 1
    could add tools mid-session — a different, simpler design.
-2. If the provider applies **no cache discount**, every stage saves far more
-   and module loading is a clear win even for one turn.
+2. If the provider applies **no cache discount**, the prefix reduction
+   (stages 1-2) saves ~10x more — and module *loading* becomes no more
+   attractive, because a load costs the whole ~11k prefix (§7.0.2).
 3. If the provider's cache has a **minimum cacheable prefix length** above
-   9 261 tokens, the core request may not be cacheable at all, and the whole
+   ≈ 10 830 tokens, the core request may not be cacheable at all, and the whole
    arithmetic changes.
 4. If the model cannot reliably call `load_module` when it needs one, stage 1
    is a reliability regression regardless of the token saving.
@@ -1841,27 +1843,43 @@ scripts/bench.sh --wakil ./wakil-after  --runs 5 --model <pinned> > after.txt
 
 ## 8.4 Columns and thresholds
 
+Corrected after review. Three of the draft's criteria were wrong:
+
+- "cached-% at or above baseline" would **fail a correct implementation**,
+  because shrinking the static prefix legitimately lowers the cached share of
+  `tokens_in`. Use **absolute uncached input tokens**
+  (`tokens_in − tokens_cached`) instead.
+- "`cost_usd` ≥ 15 % lower" assumed a large recurring saving; §7.0.2 shows it is
+  ≈ 1 439 token-equiv at a 0.1× discount. **5 %** is the honest floor for a
+  5-run sample, and even that may sit under the noise floor (§8.7).
+- "any task higher on `tokens_in` = regression" conflicts with Stage 1 adding
+  the index + loader (≈ 253 est. tokens) and Stage 3 adding style bytes.
+  Restate as a budget: `tokens_in` must not rise by more than the stage
+  deliberately adds.
+
 | Column | Success | Regression |
 |---|---|---|
-| `result` = pass rate | ≥ baseline pass rate | **any** task that passed before and fails after, on ≥2 of 5 runs |
-| `tokens_in` (median of 5) | ≥ 20 % lower on tasks where no module was loaded | any task higher |
-| `tokens_cached` (median) | cached-% at or above baseline | cached-% drop > 5 points on a multi-turn task (a cache-busting bug) |
-| `cost_usd` (median) | ≥ 15 % lower | higher |
-| `tool_calls` (median) | ≤ baseline + 1 | > baseline + 1 on a task that needs no module (extra round trips = the loader is being misused) |
+| `result` pass rate | ≥ baseline | any task that passed before fails on ≥2 of 5 runs |
+| `tokens_in` (median) | Stage 1: ≥ 18 % lower on short tasks, ≥ 5 % lower on `long-read`; Stage 2: a further ≥ 20 % on short tasks | any rise beyond the stage's own added bytes (index+loader 253, style ≤ 1 024) |
+| **uncached** = `tokens_in − tokens_cached` (median) | lower than baseline | higher |
+| `cost_usd` (median) | ≥ 5 % lower | higher |
+| `tool_calls` (median) | ≤ baseline + 1 | > baseline + 2 on a task that needs no module (loader misuse) |
+| `modules_loaded` (new column, Stage 1) | 0 on tasks needing no module | > 0 on `long-read`/`add-flag` with no module need |
+| `tokens_out` (median) | ≤ baseline + 5 % | > +10 % (dispatcher argument re-encoding) |
+| `seconds` (median) | ≤ baseline + 10 % | > +25 % (extra round trips) |
 | `exit_reason` | no new `error`/`backend_failure` | any new failure reason |
+| **reliability probe** (new task, §8.8) | task passes at baseline rate | any drop |
 
-**Why 20 % on `tokens_in` for stage 1:** the tool split removes 5 800 of
-25 223 est. tokens ≈ 23 % of the static prefix, but `tokens_in` also counts
-conversation, so the observed drop will be smaller on long tasks. 20 % on
-short tasks is the honest expectation; on `long-read` a 5-10 % drop is normal.
+**Why 18 % on `tokens_in` for stage 1:** the tool split removes ≈ 6 340 of
+25 223 est. tokens ≈ 25 % of the static prefix, but (a) `tokens_in` also
+counts conversation, and (b) the bench runs `--no-memory` (§5.4), which already
+removes the 1 359-token memory group — so the observed drop is smaller, ~18 %
+max. Stating 23 % (the earlier draft) was wrong for the bench specifically.
 
-**Why "any task higher" is a regression, not a warning:** an unconditional
-prefix reduction cannot legitimately raise `tokens_in`; if it does, something
-was added (index, loader, or a module) that should not have been.
-
-**Why `tool_calls` matters as much as tokens:** the whole risk of this design
-is that the model loads modules it does not need. `tool_calls > baseline + 1`
-on a task with no module need is the signal.
+**Why "budget, not any rise" on `tokens_in`:** an implementation that adds the
+index and loader is *supposed* to add ~253 est. tokens; calling that a
+regression would fail the design's own plan. The criterion is that the rise be
+no larger than what the stage intentionally adds.
 
 ## 8.5 Per-stage expectations (estimates, to be falsified)
 
@@ -1945,7 +1963,7 @@ what changed so the trail is auditable.
 
 | # | Finding | Where fixed |
 |---|---|---|
-| 1 | Core total omitted 2 119 est. tokens of non-prompt preamble (AGENTS.md + digest + environment); 9 261 was wrong | §7.0.1 rewritten as one ledger; corrected core ≈ 11 380, reduction ≈ 13 843 |
+| 1 | Core total omitted 2 119 est. tokens of non-prompt preamble (AGENTS.md + digest + environment); 9 261 was wrong | §7.0.1 rewritten as one ledger; corrected core ≈ 10 830, reduction ≈ 14 393 |
 | 2 | Stage 1 had no mechanism; R3 forbade mid-session tools while Stage 1 promised them (circular) | §7.4 R3 now specifies `load_module` + `call_tool`, states the schema-validation trade-off and gate parity, and adds Stage 0 as the measurement that decides the variant |
 | 3 | Inventory self-contradictions (async tools both core and in the `async` module; dispatch tools both core and in `subagents`; `delete_file`, "verified", digest) | §7.1 consistency note + rewritten module table + §7.1.1 core tool sum |
 | 4 | Break-even inverted; load cost omitted output-token multiplier, cache write, and conversation growth | §7.0.2 rewritten ("requests without needing it"), load cost re-priced, counter-case corrected |
@@ -1962,7 +1980,7 @@ what changed so the trail is auditable.
 | Finding | Why not taken |
 |---|---|
 | "A generic dispatcher can bypass per-tool approval gates" (muse-wonder) | Valid concern, addressed rather than dismissed: §7.9 Stage 1 requires the dispatcher to look up `IsGatedTool` on the inner name so gating is identical. Recorded as a **test requirement**, not a design gap. |
-| "Output tokens cost 3-5×, so 120 output tokens ≈ 600" | Accepted as the *direction* (§7.0.2 uses the conservative 1 258 and notes the real figure is worse), but the exact multiplier is **unverified** — it is a provider rate-card fact, marked as such rather than asserted. |
+| "Output tokens cost 3-5×, so 120 output tokens ≈ 600" | Accepted as the *direction* (§7.0.2 uses the conservative 1 360 and notes the real figure is worse), but the exact multiplier is **unverified** — it is a provider rate-card fact, marked as such rather than asserted. |
 | "`modules_loaded` should be added in Stage 4" (gemini) | Accepted but re-assigned: §8.6.3 now says **Stage 1**, because Stage 1's risk is loader misuse. |
 | "Add `memory-note`/`git-history` bench tasks now" | Out of scope: the task statement says harder tasks are planned separately. §8.8 proposes them and states the precondition. |
 
