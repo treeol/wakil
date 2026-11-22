@@ -615,3 +615,151 @@ disabled in standard mode.
 | Per-module cache accounting | Missing (no instrumentation) |
 | Module index for the model | Missing |
 | User-editable writing style file | Partially: `agent_prompt_path` replaces *everything*; `style_guide_paths` replaces code style only. A writable "writing style" module does not exist. |
+
+---
+
+# Question 3 — Prompt caching
+
+## 3.1 There is one wire shape, not three
+
+Wakil has **one** outbound request shape for model calls: OpenAI Chat
+Completions (`Client.Stream`, `internal/proxy/client.go:1152`, body struct at
+`:1197-1253`). Endpoints have two `kind` values — `openai` (default) and
+`ilm-proxy` (`internal/config/config.go:41`, `internal/proxy/client.go:472-473`)
+— but both speak Chat Completions; `Kind` only changes headers, metadata, the
+model field and default `max_tokens` (`client.go:1161`, `:1227`, `:1254-1268`).
+
+**There is no direct Anthropic Messages API path.** `internal/counsel/hardening_test.go:385`
+states it explicitly: "The direct Anthropic cache_control block shape is gone
+with the direct path". So the three backends the question names reduce to:
+
+| Backend in the question | What actually exists |
+|---|---|
+| OpenRouter | `Kind: "openai"` with an OpenRouter base URL. Cache breakpoints are emitted as **OpenAI-style `content` parts with a `cache_control` field**, which OpenRouter maps onto Anthropic/Gemini caching. |
+| Anthropic direct | **Does not exist.** Anthropic is reached through OpenRouter as `anthropic/claude-*`. |
+| Local proxy | `Kind: "ilm-proxy"` — same Chat Completions shape, plus `metadata.chat_id` and `X-Ilm-*` headers. |
+
+## 3.2 Where the cache breakpoints are
+
+`computeCacheBreakpoints` (`internal/proxy/client.go:308-325`):
+
+```go
+marked[0] = true                                  // first message, if it has content
+marked[last non-null message] = true              // scanning backward
+```
+
+Exactly **two** breakpoints, always: the first message (the preamble at
+`Conv[0]`) and the last message with non-null content (the moving tail). The
+comment calls these "static" and "moving."
+
+The breakpoints only exist when caching is on, decided by
+`anthropicCacheHeuristic` (`client.go:342-349`):
+
+- `cache_control` explicitly `true` in the endpoint config → on.
+- explicitly `false` → off, overrides the heuristic.
+- unset → on **iff** the model string contains `anthropic/claude` or starts with
+  `claude-`.
+
+So for every non-Anthropic model — a local llama.cpp/vLLM endpoint, or an
+OpenRouter route to Gemini/DeepSeek — **Wakil emits no breakpoints at all** and
+relies on automatic prefix caching. That matters for the design: a module
+system's win on such models comes purely from a shorter prefix, not from
+breakpoint placement.
+
+Decoration happens per message in `marshalWireMessages`
+(`internal/proxy/client.go:239-290`): a marked message with text content is
+emitted as a one-element `content` array of
+`{"type":"text","text":…,"cache_control":{"type":"ephemeral"}}`. Unmarked
+messages stay plain strings, and the golden test
+`TestCacheControlUnsetByteIdentical` (`internal/proxy/cache_control_test.go:21`)
+proves requests are byte-identical to the pre-cache shape when caching is off.
+
+Verified by test, not by reading only: `TestCacheControlMarksFirstAndLast`
+(`cache_control_test.go:110`) asserts messages[0] and the last non-null message
+get parts-shaped content and everything between stays plain.
+
+## 3.3 Where tools sit relative to the cache prefix
+
+**Answerable from the code:** `tools` is a **sibling top-level field** of
+`messages` in the body (`client.go:1203` vs `:1202`), serialised as
+`"tools":[…]` after `"messages":[…]` in the Go struct order — but JSON object
+key order on the wire is irrelevant; what matters is the provider's cache
+prefix construction, which is documented as tools-then-system-then-messages for
+Anthropic. **This session cannot verify that from Wakil's code** — it is
+provider-side behaviour. What Wakil's code *does* establish:
+
+- Tools are re-sent on every request; there is no incremental tool protocol.
+- `cache_stable.go:9-13` treats tool ordering as cache-critical and sorts
+  within groups for exactly that reason.
+- The breakpoints mark **messages only** — `computeCacheBreakpoints` takes
+  `[]Message`, never touching `[]Tool`. So if a provider caches tools as part
+  of the prefix, **Wakil places no breakpoint boundary after the tools block**;
+  the first breakpoint is inside `messages[0]`.
+
+This is an important open issue for the design, not a resolved fact. Marked
+**unverified** (§ Unverified).
+
+## 3.4 What changes between turns today
+
+This is the decisive half of the question, and it is answerable from code.
+
+| What | Changes when | Effect on the cached prefix |
+|---|---|---|
+| `Conv[0]` (preamble) | day rollover; `/prompt` switch; a session setting change (`invalidatePreambleLocked`, `app.go:2135`); network-mode change; memory-store statistics changing across a midnight boundary | **Invalidates everything after it** — the whole request. Deliberately limited to once per day (`ensurePreamble` doc comment, `app.go:2142-2155`). |
+| `messages[1]` — the first user message, **including the retrieval block** | every turn, because it is the *first* user message of the session and the retrieval block is baked into it | Nothing after the fact: it is written once and stays. Byte-stable thereafter. |
+| The **tail** message | every turn (new user message / tool result) | The moving breakpoint follows it; that is the intended design. |
+| `tools` | only when a conditional group appears/disappears (config reload, MCP server reconnect changing `OpenTools`, `/backend` switch) | **Whole prefix**, if tools are inside it. |
+| Style-guide system message at index 1 | `/styles enable|disable`, or per-turn path evidence changing the selection | **Everything after index 0** — this is a real, currently-shipped invalidation hazard: a turn that touches a `.py` file selects the Python guide and inserts a system message at index 1, busting the cache for the rest of the conversation. |
+| Extension prompt at index 1 (core mode) | once per session, when the classifier first fires | One-time whole-prefix invalidation, then stable. |
+| `metadata.chat_id` / `session_id` | never mid-session | none |
+
+The retrieval block's placement is the single most important existing decision
+for the design, and `internal/agent/retrieval.go:12-18` says so:
+
+> The block is folded into the user message content (same pattern as workflow
+> directives) — not injected as a separate system message — to preserve the
+> prompt-cache prefix (Conv[0] byte stability).
+
+That is the same constraint any module system faces, already solved once.
+
+## 3.5 Mashūra (counsel) caching — separate path
+
+`internal/counsel` builds its own request bodies and sends them through the
+same transport (`internal/proxy/transport.go`). Its caching:
+`PanelCallConfig.UseCache` is set **only for debate mode**
+(`internal/counsel/oracle.go:167-170`), and the mechanism is OpenRouter
+`session_id` affinity (`oracle.go:634-636`, `:1171`) plus the identical
+briefing across rounds — not `cache_control` parts. So counsel's cost model is
+unrelated to the main loop's, and a module system does not affect it except
+that council briefings attach source files (already path-based).
+
+## 3.6 What this means for where modules may be added
+
+Derived strictly from 3.2-3.4:
+
+1. **A module appended after the moving tail is free** with respect to the
+   existing prefix (it is just more tail), but it is re-sent every subsequent
+   turn — so it costs `module_bytes × remaining_turns` in cache-read terms,
+   not zero.
+2. **A module inserted at index 1 (a new system message) invalidates
+   everything after `messages[0]` once.** With a cache-read discount around
+   10×, one invalidation costs roughly the whole conversation's cached prefix
+   once. For a long conversation that is far more than the module's own size —
+   this is exactly why the plan review's cost-model objection (C3) is blocking.
+3. **Removing a module** is the only operation that produces a pure saving, and
+   it can only happen where the conversation is already being rewritten — i.e.
+   at a collapse. Hence the design's "unload only at a collapse" rule is not a
+   stylistic preference; it follows from the mechanics.
+
+## 3.7 Measured cost of the things that would change
+
+| Item | Bytes | Est. tokens |
+|---|---|---|
+| `prev` property added to every tool when prune is on | +6 073 | +1 518 |
+| Tool set with all optional groups vs builtins only | +8 409 | +2 102 |
+| Memory tool group (8 tools) | 5 437 | 1 359 |
+| Skill-template tool group (3 tools) | 6 394 | 1 598 |
+| Built-in Go style guide message | 1 535 | 383 |
+
+These are the quantities a module system would move in or out of the prefix;
+they are the inputs to the break-even arithmetic §7 must produce.
