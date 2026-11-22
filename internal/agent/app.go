@@ -3422,8 +3422,6 @@ func (a *App) callToolGate(tc proxy.ToolCall) (proxy.ToolCall, *toolResult) {
 
 // executeToolCall is the dispatch switch behind ExecuteToolCall.
 func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult {
-	name := tc.Function.Name
-
 	// Context modules: the loaded-module gate + call_tool unwrap live HERE,
 	// the single dispatch. handleToolCall (the live model path) also unwraps
 	// at the top so dedup/hooks/trace see the inner name — but the gate is
@@ -3434,7 +3432,7 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return *gateErr
 	}
 	tc = tc2
-	name = tc.Function.Name
+	name := tc.Function.Name
 
 	// Phase enforcement: reject tool calls that violate the workflow write-containment
 	// invariant. The error is a regular tool result so the model reads it and can
