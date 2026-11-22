@@ -2558,3 +2558,697 @@ sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/*.jsonl \
 # (wakil with --trace prints the request; or read the size of the tool JSON in a
 # trace once a `tools_sent` field exists — not present today).
 ```
+
+---
+---
+
+# Stage 1 implementation
+
+Verified findings from the code, the data model, the touched files and
+functions, the blocks with their tests, and the open risks. Where the design
+(§7) and the code disagree, the code wins; each disagreement is written down
+and the block is adjusted.
+
+**Stage 0 and reliability probes are out of scope for Stage 1.** §7.9 puts
+Stage 0 (is `tools` in the cacheable prefix? noise floor?) first, and §8.8
+says Stage 1 cannot ship without reliability probes. Both are deferred — the
+task says "Local only" and "no real model requests." The switch defaults to
+off; that is the only safety Stage 1 ships. Stage 0 and the reliability probes
+are listed as follow-ups.
+
+## Verified findings
+
+### BuildTools and the tool dispatch path
+
+`BuildTools` (`internal/agent/mcp_manager.go:1018`) assembles the full tool
+list in stable groups: built-ins → search → MCP → oracle → LSP → browser.
+Each optional group is present or absent for the whole session; there is no
+deferred-tool mechanism today (§2.3).
+
+The tool dispatch path, per turn:
+
+1. `streamTurn` (`internal/agent/turn_phases.go:247`) builds the tool list:
+   `tools := a.toolsWithShellNote(a.toolsForTurn())`.
+2. `toolsForTurn` (`mcp_manager.go:905`) returns `a.Tools` (the
+   construction-time list) with the live MCP snapshot swapped in. **This
+   function must be updated for the switch-on path** (Block 2): with modules
+   on, `a.Tools` is core-only, and MCP tools arrive through modules, not
+   through the live snapshot. The switch-on path must not re-add MCP tools to
+   `tools` on every turn — that would defeat MCP modules and mutate `tools`
+   mid-session. `toolsForTurn` is in the touched-files list.
+3. The model's tool calls are walked at `turn_phases.go:570`. Each call goes
+   through `handleToolCall` (`app.go:2693`):
+   - Dedup check (`app.go:2711`, keyed on `tc.Function.Name`)
+   - `ToolStartMsg` event (`app.go:2737`, carries `tc.Function.Name`)
+   - Pre-tool hooks (`app.go:2747`, `RunPreToolHooks` matches on `toolName`)
+   - `ExecuteToolCall` (`app.go:2761`) → `executeToolCall` (`app.go:3257`),
+     the big switch
+   - Post-tool hooks (`app.go:2767`)
+   - `captureToolTrace` (`app.go:2806`, uses `tc.Function.Name`)
+   - `recordRecentTrace` (`app.go:3032`, uses `tc.Function.Name`)
+   - `clearsToolCache` (`app.go:2798`, checks `tc.Function.Name`)
+4. `finalizeToolResult` (`turn_phases.go:460`) does the shared bookkeeping:
+   - `ToolResultMsg` (`turn_phases.go:477`, carries `tc.Function.Name`)
+   - Declined-call counting (`turn_phases.go:489`, text-based — not
+     name-based)
+   - `CapOrStub` (`turn_phases.go:510`, uses `tc.Function.Name`)
+   - `trace.ToolTrace` (`turn_phases.go:535`, uses `tc.Function.Name`)
+   - `appendConv` (`turn_phases.go:553`, `Name: tc.Function.Name`)
+
+### The dispatch mechanism (§7.4 R3) — corrected from Mashūra round 1
+
+**The single dispatch path is not a recursive `handleToolCall`.** The first
+draft had `handleCallTool` construct an inner `proxy.ToolCall` and call
+`a.handleToolCall` recursively. Three reviewers caught that this double-runs
+dedup, hooks, `ToolStartMsg`, trace, and `recordRecentTrace` — once on
+`"call_tool"` and once on the inner name.
+
+**Corrected mechanism:** `call_tool` is unwrapped at the top of
+`handleToolCall` (`app.go:2693`), before dedup, hooks, events, and trace. The
+unwrapping:
+
+1. Validate `name` is not `load_module` or `call_tool` (no nesting — decision
+   3). Return a clear error.
+2. Validate `name` is not a core tool already in the tool array (decision 3).
+   Return a clear error.
+3. Validate `name` belongs to a loaded module. If not, return an error naming
+   the module to load.
+4. **Validate `arguments`** against the inner tool's JSON schema (the schema
+   Wakil already holds from `BuildTools`). Return a clear error on invalid
+   JSON, missing required fields, wrong types, or extra fields. This is a
+   named step (Block 3), not a promise.
+5. Replace `tc` with `proxy.ToolCall{ID: outerID, Function:
+   FunctionCall{Name: innerName, Arguments: innerArgs}}`.
+6. Fall through to the normal `handleToolCall` path (dedup, hooks,
+   `ExecuteToolCall`, trace) with the inner name. Exactly one lifecycle, one
+   trace record, one `role:"tool"` message, one dedup entry.
+
+**`call_tool` is non-gated and non-grantable.** `IsGatedTool("call_tool")`
+is false and `IsGrantEligible("call_tool")` is false. A grant keyed on
+`"call_tool"` would be a blanket bypass for every deferred tool; a test
+asserts none can be created (Block 3).
+
+**`resolvedName` is not used for `appendConv` `Name`.** The wire `Conv`
+message `Name` stays `"call_tool"` (matching the assistant tool call). Some
+OpenAI-compatible gateways pair `tool` message `name` with the assistant
+`tool_calls[].function.name`; a mismatch may cause a 400.
+`result.resolvedName` is used **only** for the tool line, `ToolResultMsg`,
+`CapOrStub`, `trace.ToolTrace`, and `appendSkillHint` — the TUI, trace, and
+internal accounting — never for the wire message `Name`.
+
+**Unloaded built-in deferred tools cannot be called directly.**
+`executeToolCall` (`app.go:3257`) has explicit switch cases for every
+built-in (e.g. `move_file` at `:3306`, `save_skill` at `:3395`). A model that
+calls `move_file` directly while `edit-extras` is unloaded would execute it,
+bypassing the module boundary. A pre-switch guard in `executeToolCall` checks
+the registry: if the inner tool belongs to a module that is not loaded,
+return an error naming the module to load. This guard is in Block 3.
+
+### Approvals, grants, classifier, hooks, dedup — all see the inner name
+
+Because `call_tool` is unwrapped at the top of `handleToolCall` before
+dedup/hooks/events/trace, all name-dependent operations see the inner name:
+
+- `a.Confirm` (`app.go:37`) — called by each handler with the tool name.
+- `IsGatedTool` (`internal/tools/tools.go:566`) — map lookup; the inner
+  name reaches the switch.
+- `GrantEligibleForCall` (`agent/grants.go:56`) and `HasGrant`
+  (`agent/grants.go:135`) — key on the tool name.
+- `RunPreToolHooks` (`agent/hooks.go:72`) — receives `toolName` from
+  `handleToolCall`.
+- `dedupToolAllowed` (`app.go:2448`) — keys on `tc.Function.Name`.
+- `clearsToolCache` (`app.go:2463`) — switches on the inner name.
+- `IsReadOnlyShell` (`tool_handlers.go:57`) — classifies the command, not the
+  name.
+- `IsDestructiveShell` (`agent/readonly.go:239`) — same.
+- `buildPolicyInput` (`agent/consent.go:224`) — uses `toolName`.
+
+### Cache breakpoints (§3.2)
+
+`computeCacheBreakpoints` (`internal/proxy/client.go:308`) marks exactly two
+messages: `messages[0]` (the preamble) and the last non-null message (the
+moving tail). Tools are a sibling top-level field (`client.go:1203`),
+re-sent on every request. `cache_stable.go:9-13` documents that tool ordering
+is cache-critical and sorts within groups for that reason.
+
+### The preamble, LSP/browser lines, and the module index
+
+`buildPreambleForNetwork` (`app.go:1931`) assembles `messages[0]`. The LSP
+inventory line is at `app.go:2012-2017`; the browser inventory line is at
+`app.go:2018-2025`. Both are Go string literals, not in `prompts/`.
+
+**Decision (2), corrected:** with the switch off, both stay exactly as today.
+With the switch on, the LSP/browser lines and the module index are
+**frozen at session start** — they depend only on the config and the
+construction-time MCP server list, never on loaded state. Loading a module
+mid-session does not touch `messages[0]`. This prevents a mid-session preamble
+rebuild from invalidating the cache prefix. A day rollover or `/prompt`
+switch rebuilds the preamble as today, using the construction-time state.
+
+With the switch on:
+- If the module is loaded at session start (pre-loaded), the line stays as it
+  is (the tools are present).
+- If not, a single line says the capability exists and names the module to
+  load.
+- `ModuleIndex()` is appended to `messages[0]` at session start, after the
+  core prompt and before AGENTS.md. It is never rebuilt mid-session.
+
+Both states (loaded / not loaded) are covered by a test (Block 2).
+
+### Config, env, validation, docs
+
+`Config.ContextPrune` (`internal/config/config.go:397`) is the precedent for
+a string config key with `"off"|"on"` values. `DefaultConfig()` sets
+`ContextPrune: "off"` (`config.go:1551`). Validation is in `validateEnums`
+(`config.go:3100`): `switch cfg.ContextPrune { case "", "off", "on": default:
+return error }`. The env block at `config.go:2151` applies `envStr` for each
+`WAKIL_*` override.
+
+`check_config_docs.sh` (`scripts/check_config_docs.sh:46-65`) walks
+`config.example.json` for dotted keys and fails unless each is found in
+`docs/configuration.md` via `grep -wF`. A new top-level key
+`context_modules` is not in the allowlist (`check_config_docs.sh:31-39`), so
+it must appear in both `config.example.json` and `docs/configuration.md`.
+
+User-editable MCP keywords (Block 4) are a new config key
+`mcp_module_keywords` (a map of server name → keyword list). It is in
+`config.example.json` and `docs/configuration.md`.
+
+### --result-json and the bench CSV
+
+`ResultJSON` (`internal/wiring/resultjson.go:23-47`) has pointer fields that
+stay nil (JSON null) when unobserved. `writeResultJSON` (`resultjson.go:80`)
+populates from `app.Client`, `app.Costs`, `app.Conv`, `app.CollapseCounts()`,
+`app.DeclinedCallCount()`. The caller stamps `workdir` and `backend` from
+`HeadlessOptions` (`headless.go:261-267`, `:397-404`).
+
+The bench CSV header (`scripts/bench.sh:178`):
+```
+date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds
+```
+`csv_row` (`bench.sh:538`) appends one row by reading fields from the
+result-json via `json_field`. `tool_calls` counts `len(m.ToolCalls)` per
+message in Conv (`resultjson.go:108`). The self-test stub result-json
+(`bench.sh:1220`) carries the fields the harness reads. Two new columns
+(`context_modules`, `modules_loaded`) are **appended** to the end of the
+header and row, not inserted, so positional parsers that count from the left
+are unaffected.
+
+### Subagents and headless
+
+Subagents get their own curated tool list (`subagent.go:1526-1541`): discovery
+→ edit → tools tier, each with a fixed set. They do not inherit the parent's
+tools or modules. The switch behaves as **off** for subagents — they keep
+their curated tier sets, which already include the tools the parent may have
+deferred. Stage 1 does not change subagent construction; a test asserts that
+subagent tools are byte-identical with the switch on and off (Block 2).
+
+`--no-memory` filters the tool list in `BuildApp`
+(`wiring/bootstrap.go:256-284`). The module registry must respect this:
+`CoreTools()` and module construction must not re-add memory tools that
+`--no-memory` stripped. Similarly, config-disabled groups (browser, LSP,
+Mashūra, non-allowlisted MCP) must be excluded from the registry so
+`call_tool` cannot reach handlers the session never offered (Block 2).
+
+Headless runs use the same `BuildApp` path (`wiring/headless.go:397`), so
+they get the same core+index. The bench's single-turn tasks mean pre-loading
+is the only useful load.
+
+### MCP tool namespacing
+
+`MCPToolToOpenAI` (`mcp_manager.go:777`) namespacing: `serverName + "__" +
+t.Name`. `isMCPToolName` (`mcp_manager.go:954`) matches by the real
+`"<server>__"` prefix. `OpenAITools` (`mcp_manager.go:419`) returns all
+connected servers' tools, sorted by name. `ServerNames`
+(`mcp_manager.go:942`) returns the configured server names.
+
+### Tool sizes (measured this session)
+
+All 63 tools with every optional group enabled: 47 623 B total. The core set
+(§7.1.1, corrected) is ≈ 14 164 B. The Stage 1 deferred **tool** set (tool
+definitions only, not prompt sections): `skills-authoring` (6 tools, 2 346 B)
++ `edit-extras` (2, ≈1 624 B) + `staging` (5, 2 304 B) + `search` (2, 1 135 B)
++ `browser` (8, 4 685 B) + `lsp` (4, 2 575 B) = ≈ 14 669 B deferred. `misc`
+and `long-session` are prompt-only modules with no tools in Stage 1.
+`mashura` stays config-gated, not deferred (§F1.3.4). `mcp:<server>` is
+unmeasured (no fixtures). `memory`, `subagents`, `async`, `git` stay core per
+§F1.3.4.
+
+## Data model
+
+### Config
+
+```go
+ContextModules string `json:"context_modules,omitempty"` // "off" (default) | "on"
+MCPModuleKeywords map[string][]string `json:"mcp_module_keywords,omitempty"` // per-server keywords for pre-load
+```
+- Default: `"off"` and `nil` in `DefaultConfig()`.
+- Env: `envStr(&cfg.ContextModules, "WAKIL_CONTEXT_MODULES")`.
+- Validation: `validateEnums` — `case "", "off", "on": default: error`.
+
+### Module registry (`internal/agent/modules.go`, new)
+
+```go
+type ModuleRegistry struct {
+    modules map[string]*Module
+    loaded  map[string]bool
+}
+
+type Module struct {
+    Name        string
+    Description string   // one-line index entry
+    Tools       []proxy.Tool
+    Keywords    []string // for pre-load (MCP modules only in Stage 1)
+}
+```
+
+- `CoreTools()` returns the always-present tool list (the §7.1.1 set +
+  `load_module` + `call_tool`).
+- `ModuleNames()` returns all registered module names.
+- `IsLoaded(name)` reports whether a module is loaded.
+- `LoadModule(name)` is idempotent: marks loaded and returns the module's
+  tool schemas; if already loaded, re-returns the schemas (so a collapse that
+  drops the schemas can be recovered by calling `load_module` again). Error
+  if unknown (lists all available).
+- `ModuleIndex()` generates the index lines from the registry (one per
+  module, MCP servers from the connected list).
+
+### `toolResult.resolvedName`
+
+```go
+type toolResult struct {
+    ok           bool
+    text         string
+    endTurn      bool
+    dedupRefusal bool
+    resolvedName string // for call_tool: inner tool name; empty for direct
+}
+```
+
+`finalizeToolResult` uses `result.resolvedName` when non-empty, else
+`tc.Function.Name`, for the tool line, `ToolResultMsg`, `CapOrStub`,
+`trace.ToolTrace`, and `appendSkillHint` — but **not** for `appendConv`
+`Name`, which stays `tc.Function.Name` ("call_tool" on the wire).
+
+## Touched files and functions
+
+| File | Functions |
+|---|---|
+| `internal/config/config.go` | `Config` struct (new `ContextModules`, `MCPModuleKeywords`), `DefaultConfig`, env block, `validateEnums` |
+| `config.example.json` | new `context_modules` + `mcp_module_keywords` keys + `_comment` |
+| `docs/configuration.md` | new rows for `context_modules` and `mcp_module_keywords` |
+| `internal/agent/modules.go` (new) | `ModuleRegistry`, `Module`, `CoreTools`, `LoadModule`, `ModuleIndex`, `IsLoaded`, `ModuleNames` |
+| `internal/agent/mcp_manager.go` | `BuildTools` (split: core vs module when switch on), `toolsForTurn` (switch-on path: no live MCP re-injection) |
+| `internal/agent/app.go` | `handleToolCall` (unwrap `call_tool` at top), `executeToolCall` (new `load_module`/`call_tool` cases + pre-switch guard for unloaded module tools), `buildPreambleForNetwork` (LSP/browser lines + `ModuleIndex` when switch on) |
+| `internal/agent/tool_result.go` | `toolResult` struct (new `resolvedName` field) |
+| `internal/agent/turn_phases.go` | `finalizeToolResult` (use `resolvedName` for tool line/trace/CapOrStub, **not** `appendConv` `Name`) |
+| `internal/agent/tool_handlers.go` | new `handleLoadModule` |
+| `internal/agent/classifier.go` | `classifyRequest` → return module names for MCP keyword pre-load (word-boundary matching) |
+| `internal/wiring/resultjson.go` | `ResultJSON` (new `ContextModules`, `ModulesLoaded`), `writeResultJSON` |
+| `internal/wiring/headless.go` | stamp `ContextModules`/`ModulesLoaded` into result-json |
+| `scripts/bench.sh` | `--context-modules` flag, two CSV columns (appended), `WAKIL_CONTEXT_MODULES` env, self-test cases |
+| `CHANGELOG.md` | `[Unreleased]` entry |
+| `docs/tools.md` | `load_module`, `call_tool` rows (parity) |
+| `internal/tools/toolsmd_parity_test.go` | catalogue updated for new tools |
+
+## Blocks
+
+### Block 1 — Switch, config key, env, golden "off is byte-identical" tests
+
+**What.** Add `ContextModules` and `MCPModuleKeywords` to `Config`, default
+`"off"` / `nil`, env `WAKIL_CONTEXT_MODULES`, validation in `validateEnums`.
+Add to `config.example.json` and `docs/configuration.md`.
+
+**Files.** `internal/config/config.go`, `config.example.json`,
+`docs/configuration.md`.
+
+**Tests.** `internal/agent/modules_test.go` (new):
+- `TestContextModulesOff_ByteIdentical`: `BuildTools` with `context_modules`
+  off produces a byte-identical tool array to the current `BuildTools` call.
+  Assert `json.Marshal(toolsOff) == json.Marshal(toolsToday)`.
+- `TestContextModulesOff_PreambleByteIdentical`:
+  `buildPreambleForNetwork` with the switch off is byte-identical to today.
+- `TestContextModulesOff_NoLoadModuleCallToolInArray`: the off tool array
+  contains neither `load_module` nor `call_tool`.
+- `TestContextModulesOff_ResultJSONUnchanged`: the result-json with the
+  switch off is byte-identical to today (the new fields are absent or null).
+
+### Block 2 — Module registry
+
+**What.** `internal/agent/modules.go` (new): `ModuleRegistry`, `Module`,
+`CoreTools`, `ModuleNames`, `IsLoaded`, `LoadModule`, `ModuleIndex`.
+
+**Frozen core list** (tools that stay in `tools` with the switch on):
+`dispatch_subagent`, `dispatch_subagents`, `run_shell`, `read_file`,
+`read_file_full`, `list_dir`, `search_files`, `find_files`, `edit_file`,
+`write_file`, `delete_file`, `run_background`, `kill_process`,
+`read_process_log`, `check_pending`, `wait_for_completion`,
+`collapse_context`, `memory_put`, `memory_promote`, `memory_reject`,
+`memory_get`, `memory_search`, `memory_list`, `memory_forget`,
+`memory_promote_from_staging`, `list_skills`, `load_skill`,
+`skill_search`, `skill_history`, `git_status`, `git_diff`, `git_log`,
+`git_show`, `git_blame`, `math_eval`, `open_url`, `load_module`,
+`call_tool`.
+
+**Frozen Stage 1 module list** (tools reached through `call_tool`):
+
+| Module | Tools | Conditional? |
+|---|---|---|
+| `skills-authoring` | `save_skill`, `update_skill`, `forget_skill`, `apply_skill_template`, `capture_skill_template`, `check_skill_template` | no |
+| `edit-extras` | `move_file`, `write_binary_file` | no |
+| `staging` | `staging_put`, `staging_get`, `staging_delete`, `staging_list`, `staging_get_many` | no |
+| `search` | `searxng_search`, `searxng_url_read` | `searxng_url` set |
+| `browser` | `browser_navigate`, `browser_screenshot`, `browser_viewport`, `browser_click`, `browser_eval`, `browser_text`, `browser_html`, `browser_reduced_motion` | `browser_enabled` |
+| `lsp` | `lsp_definition`, `lsp_references`, `lsp_hover`, `lsp_symbols` | `lsp_enabled` |
+| `mcp:<server>` | per-server tools | ≥1 connected server |
+
+`misc`, `long-session`, `implement`, `write` are prompt-only modules with no
+tools in Stage 1. `mashura` stays config-gated, not deferred (§F1.3.4: 60%
+session share, "do not defer further"). `git`, `memory`, `subagents`,
+`async` stay core (§F1.3.4).
+
+The registry must exclude config-disabled groups (browser, LSP, Mashūra,
+non-allowlisted MCP) and respect `--no-memory` (do not re-add memory tools
+that `--no-memory` stripped). `call_tool` for a tool whose group is
+config-disabled returns an error, not a dispatch.
+
+Index lines: one per module, generated from the registry. MCP servers from
+the connected list. `ModuleIndex()` is appended to `messages[0]` at session
+start, frozen for the session. Sizes logged in debug output via `diag.Printf`.
+
+**Files.** `internal/agent/modules.go` (new), `internal/agent/mcp_manager.go`
+(`BuildTools` split, `toolsForTurn` switch-on path).
+
+**Tests.** `internal/agent/modules_test.go`:
+- `TestModuleRegistry_CoreSet`: core tools match the exact expected list.
+- `TestModuleRegistry_ModuleSet`: module names and their tool sets match the
+  table above.
+- `TestModuleRegistry_IndexGenerated`: index lines are generated from the
+  registry; names match the shipped modules.
+- `TestModuleRegistry_NoCoreNameInModules`: no core tool name appears in any
+  module's tool list.
+- `TestModuleRegistry_SizesLogged`: debug output includes per-module sizes.
+- `TestModuleRegistry_ConfigDisabledExcluded`: with `browser_enabled` false,
+  the `browser` module is not in the registry; `call_tool("browser_navigate",
+  ...)` returns an error.
+- `TestModuleRegistry_NoMemoryRespected`: with `--no-memory`, memory tools are
+  not in any module's tool set.
+- `TestModuleRegistry_LSPBrowserLines_FrozenAtSessionStart`: the preamble's
+  LSP/browser lines and `ModuleIndex` are built from construction-time state,
+  not loaded state. Loading a module mid-session does not change `messages[0]`.
+- `TestSubagentTools_ByteIdenticalWithSwitchOn`: subagent tool lists are
+  byte-identical with the switch on and off.
+
+### Block 3 — load_module, call_tool, and the single dispatch path
+
+**What.** New tool definitions for `load_module(name)` and
+`call_tool(name, arguments)`, both always core. New handler
+`handleLoadModule` in `tool_handlers.go`. `call_tool` is unwrapped at the
+top of `handleToolCall` (`app.go:2693`).
+
+`load_module(name)`:
+1. Validate name is a registered module. If unknown, return an error listing
+   all available module names.
+2. Mark the module as loaded in the registry (idempotent: if already loaded,
+   re-return the schemas).
+3. Return the module's tool schemas as a **pinned** `role:"tool"` result (§7.4
+   R1). The tool result is `Pinned: true` so `evictStaleToolResults` and
+   compaction preserve it.
+4. `load_module` is exempt from `CapOrStub` (like `load_skill` and
+   `read_file_full`) so large module schemas are not truncated.
+
+`call_tool(name, arguments)` — unwrapped at the top of `handleToolCall`:
+1. Validate `name` is not `load_module` or `call_tool` (no nesting). Return
+   a clear error.
+2. Validate `name` is not a core tool already in the tool array. Return a
+   clear error.
+3. Validate `name` belongs to a loaded module. If not, return an error naming
+   the module to load.
+4. **Validate `arguments`** against the inner tool's JSON schema (the schema
+   from `BuildTools`). Return a clear error on invalid JSON, missing required
+   fields, wrong types, or non-object arguments. This is a named step.
+5. Replace `tc` with `proxy.ToolCall{ID: outerID, Function:
+   FunctionCall{Name: innerName, Arguments: innerArgs}}`.
+6. Fall through to the normal `handleToolCall` path with the inner name.
+
+**Pre-switch guard for unloaded module tools.** In `executeToolCall`
+(`app.go:3257`), before the built-in switch cases: if the tool name belongs to
+a module that is not loaded, return an error naming the module to load. This
+prevents a model from calling `move_file` directly while `edit-extras` is
+unloaded. `call_tool` calls bypass this guard because the module is loaded.
+
+**`call_tool` is non-gated and non-grantable.** `IsGatedTool("call_tool")`
+is false; `IsGrantEligible("call_tool")` is false. A grant keyed on
+`"call_tool"` cannot be created.
+
+**Trace records, `--result-json` `tool_calls`, declined counts, and the bench
+tools column record the inner tool name, never "call_tool".** A
+`call_tool` dispatch produces exactly one `trace.ToolTrace` with
+`Name: innerName`, exactly one `role:"tool"` message with `Name:
+"call_tool"` (the wire name) and `resolvedName: innerName` (for the TUI and
+internal accounting), exactly one dedup entry, and exactly one
+declined-count increment if declined. No outer-named trace record is
+written.
+
+**Files.** `internal/agent/modules.go`, `internal/agent/tool_handlers.go`
+(new `handleLoadModule`), `internal/agent/app.go` (`handleToolCall`
+unwrap, `executeToolCall` switch + guard), `internal/agent/tool_result.go`
+(`resolvedName`), `internal/agent/turn_phases.go` (`finalizeToolResult` uses
+`resolvedName` for tool line/trace/CapOrStub, **not** `appendConv` `Name`),
+`docs/tools.md` (parity), `internal/tools/toolsmd_parity_test.go`.
+
+**Tests.** `internal/agent/modules_test.go`:
+- `TestLoadModule_UnknownModule`: error lists all available modules.
+- `TestLoadModule_ReturnsSchemas_Pinned`: returns the module's tool schemas
+  as a pinned tool result; `evictStaleToolResults` does not evict it.
+- `TestLoadModule_Idempotent`: calling `load_module` twice returns schemas
+  both times.
+- `TestLoadModule_NotCapped`: a module with >8 KB of schemas is not
+  truncated by `CapOrStub`.
+- `TestCallTool_UnwrappedAtHandleToolCall`: the dedup, hooks, trace, and
+  `ToolStartMsg` run exactly once with the inner name, not twice.
+- `TestCallTool_GatedParity`: a gated deferred tool (e.g. `save_skill` from
+  `skills-authoring`) called through `call_tool` fires the confirm prompt
+  with the inner name. **Uses a real deferred gated tool, not `write_file`
+  (which is core).**
+- `TestCallTool_DestructiveParity`: a destructive deferred tool (e.g.
+  `move_file` from `edit-extras`) called through `call_tool` is classified
+  and gated identically to a direct call.
+- `TestCallTool_DeclinedParity`: a declined call through `call_tool` counts
+  as declined — exactly one increment.
+- `TestCallTool_NoNesting`: `call_tool("call_tool", ...)` and
+  `call_tool("load_module", ...)` return errors.
+- `TestCallTool_NoCoreTool`: `call_tool("read_file", ...)` returns an error.
+- `TestCallTool_UnknownToolNamesModule`: `call_tool("save_skill", ...)`
+  when `skills-authoring` is not loaded returns an error naming the module.
+- `TestCallTool_DirectCall_UnloadedModule`: calling `move_file` directly
+  while `edit-extras` is unloaded returns an error naming the module to load
+  (the pre-switch guard).
+- `TestCallTool_InnerNameInTrace`: `trace.ToolTrace.Name` is the inner name;
+  no outer-named trace record is written.
+- `TestCallTool_WireNameStaysCallTool`: the `role:"tool"` message in Conv
+  has `Name: "call_tool"` (the wire name matches the assistant tool call);
+  `resolvedName` is the inner name (for TUI/tool line only).
+- `TestCallTool_SingleLifecycle`: exactly one `ToolStartMsg`, one
+  `role:"tool"` message, one trace record, one dedup entry per `call_tool`
+  dispatch.
+- `TestCallTool_SchemaValidation`: invalid JSON, missing required fields,
+  wrong types, and non-object arguments all return clear errors.
+- **Per-gate tests (decision 4):** each fails if the wrapper name reaches
+  the gate:
+  - `TestCallTool_IsGatedToolSeesInnerName`: `IsGatedTool("save_skill")` is
+    true; `IsGatedTool("call_tool")` is false.
+  - `TestCallTool_HooksSeeInnerName`: a pre-tool hook matching
+    `"save_skill"` fires; a hook matching `"call_tool"` does not.
+  - `TestCallTool_DedupSeesInnerName`: a `read_file` dedup entry is keyed
+    on `"read_file"`, not `"call_tool"`.
+  - `TestCallTool_GrantsSeeInnerName`: `HasGrant("save_skill")` covers the
+    call; `HasGrant("call_tool")` does not, and `AddGrant("call_tool")` is
+    rejected.
+- `TestCallTool_NonGatedNonGrantable`: `IsGatedTool("call_tool")` is false
+  and `IsGrantEligible("call_tool")` is false; a grant for `"call_tool"`
+  cannot be created.
+
+### Block 4 — MCP modules and keyword pre-load
+
+**What.** Each configured MCP server is one module `mcp:<server>`, holding
+exactly that server's tool definitions (per `MCPToolToOpenAI`, already
+namespaced `server__tool`). On the first request of a session (turn 1 only,
+before `ensurePreamble`), a module `mcp:<server>` is pre-loaded when the task
+text matches one of its keywords.
+
+Built-in keywords (defaults, user-editable via `mcp_module_keywords` in
+config):
+- trello: `board`, `card`, `trello`, `list`
+- context7: `library`, `docs`, `documentation`, `API reference`
+
+Keyword matching is **word-boundary**, not bare substring: `"list"` matches
+"add this to my list" but not "checklist" or "discard". Case-insensitive on
+the lower-cased task text. A server with no keyword match stays unloaded and
+is reachable by `load_module("mcp:<server>")`.
+
+Pre-loaded MCP tools land as module schemas (a pinned `role:"tool"` result
+from `load_module`), **not** in the `tools` array. The `tools` array stays
+core-only for the session (R3).
+
+Turn 2+ keyword matches cannot mutate `messages[0]` (the one-invalidation-
+per-day rule). A match on turn 2+ goes through the same `load_module` path
+(model-initiated), not the pre-load path.
+
+**Files.** `internal/agent/modules.go` (MCP module construction from
+`MCPManager.ServerNames()`), `internal/agent/classifier.go` (word-boundary
+keyword matching), `internal/config/config.go` (`MCPModuleKeywords`),
+`config.example.json`, `docs/configuration.md`.
+
+**Tests.** `internal/agent/modules_test.go`:
+- `TestMCPModule_PerServer`: one module per connected server, holding that
+  server's tools.
+- `TestPreLoad_KeywordMatch`: task text "create a trello card" →
+  `mcp:trello` loaded.
+- `TestPreLoad_NoMatch`: task text "fix the bug in main.go" → no MCP module
+  loaded.
+- `TestPreLoad_WordBoundary`: task text "checklist" does not match the
+  `list` keyword; "add to my list" does.
+- `TestPreLoad_UserOverride`: user-edited keywords override the defaults.
+- `TestPreLoad_Turn1Only`: pre-load fires on turn 1, not turn 2+.
+
+### Block 5 — Cache-stability test
+
+**What.** A test that simulates a session: build tools (core only when switch
+on), send a request, load two modules, send another request. Assert:
+- The tool array sent to the model is byte-identical across both requests
+  (core tools only — loading a module does not change `tools`).
+- All messages before the second request are byte-identical (no insertion, no
+  mutation of `messages[0]` or earlier messages).
+- The loaded module text arrives as a pinned `role:"tool"` result, not as a
+  system message at index 1.
+- `toolsForTurn()` does not re-inject MCP tools on the second request.
+- `ensurePreamble()` after `load_module("lsp")` does not change
+  `messages[0]`.
+
+**Files.** `internal/agent/modules_test.go`.
+
+**Test.** `TestCacheStability_LoadDoesNotChangeToolArrayOrMessages`:
+- Build tools with the switch on, core-only.
+- Marshal `tools` and `requestMessages()` before and after two `load_module`
+  calls; assert byte-equality of `tools` and of all messages before the
+  `load_module` tool result.
+- Call `toolsForTurn()` after loading; assert the result is still core-only.
+- Call `ensurePreamble()` after loading; assert `messages[0]` is unchanged.
+
+### Block 6 — Accounting
+
+**What.** `--result-json` gets `context_modules` (`"on"`/`"off"`) and
+`modules_loaded` (list of names). The bench CSV gets the same two columns
+**appended** to the end of the header and row. `scripts/bench.sh` gets
+`--context-modules on|off`, passed through `WAKIL_CONTEXT_MODULES`. Self-test
+cases for both values. The `tool_calls` count in `--result-json` records the
+inner tool name, not "call_tool" (see Block 3).
+
+**Files.** `internal/wiring/resultjson.go` (`ResultJSON` struct,
+`writeResultJSON`), `internal/wiring/headless.go` (stamp from app),
+`scripts/bench.sh` (flag, CSV header, `csv_row`, self-test stubs).
+
+**Tests.** `internal/wiring/resultjson_test.go`:
+- `TestResultJSON_ContextModules`: field present and correct for both
+  on/off.
+- `TestResultJSON_ModulesLoaded`: list of loaded module names.
+- `TestResultJSON_ToolCallsInnerName`: `tool_calls` counts the inner name,
+  not "call_tool".
+- Bench self-test: `--context-modules off` and `--context-modules on` both
+  produce a CSV with the two new columns at the end; existing columns are
+  unchanged.
+
+### Block 7 — Measurement helper
+
+**What.** A test that prints the token estimate (bytes/4, marked as an
+estimate) of the first request with the switch off and on, for the default
+config and for a config with two fake MCP servers.
+
+**Files.** `internal/agent/modules_test.go` (or a
+`internal/agent/modules_bench_test.go`).
+
+**Test.** `TestMeasurement_TokenEstimate`: build the tool array and preamble
+for each configuration, marshal to JSON, print `len(bytes)/4` as the
+estimate. Four configurations: (off, default), (on, default), (off, 2 fake
+MCP), (on, 2 fake MCP). The test prints the four numbers; it does not assert
+thresholds (those are the bench's job).
+
+### Block 8 — CHANGELOG and docs
+
+**What.** `CHANGELOG.md [Unreleased]` entry. `docs/configuration.md` rows for
+`context_modules` and `mcp_module_keywords`. `docs/tools.md` rows for
+`load_module` and `call_tool` (parity with the tool catalogue).
+
+**Files.** `CHANGELOG.md`, `docs/configuration.md`, `docs/tools.md`,
+`internal/tools/toolsmd_parity_test.go` (catalogue updated).
+
+## Open risks
+
+1. **Schema validation for `call_tool` arguments.** The inner tool's
+   arguments arrive as a JSON string inside `call_tool`'s `arguments` field.
+   A generic dispatcher loses provider-side JSON-schema validation. Block 3
+   validates against the schema Wakil holds before dispatching, with tests
+   for each failure class (invalid JSON, missing required, wrong type,
+   non-object). No external JSON-schema validator is in `go.mod`; the
+   validation uses Go's `encoding/json` unmarshal into the tool's parameter
+   struct, which is the same shape the handlers use.
+
+2. **Provider pairing by name.** The wire `Conv` message `Name` stays
+   `"call_tool"` (matching the assistant tool call); `resolvedName` is used
+   only for TUI/trace/internal. This avoids a 400 from gateways that pair
+   `tool` message `name` with `tool_calls[].function.name`. Unverified
+   against a pinned provider; Stage 0 (deferred) would confirm.
+
+3. **Stage 0 and reliability probes are deferred.** §7.9 puts Stage 0 first
+   and §8.8 says Stage 1 cannot ship without reliability probes. Both are
+   out of scope ("Local only", "no real model requests"). The switch defaults
+   to off; that is the only safety Stage 1 ships. The reliability question
+   (§7.11.4: can a model reliably call `call_tool`?) remains open.
+
+4. **Collapse (R2) is not in Stage 1.** §7.4 R2 requires a collapse to report
+   lost tail-loaded modules. Collapse integration is Stage 2 (prompt modules);
+   Stage 1's `LoadModule` is idempotent so a model can recover by calling
+   `load_module` again after a collapse. The collapse note itself is Stage 2.
+
+5. **Prune-on.** The `prev` property (when `context_prune` is on) goes on
+   `call_tool`'s outer arguments, not on the inner arguments. The inner
+   arguments are stripped before they reach the handler, same as today.
+
+6. **MCP module size is unmeasured.** No MCP fixtures in the repo, so the MCP
+   module sizes are estimates. The measurement helper (Block 7) uses fake
+   servers; the real measurement is the host command in §F1.3.8.
+
+7. **Subagents get their curated tier sets (switch off for them).** Per §7.6,
+   subagents get their own fixed tool sets by tier, not the parent's full
+   list. The switch behaves as off for subagents. Stage 1 does not change
+   subagent construction; a test asserts subagent tools are byte-identical
+   with the switch on and off (Block 2).
+
+8. **Substitution shifts the approval surface.** With `move_file` deferred,
+   the model may use `run_shell mv` instead. `run_shell` has a different
+   gate (destructive classification). This is not a skip; it is stated here
+   as a known behavioral shift.
+
+9. **MCP keyword over-bread.** Word-boundary matching (Block 4) reduces but
+   does not eliminate false positives. A server with a very common keyword
+   (`list`) will pre-load on many unrelated tasks, costing a few hundred
+   tokens. The keywords are user-editable; the defaults are conservative.
+
+10. **No real model requests.** Per the DO NOT ALTER rules, no real bench task
+    runs in this stage. The measurement helper (Block 7) is a Go test, not a
+    model call. The host commands for real measurement are in the final
+    report.
+
+## Follow-ups (not in Stage 1)
+
+- Stage 0: measure whether `tools` is in the provider's cacheable prefix (§7.9,
+  §3.3). If not, R3's dispatcher is unnecessary and deferred tools can be
+  added to the array directly.
+- Reliability probes (§8.8): `memory-note`/`git-history` bench tasks to
+  measure whether a model can reliably call `call_tool`.
+- Stage 2: prompt modules (`misc`, `long-session`, `implement`, `write`),
+  collapse integration (R2), the `load_module` substitution hint (§7.7
+  signal 2).
+- Stage 3: writing-style file (§7.5).
+- Stage 4: classifier module-name return, session-config pre-load.
