@@ -2303,3 +2303,227 @@ One line for the trace fix, one for the usage script.
 - The saving formula treats `share` as independent of loading; in practice
   loading is sticky, so the formula is an upper bound on the module's benefit
   and a lower bound on its cost. Stated, not hidden.
+
+---
+
+# F1.3 — Design re-decided with real usage data
+
+Data source: the user's host (`rubin`), 2 810 trace files, collected by the
+user with `jq` after `scripts/context_usage.sh` aborted on one cut file (the
+bug fixed in this follow-up). One user's usage; that user always loads the
+`task-workflow` skill, which inflates `load_skill` (144 sessions). Every share
+below inherits that bias.
+
+Denominator: **N = 498** tool-using sessions (`run_shell` is the most-used tool
+at 498 sessions, so at least 498 sessions called some tool). `N` is a *lower*
+bound on tool-using sessions if `run_shell` is not in some tool-using session;
+the estimate is therefore if anything slightly pessimistic.
+
+## F1.3.1 The saving rule, stated correctly
+
+An earlier draft used `saving = size × (1 − share) − load_cost × share` with
+`load_cost = size` for a pre-load, which becomes `size × (1 − 2·share)` and
+turns negative above 50 % — that is **wrong**: the baseline already pays `size`
+on every session, so a session that pre-loads pays exactly what it paid before
+(net zero), not double. Corrected, against the always-loaded baseline:
+
+- **Pre-loaded on turn 1** (the module lands in the stable prefix):
+  `saving = size × (1 − share) − index_line`
+- **Loaded mid-session** (an extra round trip, the module re-sent uncached once):
+  `saving = size × (1 − share) − round_trip × share − index_line`
+
+`index_line = 12` est. tokens (one `load_module` index line, measured in §7.2
+at ≈ 40 B each). `round_trip = 1 000` est. tokens (one extra request that
+re-sends the prefix at cache-read price plus one tool-call and one tool-result
+message — an estimate, flagged in the document). `share` is the **union** of
+sessions needing the module, reported as a range `[max single tool, Σ tools]`
+because per-tool session counts cannot be summed and the true union is
+unmeasured (§F1.3.2).
+
+## F1.3.2 Why shares are a range, not a number
+
+`scripts/context_usage.sh` prints `SESSIONS` per tool. A module's share is the
+number of sessions that used **any** of its tools — a union. Summing per-tool
+counts double-counts a session that used two tools of the group, so the union
+lies between the largest single tool (`lo`) and the sum clipped at `N` (`hi`).
+The script now reports the union directly with `--union` (added this session),
+but the user has not yet run it on the host, so the table below uses the
+`[lo, hi]` bounds. The `--union` command for exact figures is in §F1.3.7.
+
+## F1.3.3 The saving table (this user's sessions, N = 498)
+
+`mid@lo` = saving if the true union is the low bound; `mid@hi` = if it is the
+high bound. Negative numbers mean the module **costs** tokens for this user —
+it is loaded in so many sessions that the round trip outweighs what it hides.
+
+| Module | Tokens | share lo | share hi | mid@lo | mid@hi | pre@hi |
+|---|---|---|---|---|---|---|
+| `memory` (section + 8 tool defs) | 3 459 | 0.35 | 1.00 | 1 898 | **−1 012** | −12 |
+| `subagents` (section only) | 1 768 | 0.48 | 0.91 | 428 | **−751** | 155 |
+| `async` (section only) | 1 111 | 0.30 | 0.95 | 459 | **−902** | 46 |
+| `skills` authoring tools | 2 346 | 0.07 | 0.07 | 2 092 | 2 092 | 2 164 |
+| `skills` section | 404 | 0.29 | 0.29 | −14 | −14 | 275 |
+| `search` | 1 529 | 0.13 | 0.24 | 1 192 | 908 | 1 149 |
+| `long-session` | 1 133 | 0.04 | 0.04 | 1 044 | 1 044 | 1 080 |
+| `git` | 562 | 0.21 | 0.53 | 214 | −272 | 254 |
+| `staging` | 576 | 0.03 | 0.03 | 523 | 523 | 549 |
+| `edit-extras` | 406 | 0.00 | 0.00 | 394 | 394 | 394 |
+| `implement` | 338 | 0.00 | 0.00 | 326 | 326 | 326 |
+| `write` | 146 | 0.00 | 0.00 | 134 | 134 | 134 |
+| `misc` | 266 | 0.05 | 0.05 | 196 | 196 | 242 |
+| `browser` (conditional) | 1 171 | 0.07 | 0.21 | 1 006 | 701 | 912 |
+| `lsp` (conditional) | 643 | 0.09 | 0.19 | 483 | 321 | 510 |
+| **Sum, mid-session load** | | | | **10 374** | **3 688** | |
+
+## F1.3.4 The re-decisions, with the numbers
+
+**Subagents section (≈1 768 tok, share 48–91 %) — stays CORE.**
+`dispatch_subagent` (239) + `dispatch_subagents` (212) are already core tools,
+and the section is prompt-only: there is no unknown-tool error to signal that a
+model ignored the rules (§7.7). At the high bound the module *costs* 751 est.
+tokens; even at the low bound it saves 428, less than one misload, and the
+failure mode is a subagent dispatched with no tier or budget rules. Not worth
+it. **Core.**
+
+**Durable Memory section + tools (≈3 459 tok, share 35–100 %) — stays CORE.**
+Same shape: `memory_search` is core by design (the discovery handle), used in
+115 sessions, and the section is prompt-only. At the high bound it costs 1 012
+est. tokens. The memory *rules* are exactly what makes the model store anything
+at all; a silent failure is expensive and the prompt has no detection signal.
+The 35 % low bound is the most the module could win (1 898) and the honest
+range is far worse. **Core.** (The memory *digest line* already stays core,
+§4.4.)
+
+**Async execution section (≈1 111 tok, share 30–95 %) — stays CORE.**
+Identical shape (all five async tools are core). High bound −902 est. tokens;
+low bound +459, below the cost of one round trip. `wait_for_completion` (151),
+`read_process_log` (133), `check_pending` (76) are common. **Core.**
+
+**Memory tool group (the 7 non-`memory_search` defs, ≈1 359 tok) — splits off
+from the section decision.** The tools are *not* prompt-only: a deferred
+`memory_put` is discoverable through `memory_search`'s description, and the
+unknown-tool error gives a real detection signal. `memory_put` (173),
+`memory_promote` (125) are the frequent ones; the rarer defs
+(`memory_forget` 25, `memory_list` 67) are what defers well. Proposal:
+**keep the section core, defer the 4 rare memory defs** (`memory_forget`,
+`memory_list`, `memory_promote_from_staging`, `memory_promote`) as a
+`memory-admin` module (≈1 000 B ≈ 250 tok), which never clears its own cost and
+is therefore **not worth a module either — leave the group core**. Net: memory
+stays entirely core. The measurement says the earlier "defer memory" proposal
+does not pay for this user.
+
+**Mashūra tools (4, size unmeasured) — stays config-gated, on-demand.**
+299 sessions used `mashura__review`; that is a *large* share (≈60 % of N). The
+tools are already absent unless configured, so the saving today is zero for a
+user without a key and only pays for a configured user who rarely calls them —
+which this user is not. **Keep as today (config-gated); do not defer further.**
+Size unmeasured (no key); the host command is in §F1.3.7.
+
+**Git tools (5, 562 tok, share 21–53 %) — REMOVE from the module plan; keep
+core.** `git_status` (107), `git_log` (72), `git_diff` (72) are used, but
+`run_shell` (498) covers every one of them, and Stage 4 would pre-load a `git`
+module in every git repo anyway — which nulls the saving for the users most
+likely to need it. A module that is pre-loaded for its main audience saves
+nothing and adds an index line. **Keep core, drop the `git` module.**
+
+**Skill-authoring tools incl. `capture_skill_template` (2 346 tok, share 7 %) —
+MODULE, the largest real win.** Only `skill_search` (36) was used; the
+authoring tools (`save_skill`, `update_skill`,
+`capture_skill_template`, `apply_skill_template`, `check_skill_template`,
+`skill_history`) were not used at all in these traces. 2 092–2 164 est. tokens
+saved with a real detection signal (the tool is missing → `load_module` →
+`call_tool`). **On-demand module `skills-authoring`.** This is the single
+biggest saving that survives the data.
+
+## F1.3.5 MCP servers as modules
+
+The user's sessions carry `trello__*` (9 tools) and `context7__*` on top of the
+49 default tools — that is the "65 tools" of the earlier draft, now explained.
+
+1. **Each configured MCP server is one module**, named for the server
+   (`mcp:trello`, `mcp:context7`), holding exactly that server's tool
+   definitions. `MCPToolToOpenAI` (`internal/agent/mcp_manager.go:777`) already
+   builds them per server with the `server__tool` namespace, so the split is a
+   one-line filter, not new plumbing.
+2. **Index line per server**, generated at startup from the connected server
+   list, so the model sees `mcp:trello — 9 board/card tools (~3k tok)` without
+   the 9 schemas.
+3. **Pre-load by keyword** from the task text (turn 1) when the task clearly
+   names the domain: "trello", "board", "card", "list" → `mcp:trello`;
+   "docs for <library>", "library", "API reference" → `mcp:context7`. Keyword
+   lists ship as defaults the user can edit; a server with no keyword match
+   stays unloaded and is reachable by `load_module`.
+4. **Otherwise load on demand**: an unknown `trello__*`-shaped call is the
+   detection signal (a call to a tool the model knows exists but has not
+   loaded). Fallback lists the servers.
+5. **Size**: Trello and context7 schemas are not in the repo (no fixtures), so
+   both are **unmeasured** here. Estimate: 9 Trello tools at the median
+   definition size of ≈800 B each ⇒ ≈7 200 B ≈ **1 800 est. tokens**, marked
+   *estimate*. For this user, if `trello` is pre-loaded only in the 153 sessions
+   that touched it (share ≈0.31) and on-demand otherwise, the saving is
+   ≈ 1 800 × (1 − 0.31) − 12 ≈ **1 230 est. tokens** per request — but see the
+   caveat: this rests on the unmeasured size.
+
+## F1.3.6 Restated totals
+
+**This user's typical session** (MCP present, configured with searxng/browser/
+lsp/mashura), mid-session load, exact union unknown:
+
+- Optimistic (every union at its low bound): **≈ 10 400 est. tokens/request**.
+- Pessimistic (every union at its high bound): **≈ 3 700 est. tokens/request**.
+- Realistic (memory/subagents/async stay core per §F1.3.4, which removes the
+  negative rows): defer `skills-authoring` 2 092 + `search` ≈1 000 +
+  `long-session` 1 044 + `staging` 523 + `edit-extras` 394 + `implement` 326 +
+  `write` 134 + `misc` 196 + `browser` ≈800 + `lsp` ≈400 + MCP ≈1 230 (est.,
+  unmeasured) ⇒ **≈ 8 100 est. tokens/request**, method above. This is the
+  number to plan against.
+
+**A default-config session** (no MCP, no searxng/lsp/browser/mashura), same
+rule with those rows dropped and every union at its low bound:
+`skills-authoring` 2 092 + `long-session` 1 044 + `staging` 523 +
+`edit-extras` 394 + `implement` 326 + `write` 134 + `misc` 196 ≈
+**≈ 4 700 est. tokens/request**. The saving is larger for the power user than
+for a default install, because MCP and the optional groups are where the
+movable bytes are — but the MCP part is unmeasured.
+
+Contrast with the pre-data figure of ≈8 689 est. tokens (§7.1): the data keeps
+the *order of magnitude* and cuts it to ≈4 700 for a default install, with the
+power user's larger figure resting on the unmeasured MCP sizes.
+
+## F1.3.7 Stage order after the numbers
+
+Unchanged in substance, but the tool stage shrinks and two prompt modules drop:
+
+1. **Stage 0** — measure the two facts (§7.9): tools-cache position and bench
+   noise. Still first; unchanged.
+2. **Stage 1 (tools)** — core array + `load_module` + `call_tool`. The core tool
+   list (§7.1.1) loses `git` (stays core anyway, so no change) and the deferred
+   set is now `skills-authoring` (2 346) + the existing `edit-extras`,
+   `staging`, `misc` (≈1 248) + conditional groups ⇒ ≈ **3 590 est. tokens** off
+   every request for a default install. This is now the **first and largest**
+   stage, ahead of the prompt split — the data made the tool side more valuable
+   than the prompt side (the prompt's big sections must stay core).
+3. **Stage 2 (prompt)** — module files, but **only** `search`, `long-session`,
+   `implement`, `write` (≈2 553 est. tokens). `memory`, `subagents`, `async`
+   stay in the core prompt per §F1.3.4. Smaller than the pre-data plan (which
+   had ≈8 689) and should come **after** Stage 1, not before.
+4. **Stage 3 (style)** — user-owned `writing-style.md`, unchanged, no saving.
+5. **Stage 4 (pre-loading)** — now includes MCP keyword pre-loading. Unchanged
+   otherwise; still last, and still gated on Stage 0's cache finding.
+
+## F1.3.8 Host commands to close the estimate gaps
+
+```sh
+# exact module unions (integers only, nothing else printed)
+sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/*.jsonl \
+  --union "subagents=dispatch_subagent,dispatch_subagents" \
+  --union "memory=memory_put,memory_get,memory_search,memory_list,memory_promote,memory_promote_from_staging,memory_forget,memory_put" \
+  --union "async=check_pending,wait_for_completion,read_process_log,kill_process,run_background" \
+  --union "trello=trello__get_boards,trello__get_board,trello__get_lists,trello__get_cards,trello__get_card,trello__create_card,trello__move_card,trello__update_card,trello__add_comment" \
+  --union "context7=context7__resolve-library-id,context7__query-docs"
+
+# MCP tool-definition sizes: count the bytes of the serialised tool array with
+# MCP connected, minus the same run with no MCP server configured
+# (wakil with --trace prints the request; or read the size of the tool JSON in a
+# trace once a `tools_sent` field exists — not present today).
+```
