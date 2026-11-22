@@ -1014,3 +1014,122 @@ Conditional on: `prompt_mode`, `context_prune`, `searxng_url`, `lsp_enabled`,
 single static table understates MCP-heavy or Docker-heavy setups and
 overstates the bench's `--no-memory` headless runs (which lack the 1 359
 est.-token memory group and the 147-token digest).
+
+---
+
+# Question 6 — Usage measurement
+
+## 6.1 What the script reads
+
+Wakil's trace files are JSONL, one `Record` per line
+(`internal/trace/trace.go:31-62`). The fields the script uses:
+
+- `type` — `"store_header"` or `"turn"`; only `turn` records carry tool calls.
+- `session_id` — the session a turn belongs to.
+- `tool_calls[]` — a list of `ToolTrace` objects
+  (`internal/trace/trace.go:66-71`) whose `name` is the tool name.
+
+Everything else in a record (arguments, results, content, byte counts, model,
+workspace) is **never named** by the reader, so it cannot be printed.
+
+## 6.2 `scripts/context_usage.sh`
+
+```
+usage: context_usage.sh TRACE [TRACE ...]
+  prints TOOL<TAB>CALLS<TAB>SESSIONS for every tool in the traces
+```
+
+- Output is exactly a header row plus one row per tool, tab separated,
+  sorted by `CALLS` descending then `TOOL` ascending.
+- `SESSIONS` counts distinct `session_id`s, so the same session appearing in
+  two files counts once.
+- A missing file, a directory, an unreadable file or a malformed trace is a
+  **hard error** naming only the path — a silently skipped file would make a
+  usage report quietly wrong.
+- `--help` prints usage to stdout; no arguments prints it to stderr and exits 2.
+
+## 6.3 Why it cannot leak
+
+The jq program names three fields and emits one derived pair:
+
+```jq
+select(type == "object" and .type == "turn")
+| ((.session_id // "") | tostring) as $sid
+| (.tool_calls // []) | .[]
+| select(type == "object")
+| select(.name | type == "string")
+| [(.name), $sid]
+| @tsv
+```
+
+There is no `tostring` on a whole record, no `debug`, no `cat` of an input
+file, and every error message is built from `$prog` and `$f` (the path the
+user supplied), never from file content. The awk stage prints only
+`name`, `calls`, `sessions`.
+
+## 6.4 The test, and what it actually proves
+
+`scripts/context_usage_test.sh` builds synthetic traces in which **every**
+content-bearing field carries the marker
+`SECRET-MARKER-4f1c2a-do-not-print`: `tool_arguments`, `tool_result`,
+`message`, `memory_key`, `model`, `workspace`, and a malformed line containing
+it. It then checks ten cases:
+
+```
+$ sh scripts/context_usage_test.sh
+  PASS counts and layout for one file
+  PASS counts accumulate across two files
+  PASS a repeated session id counts once for SESSIONS
+  PASS an unusual tool name is printed, not evaluated
+  PASS --help prints usage
+  PASS no arguments exits non-zero
+  PASS a missing file exits non-zero
+  PASS a directory argument exits non-zero
+  PASS a malformed trace exits non-zero
+  PASS an empty trace yields the header only
+context_usage_test: all checks passed
+```
+
+The marker assertion runs on **stdout and stderr** for the normal run, the
+two-file run, `--help`, the missing-file path and the malformed-trace path.
+
+The test was itself checked for brain-deadness: printing every raw record to
+stderr (a deliberate leak) makes it report
+
+```
+  FAIL one file (stderr): the secret marker leaked into the output
+  FAIL two files (stderr): the secret marker leaked into the output
+  FAIL malformed trace (stderr): the secret marker leaked into the output
+```
+
+so the assertion is not vacuous. (The leak was reverted before commit.)
+
+Also verified: the script and the test both pass under `sh` (bash) and under
+`dash`, and both are accepted by `sh -n`. **`shellcheck` is not installed in
+this environment**, so the `shellcheck -s sh` gate CI runs has **not** been
+exercised locally — marked in §Unverified.
+
+## 6.5 The host command for the user
+
+Trace files live under the user's data directory, which this session may not
+read. The user runs:
+
+```sh
+# every trace in the default store, one report
+sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/*.jsonl
+
+# a single session
+sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/<chat-id>.jsonl
+
+# compare two periods
+sh scripts/context_usage.sh before/*.jsonl > before.tsv
+sh scripts/context_usage.sh after/*.jsonl  > after.tsv
+```
+
+(The exact directory name should be confirmed with `wakil doctor` or by
+listing `$HOME/.local/share/wakil/` — this session did not open it, per the
+task's rule.)
+
+**Safety note for the user:** the output contains tool names and counts only.
+Do not add `-x`/`set -x` when running it, and do not pipe it through a tool
+that echoes its input.
