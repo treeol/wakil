@@ -264,6 +264,13 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 		EffectiveCtxMaxCharsOverride: -1, // -1 = not set → use config value
 	}
 	appRef = app
+	// Context modules: register the MCP lifecycle consumer so a server that
+	// connects (or disconnects) after the registry was built becomes (or
+	// stops being) a module. Events are queued and flushed on the agent
+	// goroutine at turn start, never from the background connect goroutine.
+	if app.Modules != nil && mcpMgr != nil {
+		app.RegisterMCPModules(mcpMgr)
+	}
 	// When --no-memory is set, strip memory tools from the tool list so
 	// the model never sees them and cannot read or write per-project
 	// memory (bench: no carry-over between runs). MemoryStore is also

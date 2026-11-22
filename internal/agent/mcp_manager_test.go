@@ -894,3 +894,99 @@ func TestMCPReconnect_ReadersNotBlockedDuringConnect(t *testing.T) {
 		t.Fatalf("Reconnect: %v", err)
 	}
 }
+
+// ── Late-connect registry (context modules) ────────────────────────────────
+
+// TestLateMCPConnect_BecomesModuleAndCallToolWorks is the host bug as a test:
+// the registry is built while the caj MCP server is still connecting, so the
+// frozen snapshot has no mcp:caj module. After the server connects, the
+// registry must gain the module (index line included) and a call through
+// call_tool must reach the live server — without changing the tool array.
+func TestLateMCPConnect_BecomesModuleAndCallToolWorks(t *testing.T) {
+	old := &fakeMCPSession{}
+	// Start with no servers; caj connects only after the registry is built.
+	m := newFakeMCPManager()
+
+	reg := NewModuleRegistry(config.Config{ContextModules: "on"}, t.TempDir(), m)
+	if reg == nil {
+		t.Fatal("NewModuleRegistry returned nil with switch on")
+	}
+	// Build the switch-on core array the same way bootstrap does.
+	tools, _ := BuildToolsWithModules(config.Config{ContextModules: "on"}, t.TempDir(), m, "")
+	beforeIdx := reg.ModuleIndex()
+	if strings.Contains(beforeIdx, "mcp:caj") {
+		t.Fatalf("pre-connect index must not name mcp:caj:\n%s", beforeIdx)
+	}
+
+	// The server connects after the snapshot.
+	caj := connectedServer("caj", old, "read_file")
+	m.servers = append(m.servers, caj)
+	reg.refreshMCPModules(m) // expected behaviour: registry follows connect
+
+	if _, _, err := reg.LoadModule("mcp:caj"); err != nil {
+		t.Fatalf("after connect, load_module(%q) must succeed: %v", "mcp:caj", err)
+	}
+	afterIdx := reg.ModuleIndex()
+	if !strings.Contains(afterIdx, "mcp:caj") {
+		t.Fatalf("after connect, index must list mcp:caj:\n%s", afterIdx)
+	}
+
+	// A call through the live manager (exactly what handleMCPTool does) must
+	// succeed — the late module must be callable, not just listable.
+	res := m.CallTool(context.Background(), "caj__read_file", `{"path":"x"}`,
+		func(_, _, _ string, _ bool) bool { return true }, false)
+	if res == "" || strings.HasPrefix(res, "ERROR") {
+		t.Fatalf("call to late-connected server failed: %q", res)
+	}
+	if old.calls() != 1 {
+		t.Fatalf("fake session received %d calls, want 1", old.calls())
+	}
+
+	// The tool array must be unchanged by all of this (cache rule R3).
+	tools2, _ := BuildToolsWithModules(config.Config{ContextModules: "on"}, t.TempDir(), m, "")
+	if len(tools) != len(tools2) {
+		t.Fatalf("tool array changed during late connect: %d -> %d", len(tools), len(tools2))
+	}
+}
+
+// TestLateMCPConnect_BeforeHookRegistration: a server that connects between
+// manager creation and registry build must still be found by the reconcile
+// pass (the turn-start safety net), not silently dropped.
+func TestLateMCPConnect_BeforeHookRegistration(t *testing.T) {
+	m := newFakeMCPManager()
+	old := &fakeMCPSession{}
+	m.servers = append(m.servers, connectedServer("caj", old, "run_command"))
+
+	reg := NewModuleRegistry(config.Config{ContextModules: "on"}, t.TempDir(), m)
+	// This server connected BEFORE the registry existed, so it is already in
+	// the snapshot — but the reconcile must be a no-op, not a duplicate.
+	before := len(reg.ModuleNames())
+	reg.refreshMCPModules(m)
+	if got := len(reg.ModuleNames()); got != before {
+		t.Fatalf("reconcile duplicated a module: %d -> %d (%v)", before, got, reg.ModuleNames())
+	}
+	if _, _, err := reg.LoadModule("mcp:caj"); err != nil {
+		t.Fatalf("mcp:caj must be a module after reconcile: %v", err)
+	}
+}
+
+// TestModuleRegistry_MCPDisconnect_Unavailable: a server that disconnects
+// must have its module answer load_module and call_tool with a clear
+// "server not connected" error.
+func TestModuleRegistry_MCPDisconnect_Unavailable(t *testing.T) {
+	m := newFakeMCPManager(connectedServer("caj", &fakeMCPSession{}, "read_file"))
+	reg := NewModuleRegistry(config.Config{ContextModules: "on"}, t.TempDir(), m)
+	if _, _, err := reg.LoadModule("mcp:caj"); err != nil {
+		t.Fatalf("precondition: mcp:caj must load when connected: %v", err)
+	}
+
+	// The server disconnects (Close marks every server closed).
+	m.Close()
+	reg.refreshMCPModules(m)
+
+	if _, _, err := reg.LoadModule("mcp:caj"); err == nil {
+		t.Fatal("load_module on a disconnected server must error")
+	} else if !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("disconnect error must say 'server not connected', got: %v", err)
+	}
+}

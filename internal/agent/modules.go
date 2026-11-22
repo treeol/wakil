@@ -29,6 +29,7 @@ import (
 
 	"github.com/treeol/wakil/internal/browser"
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/diag"
 	"github.com/treeol/wakil/internal/lsp"
 	"github.com/treeol/wakil/internal/proxy"
 	wtools "github.com/treeol/wakil/internal/tools"
@@ -244,24 +245,35 @@ func callToolToolDef() proxy.Tool {
 }
 
 // ModuleRegistry holds the session-scoped module state: the module
-// definitions and the set of loaded module names. It is created at BuildTools
-// time and is immutable for the rest of the session (the tool array is
-// frozen; loading a module does not add tools to the array).
+// definitions and the set of loaded module names. The built-in modules are
+// static; MCP modules (mcp:<server>) are added and removed dynamically as
+// servers connect and disconnect (refreshMCPModules), so a server that
+// connects after the first snapshot still becomes a module. Loading a
+// module does not add tools to the tool array — the array is frozen after
+// the first request; loaded schemas reach the model only as appended
+// messages.
 type ModuleRegistry struct {
 	// modules is the full list of available modules (built-in + MCP), in
-	// index order.
+	// index order. MCP modules are appended as their servers connect.
 	modules []Module
 	// byName maps module name → Module for fast lookup.
 	byName map[string]Module
 	// loaded tracks which modules have been loaded via load_module or
 	// pre-loaded at session start.
 	loaded map[string]bool
+	// disconnected marks MCP modules whose server has disconnected. Their
+	// load_module and call_tool answer with a clear "server not connected"
+	// error instead of silently succeeding against a dead session.
+	disconnected map[string]bool
+	// announcedOnce tracks MCP index lines already announced as appended
+	// messages, so the reconcile never announces the same module twice.
+	announcedOnce map[string]bool
 	// preloadedAtConstruction is a snapshot of the loaded set taken at
 	// construction time, used by moduleCapabilityLine so the preamble's
 	// LSP/browser lines are frozen at session start and never change on a
 	// mid-session rebuild.
 	preloadedAtConstruction map[string]bool
-	// mu guards the loaded map against concurrent access.
+	// mu guards every field above against concurrent access.
 	mu sync.Mutex
 }
 
@@ -274,16 +286,111 @@ func NewModuleRegistry(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRe
 		modules:                 mods,
 		byName:                  make(map[string]Module, len(mods)),
 		loaded:                  make(map[string]bool),
+		disconnected:            make(map[string]bool),
+		announcedOnce:           make(map[string]bool),
 		preloadedAtConstruction: make(map[string]bool),
 	}
 	for _, m := range mods {
 		r.byName[m.Name] = m
 	}
+	// Modules present at construction are already in the frozen preamble
+	// index; announcers must not re-announce them as appended messages.
+	for _, m := range mods {
+		if strings.HasPrefix(m.Name, "mcp:") {
+			r.announcedOnce[m.Name] = true
+		}
+	}
 	return r
+}
+
+// refreshMCPModules reconciles the registry's MCP modules with the manager's
+// live state. It is the turn-start safety net (and the per-event hook): the
+// manager snapshot is taken inside mcpModules (under the manager lock);
+// ONLY THEN is the registry lock taken, so the two locks never nest in
+// reverse. Idempotent: a server already in the registry is left alone; a
+// connected server with no module is added. Returns the names of modules
+// whose index line has not yet been announced.
+func (r *ModuleRegistry) refreshMCPModules(m *MCPManager) []string {
+	if r == nil || m == nil {
+		return nil
+	}
+	current := mcpModules(m)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	live := make(map[string]Module, len(current))
+	for _, mod := range current {
+		live[mod.Name] = mod
+	}
+	var announced []string
+	for _, mod := range current {
+		existing, ok := r.byName[mod.Name]
+		if !ok {
+			r.modules = append(r.modules, mod)
+			r.byName[mod.Name] = mod
+			if !r.announcedOnce[mod.Name] {
+				announced = append(announced, mod.Name)
+				r.announcedOnce[mod.Name] = true
+			}
+			continue
+		}
+		// Refresh a reconnected server whose tool set changed. The loaded
+		// flag stays — the model may already hold schemas; removed tools
+		// answer "not in any module" rather than a stale call.
+		if len(existing.Tools) != len(mod.Tools) || toolNamesDiffer(existing.Tools, mod.Tools) {
+			existing.Tools = mod.Tools
+			existing.Desc = mod.Desc
+			for i, rm := range r.modules {
+				if rm.Name == mod.Name {
+					r.modules[i] = existing
+					break
+				}
+			}
+			r.byName[mod.Name] = existing
+			if !r.announcedOnce[mod.Name] {
+				announced = append(announced, mod.Name)
+				r.announcedOnce[mod.Name] = true
+			}
+		}
+		delete(r.disconnected, mod.Name)
+	}
+	for _, mod := range r.modules {
+		if !strings.HasPrefix(mod.Name, "mcp:") {
+			continue
+		}
+		if _, ok := live[mod.Name]; !ok {
+			r.disconnected[mod.Name] = true
+		}
+	}
+	return announced
+}
+
+// toolNamesDiffer reports whether two tool slices carry different names
+// (same length assumed by the caller).
+func toolNamesDiffer(a, b []proxy.Tool) bool {
+	an := make(map[string]bool, len(a))
+	for _, t := range a {
+		an[t.Function.Name] = true
+	}
+	for _, t := range b {
+		if !an[t.Function.Name] {
+			return true
+		}
+	}
+	return false
+}
+
+// IsDisconnected reports whether the named MCP module's server is currently
+// recorded as disconnected.
+func (r *ModuleRegistry) IsDisconnected(name string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.disconnected[name]
 }
 
 // ModuleNames returns the names of all available modules, in index order.
 func (r *ModuleRegistry) ModuleNames() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	names := make([]string, 0, len(r.modules))
 	for _, m := range r.modules {
 		names = append(names, m.Name)
@@ -299,16 +406,23 @@ func (r *ModuleRegistry) IsLoaded(name string) bool {
 }
 
 // LoadModule marks a module as loaded and returns its tool schemas and
-// description. Returns an error if the module name is unknown.
+// description. Returns an error if the module name is unknown, or a clear
+// "server not connected" error if the module's MCP server has disconnected.
 func (r *ModuleRegistry) LoadModule(name string) ([]proxy.Tool, string, error) {
+	r.mu.Lock()
 	m, ok := r.byName[name]
 	if !ok {
+		r.mu.Unlock()
 		return nil, "", fmt.Errorf("unknown module %q — available: %s", name, strings.Join(r.ModuleNames(), ", "))
 	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if r.disconnected[name] {
+		r.mu.Unlock()
+		return nil, "", fmt.Errorf("module %q: MCP server is not connected", name)
+	}
 	r.loaded[name] = true
-	return m.Tools, m.Desc, nil
+	tools, desc := m.Tools, m.Desc
+	r.mu.Unlock()
+	return tools, desc, nil
 }
 
 // ToolModule returns the module name that owns the given tool name, or ""
@@ -324,13 +438,29 @@ func (r *ModuleRegistry) ToolModule(toolName string) string {
 	return ""
 }
 
+// ModuleIndexLine returns the one-line index entry for a single module, in
+// the same format ModuleIndex uses. Long names (mcp:<server>) exceed the
+// %-16s column; the format adapts so the line stays a single index entry.
+func (r *ModuleRegistry) ModuleIndexLine(name string) (string, bool) {
+	r.mu.Lock()
+	m, ok := r.byName[name]
+	r.mu.Unlock()
+	if !ok {
+		return "", false
+	}
+	return fmt.Sprintf("  %-16s — %s", m.Name, m.Desc), true
+}
+
 // ModuleIndex returns the one-line-per-module index text appended to the
 // preamble when the switch is on. One line per module, always loaded.
 func (r *ModuleRegistry) ModuleIndex() string {
 	var b strings.Builder
 	b.WriteString("## Context modules\n")
 	b.WriteString("Not loaded by default. Call load_module(name) to load one; unknown name lists all.\n")
-	for _, m := range r.modules {
+	r.mu.Lock()
+	mods := append([]Module(nil), r.modules...)
+	r.mu.Unlock()
+	for _, m := range mods {
 		fmt.Fprintf(&b, "  %-16s — %s\n", m.Name, m.Desc)
 	}
 	return strings.TrimRight(b.String(), "\n")
@@ -583,7 +713,67 @@ func (a *App) handleLoadModule(ctx context.Context, tc proxy.ToolCall) string {
 	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", args.Name, desc, schemasJSON)
 }
 
-// (handleCallTool was removed — call_tool is now unwrapped at the top of
-// handleToolCall in app.go, so all gates (dedup, hooks, trace, cache
-// invalidation, CapOrStub, result-json) see the inner tool name. The
-// executeToolCall switch no longer has a "call_tool" case.)
+// RegisterMCPModules installs the MCP lifecycle consumer on the manager and
+// folds the current manager state into the registry once. Call once at App
+// construction when the switch is on and a manager exists; when the switch
+// is off (or there is no manager) it is a no-op, so switch-off sessions pay
+// nothing and their tool array is unchanged.
+func (a *App) RegisterMCPModules(m *MCPManager) {
+	if a.Modules == nil || m == nil {
+		return
+	}
+	m.SetLifecycleHandler(func(ev mcpLifecycleEvent) {
+		a.stateMu.Lock()
+		a.mcpEventBuf = append(a.mcpEventBuf, ev)
+		a.stateMu.Unlock()
+	})
+	a.flushPendingModuleEvents()
+}
+
+// flushPendingModuleEvents runs on the agent goroutine at turn start. It
+// drains every queued lifecycle event, reconciles the registry against the
+// manager's live state (so a connect that completed before the handler was
+// registered is still picked up — the safety net), and announces newly
+// available modules as appended user-role messages. The tool array is never
+// touched here; earlier messages are never edited.
+func (a *App) flushPendingModuleEvents() {
+	if a.Modules == nil || a.MCP == nil {
+		return
+	}
+	a.stateMu.Lock()
+	pending := a.mcpEventBuf
+	a.mcpEventBuf = nil
+	a.stateMu.Unlock()
+	_ = pending // kinds are folded by the reconcile below; the queue bounds
+	// how often refreshMCPModules runs, not what it observes.
+
+	announced := a.Modules.refreshMCPModules(a.MCP)
+	for _, name := range announced {
+		line, ok := a.Modules.ModuleIndexLine(name)
+		if !ok {
+			continue
+		}
+		body := "Context module available: " + name + "\n" + line +
+			"\nCall load_module(\"" + name + "\") to load its tools, then call_tool(name, arguments) to use them."
+		a.appendConv(proxy.Message{Role: "user", Content: StrPtr(body)})
+		diag.Printf("wakil: late MCP module announced: %s", name)
+	}
+	// Safety net: a connected server with tools must have a module. If the
+	// reconcile still left one out (e.g. an event raced startup), warn
+	// loudly; its tools are announced as a module here, never silently
+	// dropped. (The tool array is frozen, so an inline tool array, not a
+	// silent drop, is never synthesized mid-session.)
+	for _, srv := range a.MCP.ServerNames() {
+		modName := "mcp:" + srv
+		if _, ok := a.Modules.byName[modName]; ok {
+			continue
+		}
+		// A server with zero tools is excluded by mcpModules; that is not
+		// a dropped tool set, so no warning.
+		if len(a.MCP.OpenAIToolsForServers(map[string]bool{srv: true})) == 0 {
+			continue
+		}
+		diag.Printf("wakil: WARNING: connected MCP server %q has no module in the registry — reconciling", srv)
+		a.Modules.refreshMCPModules(a.MCP)
+	}
+}

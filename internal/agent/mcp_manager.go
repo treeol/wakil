@@ -27,6 +27,20 @@ import (
 // name field: "{server}__{tool}". Double underscore is unlikely in real names.
 const mcpNS = "__"
 
+// MCP lifecycle events for the context-modules registry. The manager notifies
+// a consumer (the App's late-module announcer) after a server's status
+// changes; the consumer reconciles the registry. Events are recorded under
+// the manager lock and flushed on the agent goroutine — never from the
+// background connect goroutine — so Conv is only appended from one place.
+type mcpLifecycleEvent struct {
+	name string
+	kind string // "connected" | "failed" | "closed" | "tools-changed"
+}
+
+// mcpLifecycleHandler records lifecycle events for later flushing. It never
+// touches the registry or Conv while the manager lock is held.
+type mcpLifecycleHandler func(ev mcpLifecycleEvent)
+
 // mcpSession is the subset of *gosdkmcp.ClientSession that MCPManager uses.
 // It exists so tests can inject fake sessions without spawning real MCP
 // server processes. The concrete SDK type satisfies it (compile-time assert
@@ -120,6 +134,26 @@ type MCPManager struct {
 	// NewMCPManager both route through it. Nil-safe: falls back to m.connect
 	// so hand-constructed managers (tests) don't nil-panic.
 	connectFn func(ctx context.Context, srv *MCPServer) error
+	// lifecycle emits server status changes (connect/failed/closed) to the
+	// registered handler after the manager lock is released, so a slow
+	// consumer can never block the connect goroutine. nil = no consumer.
+	lifecycle mcpLifecycleHandler
+}
+
+// emitLifecycle notifies the registered handler, if any. Called with no
+// manager lock held.
+func (m *MCPManager) emitLifecycle(ev mcpLifecycleEvent) {
+	if m.lifecycle != nil {
+		m.lifecycle(ev)
+	}
+}
+
+// SetLifecycleHandler registers the lifecycle consumer. Must be called once
+// at App construction, before any connect event the consumer cares about —
+// a connect that completes before registration is covered by the reconcile
+// pass (refreshMCPModules), which is idempotent.
+func (m *MCPManager) SetLifecycleHandler(fn mcpLifecycleHandler) {
+	m.lifecycle = fn
 }
 
 // currentReady returns the current readiness channel, or nil if none.
@@ -243,6 +277,9 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 			if err != nil {
 				srv.Status = "failed"
 				srv.Err = err
+				m.mu.Unlock()
+				defer srv.finishReady(ch)
+				m.emitLifecycle(mcpLifecycleEvent{name: srv.Cfg.Name, kind: "failed"})
 				return
 			}
 			srv.Session = tmp.Session
@@ -252,6 +289,10 @@ func NewMCPManager(ctx context.Context, cfgs []config.MCPServerConfig) *MCPManag
 				srv.Status = "connected"
 			}
 			srv.Err = nil
+			name := srv.Cfg.Name
+			m.mu.Unlock()
+			defer srv.finishReady(ch)
+			m.emitLifecycle(mcpLifecycleEvent{name: name, kind: "connected"})
 		})
 	}
 	return m
@@ -700,9 +741,9 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 	// Re-check for closed: if Close() ran while we were connecting, don't
 	// resurrect the server — close the new session instead.
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if srv.Status == "closed" {
 		_ = tmp.Session.Close()
+		m.mu.Unlock()
 		return fmt.Errorf("MCP server %q is closed", name)
 	}
 	srv.Session = tmp.Session
@@ -712,6 +753,9 @@ func (m *MCPManager) Reconnect(ctx context.Context, name string) error {
 		srv.Status = "connected"
 	}
 	srv.Err = nil
+	srvName := srv.Cfg.Name
+	m.mu.Unlock()
+	m.emitLifecycle(mcpLifecycleEvent{name: srvName, kind: "tools-changed"})
 	return nil
 }
 
@@ -739,8 +783,10 @@ func (m *MCPManager) Close() {
 		session mcpSession
 	}
 	var targets []srvSession
+	var closedNames []string
 	for _, srv := range m.servers {
 		srv.Status = "closed"
+		closedNames = append(closedNames, srv.Cfg.Name)
 		// Unblock any CallTool waiting on a still-connecting server: after
 		// Close the server will never become ready, so the waiter must not
 		// block until its ctx expires. signalReady is a no-op when no channel
@@ -752,6 +798,9 @@ func (m *MCPManager) Close() {
 		}
 	}
 	m.mu.Unlock()
+	for _, n := range closedNames {
+		m.emitLifecycle(mcpLifecycleEvent{name: n, kind: "closed"})
+	}
 
 	// Drain in-flight calls and close sessions — outside m.mu, and CONCURRENTLY
 	// across servers: each drain can wait up to closeDrainTimeout, so doing them

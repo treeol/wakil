@@ -787,6 +787,16 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 				// The reconnect rebuilds with the per-repo level live (round-2
 				// finding #8: the gate must honor the restored override, not "").
 				toolList := BuildTools(app.Cfg, app.Exec.Cwd(), app.MCP, app.MashuraLevelOverride)
+				// Context modules: BuildTools above discarded its fresh
+				// registry. Refresh the STORED registry instead so the
+				// reconnected server's tools stay consistent (a reconnect
+				// that returns a different tool set updates the module;
+				// a reconnect that fails marks it disconnected). The tool
+				// array itself stays the frozen one when the switch is on
+				// (BuildTools returns the core-only array in that case).
+				if app.Modules != nil && app.MCP != nil {
+					app.Modules.refreshMCPModules(app.MCP)
+				}
 				return MCPReconnectedMsg{Name: name, Tools: toolList}
 			}
 		}

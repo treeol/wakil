@@ -55,9 +55,17 @@ type App struct {
 	Tools  []proxy.Tool
 	// Modules is the module registry when context_modules is "on". Nil when
 	// the switch is off (BuildTools is byte-identical to today). Set at
-	// BuildTools time via BuildToolsWithModules; immutable for the session.
+	// BuildTools time via BuildToolsWithModules. Not immutable: MCP modules
+	// are added and removed as servers connect and disconnect
+	// (RegisterMCPModules / refreshMCPModules); the tool array is what
+	// stays frozen.
 	Modules *ModuleRegistry
-	Conv    []proxy.Message
+	// mcpEventBuf queues MCP lifecycle events (connect/disconnect/reconnect)
+	// recorded on background goroutines. flushPendingModuleEvents, run on
+	// the agent goroutine at turn start, folds them into the registry and
+	// announces new modules as appended messages. Guarded by stateMu.
+	mcpEventBuf []mcpLifecycleEvent
+	Conv        []proxy.Message
 	// convMu guards Conv for concurrent reads from side-question goroutines.
 	// The main goroutine writes Conv inside Send/streamTurn; side-question
 	// goroutines take a read-lock snapshot. All Conv access must go through
@@ -1285,6 +1293,12 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 				a.Modules.PreloadModules(preload)
 			}
 		}
+		// Flush any MCP lifecycle events (connect/disconnect/reconnect)
+		// that arrived on background goroutines. The reconcile runs here so
+		// a server that connected after the registry snapshot becomes a
+		// module and is announced as an appended message before the model
+		// looks for it.
+		a.flushPendingModuleEvents()
 	}
 	a.ensurePreamble()
 	// Split-prompt activation: in core mode, classify the user message and
