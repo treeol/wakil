@@ -308,6 +308,43 @@ if "$script" "$tmp/union.jsonl" 2>"$tmp/denom.err" >/dev/null; then
     fi
 fi
 
+# --- case 9g: a scalar tool_calls does not abort the run ------------------
+#
+# A malformed turn whose tool_calls is a string, not an array: it must be
+# skipped (or contribute nothing), never exit 2 over the whole file.
+cat > "$tmp/scalar.jsonl" <<'EOF'
+{"type":"turn","session_id":"sc1","tool_calls":"not-an-array"}
+{"type":"turn","session_id":"sc1","tool_calls":[{"name":"run_shell"}]}
+EOF
+if got=$("$script" "$tmp/scalar.jsonl" 2>/dev/null); then
+    if printf '%s\n' "$got" | grep -q "^run_shell	1	1$"; then
+        pass "a scalar tool_calls does not abort the run"
+    else
+        fail "scalar tool_calls lost the good record"
+    fi
+else
+    fail "a scalar tool_calls aborted the run"
+fi
+
+# --- case 9h: an empty session id is not counted as a session -------------
+cat > "$tmp/nosid.jsonl" <<'EOF'
+{"type":"turn","tool_calls":[{"name":"list_dir"}]}
+EOF
+"$script" "$tmp/nosid.jsonl" 2>"$tmp/nosid.err" >/dev/null || true
+if grep -q 'sessions=0' "$tmp/nosid.err"; then
+    pass "an empty session id is not counted"
+else
+    fail "empty session id counted"
+    printf '  stderr: %s\n' "$(cat "$tmp/nosid.err")" >&2
+fi
+
+# --- case 9i: --union without '=' is rejected ----------------------------
+if "$script" "$tmp/one.jsonl" --union "novalue" >/dev/null 2>&1; then
+    fail "--union without = should exit non-zero"
+else
+    pass "--union without = is rejected"
+fi
+
 # --- case 10: an empty file is not an error, it is an empty report -------
 : > "$tmp/empty.jsonl"
 got=$("$script" "$tmp/empty.jsonl" 2>/dev/null || true)

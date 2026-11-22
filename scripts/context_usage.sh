@@ -88,6 +88,10 @@ while [ "$#" -gt 0 ]; do
     case "$1" in
         --union)
             [ "$#" -ge 2 ] || { echo "$prog: --union needs LABEL=TOOL1,TOOL2" >&2; exit 2; }
+            case "$2" in
+                *=*) ;;
+                *) echo "$prog: --union needs LABEL=TOOL1,TOOL2 (no '=' in '$2')" >&2; exit 2 ;;
+            esac
             unions="$unions$2
 "
             shift 2
@@ -146,12 +150,16 @@ jq_prog='
     elif ($r | type) != "object" then "\u0001S"
     elif $r.type != "turn" then empty
     else
-      (($r.session_id // "") | tostring) as $sid
-      | "\u0001U\t\($sid)",
-        (($r.tool_calls // []) | .[]
-         | select(type == "object")
-         | select(.name | type == "string")
-         | "\u0001T\t\(.name)\t\($sid)")
+      (try (
+        "\u0001N",
+        (($r.session_id // "") | tostring) as $sid
+        | select($sid != "")          # an empty session id is not a session
+        | "\u0001U\t\($sid)",
+          (($r.tool_calls // []) | .[]
+           | select(type == "object")
+           | select(.name | type == "string")
+           | "\u0001T\t\(.name)\t\($sid)")
+      ) catch "\u0001S")
     end
 '
 
@@ -169,19 +177,19 @@ for f in $args; do
         echo "$prog: failed to read trace: $f" >&2
         exit 2
     fi
-    n=$(grep -c "$(printf '\001')S" "$tmp.parsed" 2>/dev/null || true)
+    n=$(grep -c "^$(printf '\001')S" "$tmp.parsed" 2>/dev/null || true)
     [ -n "${n:-}" ] || n=0
     if [ "$n" -gt 0 ]; then
         skipped_lines=$((skipped_lines + n))
         skipped_files=$((skipped_files + 1))
     fi
-    grep "$(printf '\001')T" "$tmp.parsed" >> "$tmp" 2>/dev/null || true
+    grep "^$(printf '\001')T" "$tmp.parsed" >> "$tmp" 2>/dev/null || true
     # Same data reversed as "session<TAB>tool" for the --union computation.
     awk -F '\t' '$1 == "\001T" { print $3 "\t" $2 }' "$tmp.parsed" >> "$tmp.sets" 2>/dev/null || true
-    u=$(grep -c "$(printf '\001')U" "$tmp.parsed" 2>/dev/null || true)
-    [ -n "${u:-}" ] || u=0
-    turns_seen=$((turns_seen + u))
-    grep "$(printf '\001')U" "$tmp.parsed" >> "$tmp.sessions" 2>/dev/null || true
+    n=$(grep -c "^$(printf '\001')N" "$tmp.parsed" 2>/dev/null || true)
+    [ -n "${n:-}" ] || n=0
+    turns_seen=$((turns_seen + n))
+    grep "^$(printf '\001')U" "$tmp.parsed" >> "$tmp.sessions" 2>/dev/null || true
     rm -f "$tmp.parsed"
 done
 

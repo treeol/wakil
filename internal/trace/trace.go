@@ -70,7 +70,8 @@ type Store struct {
 	mu     sync.Mutex
 	closed bool
 
-	dropped atomic.Int64 // records dropped due to full channel
+	dropped    atomic.Int64 // records dropped due to full channel
+	dropWarned sync.Once    // report drops at most once per store
 }
 
 // Open creates (or appends to) the per-session JSONL file under dir and
@@ -173,7 +174,11 @@ func (s *Store) Close() {
 	// lost turns says so once, so the trace is not trusted as complete when it
 	// is not. Reported from Close so no caller outside this package is needed.
 	if d := s.dropped.Load(); d > 0 {
-		diag.Printf("trace: dropped %d record(s) (write channel was full); the trace is incomplete", d)
+		// Once only: Close is idempotent and may be called by several closers;
+		// the warning must not multiply.
+		s.dropWarned.Do(func() {
+			diag.Printf("trace: dropped %d record(s) (write channel was full); the trace is incomplete", d)
+		})
 	}
 }
 
@@ -193,7 +198,6 @@ func (s *Store) drainTo(f *os.File) {
 		buf = append(buf, '\n')
 		if _, err := f.Write(buf); err != nil {
 			diag.Printf("trace: write error: %v", err)
-			continue
 		}
 	}
 }
@@ -261,8 +265,15 @@ func terminateCutTail(path string) error {
 	if last[0] == '\n' {
 		return nil
 	}
-	if _, err := f.WriteAt([]byte{'\n'}, st.Size()); err != nil {
+	// Append, do not WriteAt: between the Stat above and a positional write a
+	// second appender for the same session could add a record, and WriteAt at
+	// the stale offset would overwrite its first byte. O_APPEND always writes at
+	// the true end, so the worst case is a redundant newline, never a clobber.
+	a, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
 		return err
 	}
-	return nil
+	defer a.Close()
+	_, err = a.Write([]byte{'\n'})
+	return err
 }

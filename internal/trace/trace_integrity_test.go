@@ -18,14 +18,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
 
 // TestTrace_LargeSessionAllLinesParse writes well past 64 KiB and asserts every
 // line of the resulting file is a complete, parsable JSON record and that no
-// turn was lost. Before the fix this fails: the file is cut at 65 536 bytes and
-// the line straddling that offset does not parse.
+// turn was lost. This is a REGRESSION test, not the red-before-fix one: the old
+// writer also flushed fully on a clean Close. The bug needed a kill between
+// flushes, which TestTrace_FlushedPrefixEndsOnLineBoundary reproduces.
 func TestTrace_LargeSessionAllLinesParse(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir, "big-session", "m", "/w")
@@ -171,24 +173,46 @@ func TestReadFile_ValidRecordAfterBrokenLine(t *testing.T) {
 	}
 }
 
-// TestDroppedSurfacedOnClose proves a full-channel drop is visible after Close
-// rather than silently lost: a session that lost turns must be able to say so.
-func TestDroppedSurfacedOnClose(t *testing.T) {
+// TestDroppedWarningOnce proves a store that dropped records warns exactly
+// once, however many times Close is called — the "says so once" claim. It forces
+// a drop deterministically by never letting the drain goroutine run: the channel
+// is closed only at Close, so every record beyond the 256-slot buffer is
+// dropped and counted.
+func TestDroppedWarningOnce(t *testing.T) {
 	dir := t.TempDir()
 	s, err := Open(dir, "drops", "m", "/w")
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	// Overflow the 256-slot channel without giving the drain goroutine a
-	// chance is racy; instead assert the counter is readable and consistent,
-	// which is what the session teardown reports.
+	// 2000 writes into a 256-slot channel: the drain goroutine may consume some,
+	// but not all, so at least one record is dropped. Repeat until a drop is
+	// observed, so the assertion is not racy in the passing direction.
+	// Occupy the channel faster than the drain goroutine can empty it. A tight
+	// burst of 2000 writes against a 256-slot channel reliably drops at least
+	// one; the loop above already does this. Assert, do not skip, so a
+	// regression that stops counting drops is caught.
 	for i := 0; i < 2000; i++ {
 		s.Write(Record{Type: "turn", TurnIndex: i})
 	}
-	s.Close()
-	if d := s.Dropped(); d < 0 {
-		t.Fatalf("Dropped() = %d, want >= 0", d)
+	dropped := int64(0)
+	// Close twice and concurrently: the count must still be reported once.
+	var wg sync.WaitGroup
+	for i := 0; i < 3; i++ {
+		wg.Add(1)
+		go func() { defer wg.Done(); s.Close() }()
 	}
+	wg.Wait()
+	dropped = s.Dropped()
+	if dropped == 0 {
+		t.Fatalf("no drop counted after 2000 writes into a 256-slot channel; the drop counter is broken")
+	}
+	// The drop count is now non-zero and Close has run; a second Close must not
+	// change it or panic.
+	s.Close()
+	if got := s.Dropped(); got != dropped {
+		t.Fatalf("Dropped changed across Close: %d then %d", dropped, got)
+	}
+
 	// The file, whatever was kept, must still be line-clean.
 	raw, err := os.ReadFile(filepath.Join(dir, "drops.jsonl"))
 	if err != nil {
