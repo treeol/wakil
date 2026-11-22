@@ -32,7 +32,11 @@ func lspSessionEnv(t *testing.T, withGopls bool) (*lsp.Manager, string) {
 		t.Fatal(err)
 	}
 	if withGopls {
-		if err := os.WriteFile(filepath.Join(dir, "gopls"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		// The fake closes its stdout (the client's reader sees EOF: a handshake
+		// failure) and keeps reading its stdin until the client closes it. A
+		// fake that exited at once could be gone before the client wrote the
+		// initialize request, and the write would fail with EPIPE instead.
+		if err := os.WriteFile(filepath.Join(dir, "gopls"), []byte("#!/bin/sh\nexec >&-\ncat >/dev/null\n"), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -73,8 +77,8 @@ func TestLSPProbe_GoplsAbsentFromSession(t *testing.T) {
 func TestLSPProbe_GoplsPresentInSession(t *testing.T) {
 	mgr, _ := lspSessionEnv(t, true)
 	_, err := mgr.EnsureServer(ctxT(t), "go")
-	// The fake gopls exits at once, so the launch proceeds and fails later in
-	// the handshake. That failure, not a probe failure, proves the launch ran.
+	// The fake gopls closes its stdout at once, so the launch proceeds and
+	// fails later in the handshake. That failure, not a probe failure, proves the launch ran.
 	if err == nil {
 		t.Fatal("want a handshake failure from the exiting fake gopls, got nil")
 	}
