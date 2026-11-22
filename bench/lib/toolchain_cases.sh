@@ -23,12 +23,15 @@ bad=0
 
 mkdir "$tmp/stub"
 # MODE=all: every go command fails (a host whose Go is 1.25.1; "local" says so).
-# MODE=env-ok: "go env" answers (real go), every other command fails.
+# MODE=env-ok: "go env" answers (real go), every other command fails. Its
+# "env GOROOT" names a toolchain root whose bin/go is this stub again: the
+# harness runs the resolved toolchain's own bin/go, which here is the failing go.
 cat > "$tmp/stub/go" <<STUB
 #!/bin/sh
 case "\$MODE:\$*" in
   all:"env GOVERSION")
     if [ "\${GOTOOLCHAIN:-}" = local ]; then echo go1.25.1; exit 0; fi ;;
+  env-ok:"env GOROOT") echo "$tmp/stubroot"; exit 0 ;;
   env-ok:env*) exec "$real_go" "\$@" ;;
 esac
 echo "$host_err" >&2
@@ -51,6 +54,8 @@ case "$1" in
 esac
 STUB
 chmod +x "$tmp/stub/go" "$tmp/stub/wakil"
+mkdir -p "$tmp/stubroot/bin"
+cp "$tmp/stub/go" "$tmp/stubroot/bin/go"
 
 # run_case <name> <MODE> [VAR=value]...: copies the tree, runs one bench; sets
 # rc, $tmp/<name>/{out,err}, and the tree dir in $t. $case_flags (set by the

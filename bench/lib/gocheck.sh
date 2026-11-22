@@ -151,17 +151,27 @@ gocheck_bin() {
 
 # gocheck_env: the fixed Go environment of every check and of setup.sh. Not
 # inherited from the agent or the user, except what bench.sh resolved once at
-# start in the repo root and passes in BENCH_*: the toolchain (GOTOOLCHAIN is
-# that exact version, so a toolchain already in the local cache is used even
-# when the host's own Go is older than a task's go.mod) and the cache
-# locations (GOENV=off hides "go env -w" settings, so they are handed over
-# explicitly). GOPROXY=off: a check never downloads a toolchain or a module.
+# start in the repo root and passes in BENCH_*: the toolchain (its location,
+# BENCH_GOROOT, so the toolchain already in the local cache is run directly
+# even when the host's own Go is older than a task's go.mod and whatever HOME
+# is; BENCH_GOTOOLCHAIN names its version) and the cache locations (GOENV=off
+# hides "go env -w" settings, so they are handed over explicitly). GOPROXY=off: a check never downloads a toolchain or a module.
 gocheck_env() {
     if [ -z "${BENCH_GOTOOLCHAIN:-}" ]; then
         echo "check: BENCH_GOTOOLCHAIN is not set (checks are started by scripts/bench.sh)" >&2
         exit 99
     fi
     export GOTOOLCHAIN="$BENCH_GOTOOLCHAIN" GOPROXY=off
+    # bench.sh also passes where the resolved toolchain lives (BENCH_GOROOT).
+    # Its own bin/go goes first on PATH and never switches (local), so no go
+    # command of a check looks the toolchain up again through HOME, GOENV or
+    # the module cache. Without it (a resolve that fell back to the go on PATH
+    # under --no-preflight, a development-build Go) the go on PATH is used
+    # with GOTOOLCHAIN as given.
+    if [ -n "${BENCH_GOROOT:-}" ] && [ -x "$BENCH_GOROOT/bin/go" ]; then
+        PATH="$BENCH_GOROOT/bin:$PATH"; export PATH
+        GOTOOLCHAIN=local
+    fi
     export GOFLAGS=-buildvcs=false GOWORK=off GOENV=off CGO_ENABLED=0 GO111MODULE=on
     [ -z "${BENCH_GOMODCACHE:-}" ] || export GOMODCACHE="$BENCH_GOMODCACHE"
     [ -z "${BENCH_GOCACHE:-}" ] || export GOCACHE="$BENCH_GOCACHE"

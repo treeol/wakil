@@ -243,9 +243,11 @@ task_idx=0
 # are resolved with the same environment because the checks run with
 # GOENV=off, which hides "go env -w" settings.
 go_toolchain=""
+go_root=""
 go_modcache=""
 go_cache=""
 go_path=""
+st_go_private=""
 
 # go_required_version: the highest "go" directive of the selected tasks' go.mod
 # files (task repos and the long-read generator), e.g. 1.26.
@@ -278,18 +280,28 @@ go_fail_line() {
     echo "$prog: the Go checks cannot run: the tasks need go >= $(go_required_version), found $(go_found_version) — $1" >&2
 }
 
-# resolve_go: fill go_toolchain and the cache locations, or print one line and
-# return 1. --no-preflight (test only, read here and in preflight_go) lets a
-# failed resolve fall back to "local" so the self-test can drive a check
-# through a broken go.
+# go_skip_note <why>: under --no-preflight a failed resolve falls back to the
+# "go" on PATH. That is a test-only mode, but the cause must not stay hidden.
+go_skip_note() {
+    echo "$prog: warning: --no-preflight: no Go toolchain was resolved ($1); the checks use the go on PATH" >&2
+}
+
+# resolve_go: fill go_toolchain, go_root and the cache locations, or print one
+# line and return 1. go_root is where the resolved toolchain lives on disk
+# ("go env GOROOT" of the caller's environment): every Go command of a check,
+# of a task setup and of the preflight runs that toolchain's own bin/go, so none
+# of them looks "go" up again by name or through HOME. --no-preflight (test
+# only, read here and in preflight_go) lets a failed resolve fall back to
+# "local" so the self-test can drive a check through a broken go.
 resolve_go() {
+    go_root=""
     _rg_need=0
     for _rg_t in $tasks; do
         [ -f "$tasks_dir/$_rg_t/repo/go.mod" ] && _rg_need=1
     done
     [ "$_rg_need" -eq 1 ] || return 0
     if ! command -v go >/dev/null 2>&1; then
-        [ "$skip_preflight" -ne 1 ] || { go_toolchain=local; return 0; }
+        [ "$skip_preflight" -ne 1 ] || { go_skip_note "go is not installed"; go_toolchain=local; return 0; }
         go_fail_line "go is not installed (see bench/README.md)"
         return 1
     fi
@@ -299,18 +311,37 @@ resolve_go() {
     if ! _rg_v=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOVERSION 2>"$_rg_err"); then
         _rg_msg=$(head -n 1 "$_rg_err")
         rm -f "$_rg_err"
-        [ "$skip_preflight" -ne 1 ] || { go_toolchain=local; return 0; }
+        [ "$skip_preflight" -ne 1 ] || { go_skip_note "$_rg_msg"; go_toolchain=local; return 0; }
         go_fail_line "$_rg_msg"
         return 1
     fi
     rm -f "$_rg_err"
     # "go1.26.11" (possibly followed by an experiment list); a development
-    # build cannot be pinned by name, so it stays on "local".
+    # build cannot be pinned by name, so it stays on "local" (no go_root).
     _rg_v=${_rg_v%% *}
     case "$_rg_v" in
         go[0-9]*) go_toolchain="$_rg_v" ;;
         *) go_toolchain="local" ;;
     esac
+    if [ "$go_toolchain" != local ]; then
+        # The toolchain's own go, run without GOROOT and without switching,
+        # must report the version that was just resolved: a caller-exported
+        # GOROOT, a wrapper or a shim would otherwise pair this version label
+        # with another tree.
+        _rg_root=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOROOT 2>/dev/null) || _rg_root=""
+        _rg_rv=""
+        if [ -n "$_rg_root" ] && [ -x "$_rg_root/bin/go" ]; then
+            _rg_rv=$(cd "$repo_root" && env -u GOROOT GOFLAGS= GOENV=off GOPROXY=off GOTOOLCHAIN=local "$_rg_root/bin/go" env GOVERSION 2>/dev/null | head -n 1) || _rg_rv=""
+        fi
+        _rg_rv=${_rg_rv%% *}
+        if [ "$_rg_rv" != "$go_toolchain" ]; then
+            _rg_msg="the toolchain root '${_rg_root:-unknown}' does not hold a go that reports $go_toolchain (it reports '${_rg_rv:-nothing}')"
+            [ "$skip_preflight" -ne 1 ] || { go_skip_note "$_rg_msg"; go_toolchain=local; return 0; }
+            go_fail_line "$_rg_msg"
+            return 1
+        fi
+        go_root="$_rg_root"
+    fi
     go_modcache=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOMODCACHE 2>/dev/null) || go_modcache=""
     go_cache=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOCACHE 2>/dev/null) || go_cache=""
     go_path=$(cd "$repo_root" && GOFLAGS= GOPROXY=off go env GOPATH 2>/dev/null) || go_path=""
@@ -322,7 +353,7 @@ resolve_go() {
 # subshell.
 with_go_env() {
     (
-        unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH BENCH_GO_TEST_TIMEOUT
+        unset BENCH_PREFLIGHT BENCH_GOTOOLCHAIN BENCH_GOROOT BENCH_GOMODCACHE BENCH_GOCACHE BENCH_GOPATH BENCH_GO_TEST_TIMEOUT
         # "go test" gets its own -timeout, below the outer bound, so a hanging
         # test binary ends as a test failure (decided by gocheck_blame) and
         # not as a timed-out check (an error that stops the bench).
@@ -333,6 +364,7 @@ with_go_env() {
         BENCH_KILL_GRACE="$kill_grace"; export BENCH_KILL_GRACE
         if [ -n "$go_toolchain" ]; then
             BENCH_GOTOOLCHAIN="$go_toolchain"; export BENCH_GOTOOLCHAIN
+            [ -z "$go_root" ] || { BENCH_GOROOT="$go_root"; export BENCH_GOROOT; }
             [ -z "$go_modcache" ] || { BENCH_GOMODCACHE="$go_modcache"; export BENCH_GOMODCACHE; }
             [ -z "$go_cache" ] || { BENCH_GOCACHE="$go_cache"; export BENCH_GOCACHE; }
             [ -z "$go_path" ] || { BENCH_GOPATH="$go_path"; export BENCH_GOPATH; }
@@ -1077,11 +1109,29 @@ tool_dir() {
         for _td_o in "$@"; do
             [ "$_td_t" != "$_td_o" ] || continue 2
         done
-        _td_bin=$(command -v "$_td_t") || continue
+        if [ "$_td_t" = go ] && [ -n "$go_root" ] && [ -x "$go_root/bin/go" ]; then
+            # The resolved toolchain's own go, so a program that looks "go" up
+            # on this PATH (a child bench) finds the toolchain without HOME.
+            _td_bin="$go_root/bin/go"
+        else
+            _td_bin=$(command -v "$_td_t") || continue
+        fi
         case "$_td_bin" in
             /*) ln -s "$_td_bin" "$_td_dir/$_td_t" || return 1 ;;
         esac
     done
+}
+
+# st_on_exit: EXIT trap of --self-test: the private Go cache directory (go build
+# leaves read-only files) is removed on every way out.
+st_on_exit() {
+    _se_rc=$?
+    trap - EXIT
+    if [ -n "${st_go_private:-}" ]; then
+        chmod -R u+w "$st_go_private" 2>/dev/null || true
+        rm -rf "$st_go_private"
+    fi
+    exit "$_se_rc"
 }
 
 self_test() {
@@ -1242,21 +1292,62 @@ EOF
     done
     [ "$_pass_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
 
+    echo "== self-test: go-empty-home (one Go check with an empty HOME, GOTOOLCHAIN=local and a failing go first on PATH passes) =="
+    # The check must reach the toolchain the harness resolved at start by its
+    # location, not by looking "go" up again: here the only "go" on PATH is one
+    # that fails the way a host does when HOME does not hold the cached
+    # toolchain.
+    if [ -n "$go_toolchain" ] && [ "$go_toolchain" != local ] && [ -d "$tasks_dir/fix-test/solution" ]; then
+        _eh_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-emptyhome.XXXXXX")
+        tool_dir "$_eh_dir/bin" go || { echo "self-test FAILED: go-empty-home: cannot build the tool directory" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_eh_dir"; exit 1; }
+        printf '#!/bin/sh\necho "go: downloading %s (linux/amd64)" >&2\necho "go: download %s for linux/amd64: toolchain not available" >&2\nexit 1\n' "$go_toolchain" "$go_toolchain" > "$_eh_dir/bin/go"
+        chmod +x "$_eh_dir/bin/go"
+        mkdir -p "$_eh_dir/home" "$_eh_dir/w"
+        cp -R "$tasks_dir/fix-test/repo/." "$_eh_dir/w/" && cp -R "$tasks_dir/fix-test/solution/." "$_eh_dir/w/"
+        _eh_rc=0
+        ( cd "$_eh_dir/w" && PATH="$_eh_dir/bin" HOME="$_eh_dir/home" GOTOOLCHAIN=local GOPROXY=off with_go_env "$tasks_dir/fix-test/check.sh" ) >"$_eh_dir/out" 2>&1 || _eh_rc=$?
+        _eh_res=$(check_result_for_rc "$_eh_rc")
+        if [ "$_eh_res" != pass ]; then
+            echo "self-test FAILED: go-empty-home: the check ended with status $_eh_rc ($_eh_res), want pass:" >&2
+            tail -n 5 "$_eh_dir/out" >&2
+            rm -rf "$tmpdir" "$_self_work_root" "$_eh_dir"; exit 1
+        fi
+        rm -rf "$_eh_dir"
+        echo "  fix-test check with an empty HOME and only a failing go on PATH: pass"
+    else
+        echo "  skipped (no resolved Go toolchain or no fix-test task)"
+    fi
+
     echo "== self-test: toolchain-pinned (every go call of a check or setup runs with the resolved GOTOOLCHAIN and GOPROXY=off) =="
     # A recording go in front of PATH, forwarding to the real one. It logs the
     # environment of each call; the real runs below are the ordinary solve and
     # prep paths, so the log shows what the checks and setup.sh really used.
     if [ -n "$go_toolchain" ]; then
-        _real_go=$(command -v go)
-        mkdir -p "$tmpdir/gorec"
-        cat > "$tmpdir/gorec/go" <<EOF
+        # With a resolved toolchain root the checks run that root's own bin/go
+        # first on PATH, so the recorder stands in for the root: a fake root
+        # whose bin/go logs and forwards to the real one. Without a root (a
+        # development-build Go) the recorder sits in front of PATH as before.
+        _pin_want_tc="$go_toolchain"
+        _pin_saved_root="$go_root"
+        if [ -n "$go_root" ]; then
+            _real_go="$go_root/bin/go"
+            mkdir -p "$tmpdir/gorec/root/bin"
+            _pin_rec="$tmpdir/gorec/root/bin/go"
+            go_root="$tmpdir/gorec/root"
+            _pin_want_tc=local
+        else
+            _real_go=$(command -v go)
+            mkdir -p "$tmpdir/gorec"
+            _pin_rec="$tmpdir/gorec/go"
+        fi
+        cat > "$_pin_rec" <<REC
 #!/bin/sh
 echo "GOTOOLCHAIN=\$GOTOOLCHAIN GOPROXY=\$GOPROXY GOENV=\$GOENV GOFLAGS=\$GOFLAGS GOWORK=\$GOWORK GO111MODULE=\$GO111MODULE args=\$*" >> "\$BENCH_GO_LOG"
 exec "$_real_go" "\$@"
-EOF
-        chmod +x "$tmpdir/gorec/go"
+REC
+        chmod +x "$_pin_rec"
         _saved_path="$PATH"
-        PATH="$tmpdir/gorec:$PATH"; export PATH
+        [ -n "$_pin_saved_root" ] || { PATH="$tmpdir/gorec:$PATH"; export PATH; }
         _pin_calls=0
         for task in $tasks; do
             [ -f "$tasks_dir/$task/repo/go.mod" ] || continue
@@ -1269,10 +1360,10 @@ EOF
                 BENCH_TASK_DIR="$tasks_dir/$task" run_one "$task" "self-pinned" "$stub_solve"
             fi
             _n=$(wc -l < "$BENCH_GO_LOG")
-            _bad=$(grep -vc "^GOTOOLCHAIN=$go_toolchain GOPROXY=off GOENV=off GOFLAGS=-buildvcs=false GOWORK=off GO111MODULE=on " "$BENCH_GO_LOG" || true)
+            _bad=$(grep -vc "^GOTOOLCHAIN=$_pin_want_tc GOPROXY=off GOENV=off GOFLAGS=-buildvcs=false GOWORK=off GO111MODULE=on " "$BENCH_GO_LOG" || true)
             if [ "$_n" -eq 0 ] || [ "$_bad" -ne 0 ]; then
                 PATH="$_saved_path"; export PATH
-                echo "self-test FAILED: toolchain-pinned: $task made $_n go call(s), $_bad without GOTOOLCHAIN=$go_toolchain GOPROXY=off:" >&2
+                echo "self-test FAILED: toolchain-pinned: $task made $_n go call(s), $_bad without GOTOOLCHAIN=$_pin_want_tc GOPROXY=off:" >&2
                 cat "$BENCH_GO_LOG" >&2
                 rm -rf "$tmpdir" "$_self_work_root"; exit 1
             fi
@@ -1286,8 +1377,9 @@ EOF
             _pin_calls=$((_pin_calls + _n))
         done
         PATH="$_saved_path"; export PATH
+        go_root="$_pin_saved_root"
         unset BENCH_GO_LOG
-        echo "  $_pin_calls go call(s) of checks and setup, all with GOTOOLCHAIN=$go_toolchain GOPROXY=off"
+        echo "  $_pin_calls go call(s) of checks and setup, all with GOTOOLCHAIN=$_pin_want_tc GOPROXY=off${_pin_saved_root:+ through the resolved toolchain bin/go}"
     else
         echo "  skipped (no Go task selected)"
     fi
@@ -2355,15 +2447,19 @@ EOF
     # resolve_go: a stub go that fails when GOFLAGS is set, and answers with an
     # experiment suffix.
     _rg_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-rggo.XXXXXX")
-    printf '#!/bin/sh\n[ -z "$GOFLAGS" ] || { echo "go: GOFLAGS leaked: $GOFLAGS" >&2; exit 1; }\ncase "$*" in\n  "env GOVERSION") echo "go1.26.11 X:aliastypeparams,jsonv2" ;;\n  "env GOMODCACHE") echo /tmp/m ;;\n  "env GOCACHE") echo /tmp/c ;;\n  "env GOPATH") echo /tmp/p ;;\n  *) exit 1 ;;\nesac\n' > "$_rg_dir/go"
+    printf '#!/bin/sh\n[ -z "$GOFLAGS" ] || { echo "go: GOFLAGS leaked: $GOFLAGS" >&2; exit 1; }\ncase "$*" in\n  "env GOVERSION") echo "go1.26.11 X:aliastypeparams,jsonv2" ;;\n  "env GOROOT") echo "%s/root" ;;\n  "env GOMODCACHE") echo /tmp/m ;;\n  "env GOCACHE") echo /tmp/c ;;\n  "env GOPATH") echo /tmp/p ;;\n  *) exit 1 ;;\nesac\n' "$_rg_dir" > "$_rg_dir/go"
     chmod +x "$_rg_dir/go"
+    mkdir -p "$_rg_dir/root/bin"
+    cp "$_rg_dir/go" "$_rg_dir/root/bin/go"
     _rg_saved_tc="$go_toolchain"; _rg_saved_path="$PATH"
+    _rg_saved_root="$go_root"; _rg_saved_mc="$go_modcache"; _rg_saved_gc="$go_cache"; _rg_saved_gp="$go_path"
     go_toolchain=""
     PATH="$_rg_dir:$PATH"; GOFLAGS=-mod=vendor; export GOFLAGS
     _rg_err=$(resolve_go 2>&1) && _rg_rc=0 || _rg_rc=$?
     resolve_go >/dev/null 2>&1 || true
     _rg_got="$go_toolchain"
     unset GOFLAGS; PATH="$_rg_saved_path"; go_toolchain="$_rg_saved_tc"
+    go_root="$_rg_saved_root"; go_modcache="$_rg_saved_mc"; go_cache="$_rg_saved_gc"; go_path="$_rg_saved_gp"
     rm -rf "$_rg_dir"
     if [ "$_rg_rc" -ne 0 ] || [ "$_rg_got" != "go1.26.11" ]; then
         echo "self-test FAILED: resolve_go with GOFLAGS set and an experiment suffix: rc=$_rg_rc toolchain=$_rg_got: $_rg_err" >&2
@@ -2422,7 +2518,8 @@ EOF
     # PATH is tool_dir (the harness's tools, sh, go, python3). A program the
     # list leaves out would show as "not found" in the output or as a row that
     # is not "pass". --no-preflight keeps the CSV and logs under the case's own
-    # cache and HOME; the Go caches are the real ones (a cold cache would rebuild std).
+    # cache and HOME; the Go caches are the self-test's private ones, the toolchain
+    # is the one resolved at start (tool_dir links its own go).
     _ts_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-toolsuff.XXXXXX")
     tool_dir "$_ts_dir/bin" || { echo "self-test FAILED: tools-list-sufficient: cannot build the tool directory" >&2; rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_ts_dir"; exit 1; }
     cp "$tmpdir/wakil-solve" "$_ts_dir/wakil"
@@ -2489,6 +2586,16 @@ check_task_tools() {
 main() {
     check_task_tools || exit 1
     resolve_go || exit 1
+    if [ "$self_test" -eq 1 ]; then
+        trap st_on_exit EXIT
+        # The self-test never writes into the user's Go caches: the toolchain
+        # is only read (go_root), build and module caches are private to this
+        # run. Before the preflight, which already runs real Go commands.
+        if [ -n "$go_toolchain" ]; then
+            st_go_private=$(mktemp -d "${TMPDIR:-/tmp}/bench-gocache.XXXXXX") || exit 1
+            go_cache="$st_go_private/build"; go_modcache="$st_go_private/mod"; go_path="$st_go_private/path"
+        fi
+    fi
     preflight_go || exit 1
 
     if [ "$do_setup" -eq 1 ]; then
