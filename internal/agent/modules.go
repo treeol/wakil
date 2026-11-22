@@ -21,6 +21,7 @@ package agent
 // and block-by-block plan.
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -394,4 +395,100 @@ func BuildToolsWithModules(cfg config.Config, cwd string, mcp *MCPManager, repoL
 // today.
 func ContextModulesEnabled(cfg config.Config) bool {
 	return cfg.ContextModules == "on"
+}
+
+// ModuleRegistryForApp returns a ModuleRegistry when the switch is on, or nil
+// when off. Called by wiring/bootstrap.go at App construction to set the
+// Modules field alongside Tools.
+func ModuleRegistryForApp(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRegistry {
+	if !ContextModulesEnabled(cfg) {
+		return nil
+	}
+	_, reg := BuildToolsWithModules(cfg, cwd, mcp, "")
+	return reg
+}
+
+// handleLoadModule implements the load_module tool. It loads a module's
+// schemas from the registry and returns them as a pinned tool result (so
+// they survive eviction). Idempotent: loading an already-loaded module
+// returns the schemas again without error. Exempt from CapOrStub.
+func (a *App) handleLoadModule(ctx context.Context, tc proxy.ToolCall) string {
+	if a.Modules == nil {
+		return "ERROR: context modules are not enabled. Set context_modules to \"on\" in config."
+	}
+	var args struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+	}
+	if args.Name == "" {
+		return "ERROR: name is required. Available modules: " + strings.Join(a.Modules.ModuleNames(), ", ")
+	}
+	tools, desc, err := a.Modules.LoadModule(args.Name)
+	if err != nil {
+		return err.Error()
+	}
+	// Return the tool schemas as JSON so the model can call them via call_tool.
+	schemasJSON, _ := json.MarshalIndent(tools, "", "  ")
+	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", args.Name, desc, schemasJSON)
+}
+
+// handleCallTool implements the call_tool tool. It unwraps the inner tool
+// call and dispatches it through executeToolCall — the same path as a direct
+// call. All gates (shell classifier, approvals, grants, sandbox, network
+// policy, destructive and external gates, declined-call counting, trace and
+// result-json accounting) run on the inner name, exactly as a direct call.
+//
+// call_tool must not wrap load_module or call_tool (no nesting), and it must
+// not wrap a core tool that is already in the tool array. Return a clear
+// error for all three cases.
+func (a *App) handleCallTool(ctx context.Context, tc proxy.ToolCall) string {
+	if a.Modules == nil {
+		return "ERROR: context modules are not enabled. Set context_modules to \"on\" in config."
+	}
+	var args struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
+	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
+		return fmt.Sprintf("ERROR: could not parse arguments: %v", err)
+	}
+	if args.Name == "" {
+		return "ERROR: name is required"
+	}
+
+	// Guard 1: no nesting — call_tool must not call itself or load_module.
+	if args.Name == "call_tool" || args.Name == "load_module" {
+		return fmt.Sprintf("ERROR: call_tool must not wrap %q — call it directly", args.Name)
+	}
+
+	// Guard 2: the tool must be a module tool (deferred), not a core tool
+	// that is already in the tool array.
+	if coreToolNames[args.Name] {
+		return fmt.Sprintf("ERROR: tool %q is a core tool already in the tool array — call it directly, not through call_tool", args.Name)
+	}
+
+	// Guard 3: the tool must belong to a loaded module.
+	modName := a.Modules.ToolModule(args.Name)
+	if modName == "" {
+		return fmt.Sprintf("ERROR: tool %q is not in any module. Available modules: %s", args.Name, strings.Join(a.Modules.ModuleNames(), ", "))
+	}
+	if !a.Modules.IsLoaded(modName) {
+		return fmt.Sprintf("ERROR: tool %q belongs to module %q, which is not loaded. Call load_module(%q) first.", args.Name, modName, modName)
+	}
+
+	// Construct an inner ToolCall with the real tool name and arguments.
+	inner := proxy.ToolCall{
+		ID:       tc.ID,
+		Type:     tc.Type,
+		Function: proxy.FunctionCall{Name: args.Name, Arguments: args.Arguments},
+	}
+
+	// Dispatch through executeToolCall — the same path as a direct call.
+	// The wire name stays "call_tool" (for provider pairing); the inner
+	// name is what every gate, trace, and accounting sees because
+	// executeToolCall switches on the inner name.
+	result := a.executeToolCall(ctx, inner)
+	return result.text
 }

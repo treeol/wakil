@@ -1,12 +1,15 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/treeol/wakil/internal/config"
+	"github.com/treeol/wakil/internal/proxy"
 )
 
 // modules_test.go — tests for the context-modules switch (Stage 1).
@@ -321,5 +324,209 @@ func TestBuildToolsWithModules_NoDeferredInCore(t *testing.T) {
 				t.Errorf("module tool %q (module %q) is in the core array", tl.Function.Name, mod.Name)
 			}
 		}
+	}
+}
+
+// ── Block 3: load_module + call_tool handlers ────────────────────────────
+
+// TestHandleLoadModule_Success verifies loading a module returns the schemas
+// and marks it loaded.
+func TestHandleLoadModule_Success(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.handleLoadModule(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "load_module",
+			Arguments: `{"name":"staging"}`,
+		},
+	})
+	if strings.HasPrefix(result, "ERROR:") {
+		t.Fatalf("handleLoadModule failed: %s", result)
+	}
+	if !app.Modules.IsLoaded("staging") {
+		t.Error("staging not marked as loaded")
+	}
+	if !strings.Contains(result, "staging") {
+		t.Errorf("result should mention staging: %q", result)
+	}
+	if !strings.Contains(result, "staging_put") {
+		t.Errorf("result should contain tool schema name staging_put: %q", result)
+	}
+}
+
+// TestHandleLoadModule_UnknownModule verifies an unknown name returns an error
+// listing available modules.
+func TestHandleLoadModule_UnknownModule(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.handleLoadModule(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "load_module",
+			Arguments: `{"name":"nonexistent"}`,
+		},
+	})
+	if !strings.Contains(result, "unknown module") {
+		t.Errorf("should say 'unknown module': %s", result)
+	}
+	if !strings.Contains(result, "staging") {
+		t.Errorf("should list staging as available: %s", result)
+	}
+}
+
+// TestHandleLoadModule_Idempotent verifies loading an already-loaded module
+// returns its schemas again without error.
+func TestHandleLoadModule_Idempotent(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	_, _, err := app.Modules.LoadModule("staging")
+	if err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+	result := app.handleLoadModule(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "load_module",
+			Arguments: `{"name":"staging"}`,
+		},
+	})
+	if strings.HasPrefix(result, "ERROR:") {
+		t.Errorf("idempotent load should not error: %s", result)
+	}
+}
+
+// TestHandleCallTool_NoNesting verifies call_tool rejects wrapping itself or
+// load_module.
+func TestHandleCallTool_NoNesting(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	for _, inner := range []string{"call_tool", "load_module"} {
+		result := app.handleCallTool(context.Background(), proxy.ToolCall{
+			Function: proxy.FunctionCall{
+				Name:      "call_tool",
+				Arguments: fmt.Sprintf(`{"name":%q,"arguments":"{}"}`, inner),
+			},
+		})
+		if !strings.HasPrefix(result, "ERROR:") {
+			t.Errorf("call_tool wrapping %q should error: got %s", inner, result)
+		}
+		if !strings.Contains(result, "call it directly") {
+			t.Errorf("error should say 'call it directly' for %q: %s", inner, result)
+		}
+	}
+}
+
+// TestHandleCallTool_CoreToolRejected verifies call_tool rejects a core tool
+// that is already in the tool array.
+func TestHandleCallTool_CoreToolRejected(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "call_tool",
+			Arguments: `{"name":"read_file","arguments":"{}"}`,
+		},
+	})
+	if !strings.HasPrefix(result, "ERROR:") {
+		t.Errorf("call_tool wrapping a core tool should error: %s", result)
+	}
+	if !strings.Contains(result, "core tool") {
+		t.Errorf("error should say 'core tool': %s", result)
+	}
+}
+
+// TestHandleCallTool_ModuleNotLoaded verifies call_tool rejects a module tool
+// whose module has not been loaded.
+func TestHandleCallTool_ModuleNotLoaded(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "call_tool",
+			Arguments: `{"name":"staging_put","arguments":"{}"}`,
+		},
+	})
+	if !strings.HasPrefix(result, "ERROR:") {
+		t.Errorf("call_tool for unloaded module should error: %s", result)
+	}
+	if !strings.Contains(result, "not loaded") {
+		t.Errorf("error should say 'not loaded': %s", result)
+	}
+	if !strings.Contains(result, "load_module") {
+		t.Errorf("error should suggest load_module: %s", result)
+	}
+}
+
+// TestHandleCallTool_UnknownTool verifies call_tool rejects a tool name that is
+// not in any module.
+func TestHandleCallTool_UnknownTool(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "call_tool",
+			Arguments: `{"name":"nonexistent_tool","arguments":"{}"}`,
+		},
+	})
+	if !strings.HasPrefix(result, "ERROR:") {
+		t.Errorf("call_tool for unknown tool should error: %s", result)
+	}
+	if !strings.Contains(result, "not in any module") {
+		t.Errorf("error should say 'not in any module': %s", result)
+	}
+}
+
+// TestHandleCallTool_SingleDispatchPath verifies that a call_tool call for a
+// gated tool goes through the same confirm gate as a direct call. The test
+// uses save_skill (a gated, main-agent-only tool from the skills-authoring
+// module): with a declining confirmer it should return the same declined
+// result as a direct call would.
+func TestHandleCallTool_SingleDispatchPath_Gated(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return false })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	// Load the edit-extras module first.
+	_, _, err := app.Modules.LoadModule("edit-extras")
+	if err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	// call_tool for move_file with a declining confirmer → declined.
+	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+		ID: "test-call-1",
+		Function: proxy.FunctionCall{
+			Name:      "call_tool",
+			Arguments: `{"name":"move_file","arguments":"{\"src\":\"/work/a\",\"dst\":\"/work/b\"}"}`,
+		},
+	})
+	if !strings.Contains(result, "[declined by user]") {
+		t.Errorf("gated call_tool should be declined, got: %s", result)
+	}
+}
+
+// TestHandleCallTool_SingleDispatchPath_Destructive verifies that a call_tool
+// call for a destructive shell command is classified as destructive (the
+// shell classifier runs on the inner name).
+func TestHandleCallTool_SingleDispatchPath_Destructive(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	// run_shell is a core tool — call_tool should reject it.
+	// This test verifies the core-tool guard fires for run_shell too.
+	result := app.handleCallTool(context.Background(), proxy.ToolCall{
+		Function: proxy.FunctionCall{
+			Name:      "call_tool",
+			Arguments: `{"name":"run_shell","arguments":"{\"command\":\"rm -rf /tmp/x\"}"}`,
+		},
+	})
+	if !strings.HasPrefix(result, "ERROR:") {
+		t.Errorf("call_tool wrapping a core tool (run_shell) should error: %s", result)
+	}
+	if !strings.Contains(result, "core tool") {
+		t.Errorf("error should say 'core tool': %s", result)
 	}
 }

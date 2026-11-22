@@ -53,7 +53,11 @@ type App struct {
 	Exec   exec.Executor
 	MCP    *MCPManager // nil if no MCP servers configured
 	Tools  []proxy.Tool
-	Conv   []proxy.Message
+	// Modules is the module registry when context_modules is "on". Nil when
+	// the switch is off (BuildTools is byte-identical to today). Set at
+	// BuildTools time via BuildToolsWithModules; immutable for the session.
+	Modules *ModuleRegistry
+	Conv    []proxy.Message
 	// convMu guards Conv for concurrent reads from side-question goroutines.
 	// The main goroutine writes Conv inside Send/streamTurn; side-question
 	// goroutines take a read-lock snapshot. All Conv access must go through
@@ -3404,6 +3408,10 @@ func (a *App) executeToolCall(ctx context.Context, tc proxy.ToolCall) toolResult
 		return stringToToolResult(a.handleCaptureSkillTemplate(ctx, tc))
 	case "check_skill_template":
 		return stringToToolResult(a.handleCheckSkillTemplate(ctx, tc))
+	case "load_module":
+		return stringToToolResult(a.handleLoadModule(ctx, tc))
+	case "call_tool":
+		return stringToToolResult(a.handleCallTool(ctx, tc))
 	default:
 		return stringToToolResult(a.handleMCPTool(ctx, tc))
 	}
