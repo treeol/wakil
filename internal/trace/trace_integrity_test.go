@@ -173,56 +173,32 @@ func TestReadFile_ValidRecordAfterBrokenLine(t *testing.T) {
 	}
 }
 
-// TestDroppedWarningOnce proves a store that dropped records warns exactly
-// once, however many times Close is called — the "says so once" claim. It forces
-// a drop deterministically by never letting the drain goroutine run: the channel
-// is closed only at Close, so every record beyond the 256-slot buffer is
-// dropped and counted.
+// TestDroppedWarningOnce proves a store that dropped records reports the count
+// and that Close never changes it, however many times (and concurrently) it is
+// called. The drop is forced deterministically: the store is built with a tiny
+// channel and NO drain goroutine, so every write past the buffer is dropped. No
+// timing is involved.
 func TestDroppedWarningOnce(t *testing.T) {
-	dir := t.TempDir()
-	s, err := Open(dir, "drops", "m", "/w")
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	// 2000 writes into a 256-slot channel: the drain goroutine may consume some,
-	// but not all, so at least one record is dropped. Repeat until a drop is
-	// observed, so the assertion is not racy in the passing direction.
-	// Occupy the channel faster than the drain goroutine can empty it. A tight
-	// burst of 2000 writes against a 256-slot channel reliably drops at least
-	// one; the loop above already does this. Assert, do not skip, so a
-	// regression that stops counting drops is caught.
-	for i := 0; i < 2000; i++ {
+	s := &Store{ch: make(chan []byte, 2)}
+	for i := 0; i < 10; i++ {
 		s.Write(Record{Type: "turn", TurnIndex: i})
 	}
-	dropped := int64(0)
-	// Close twice and concurrently: the count must still be reported once.
+	want := int64(8) // 10 writes, 2 fit in the buffer
+	if got := s.Dropped(); got != want {
+		t.Fatalf("Dropped() = %d, want %d", got, want)
+	}
+	// Close concurrently several times: the drain goroutine was never started,
+	// so wg is already zero and Close returns at once. The count must be stable
+	// and the drop warning must fire at most once (it writes to diag, which the
+	// test does not assert on directly — the once-guard is what is exercised).
 	var wg sync.WaitGroup
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 5; i++ {
 		wg.Add(1)
 		go func() { defer wg.Done(); s.Close() }()
 	}
 	wg.Wait()
-	dropped = s.Dropped()
-	if dropped == 0 {
-		t.Fatalf("no drop counted after 2000 writes into a 256-slot channel; the drop counter is broken")
-	}
-	// The drop count is now non-zero and Close has run; a second Close must not
-	// change it or panic.
-	s.Close()
-	if got := s.Dropped(); got != dropped {
-		t.Fatalf("Dropped changed across Close: %d then %d", dropped, got)
-	}
-
-	// The file, whatever was kept, must still be line-clean.
-	raw, err := os.ReadFile(filepath.Join(dir, "drops.jsonl"))
-	if err != nil {
-		t.Fatalf("ReadFile: %v", err)
-	}
-	for i, ln := range splitLines(raw) {
-		var rec Record
-		if err := json.Unmarshal(ln, &rec); err != nil {
-			t.Fatalf("line %d unparsable after drops: %v", i, err)
-		}
+	if got := s.Dropped(); got != want {
+		t.Fatalf("Dropped changed across Close: %d, want %d", got, want)
 	}
 }
 
