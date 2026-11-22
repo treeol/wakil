@@ -760,6 +760,7 @@ run_one_locked() {
     result_json="$run_root/$task.json"
     rm -f "$result_json"
     log_file="$results_dir/${task}-${run}-$(date +%H%M%S).log"
+    st_last_log="$log_file"
 
     # Progress: one line before each run so a long session is not silent.
     printf '[%d/%d] %s (run %s/%d) … running, log: %s\n' \
@@ -1122,11 +1123,45 @@ tool_dir() {
     done
 }
 
-# st_on_exit: EXIT trap of --self-test: the private Go cache directory (go build
-# leaves read-only files) is removed on every way out.
+# st_case <heading>: print a case heading and forget the task log of the
+# case before (st_last_log), so a failure report never shows another case's log.
+st_case() {
+    st_last_log=""
+    st_fail_logs=""
+    echo "$1"
+}
+
+# st_failure_report: what a failed self-test case prints before the
+# temporary directories go: for each failing task its "check:" reason lines and
+# the last 15 lines of its log. st_fail_logs names the logs of the failing
+# tasks (a case whose logs live elsewhere sets it); without it the log of the
+# last task run of the failing case (st_last_log, set by every run) is the one,
+# and a case that ran no task prints nothing here (its own message says why).
+# Called from the EXIT trap of a self-test that did not end with status 0, so
+# every case gets it, whichever of its exits fires.
+st_fail_logs=""
+st_last_log=""
+st_failure_report() {
+    _sf_logs="$st_fail_logs"
+    [ -n "$_sf_logs" ] || _sf_logs="$st_last_log"
+    [ -n "$_sf_logs" ] || return 0
+    for _sf_l in $_sf_logs; do
+        [ -f "$_sf_l" ] || continue
+        echo "---- log of the failing task: $_sf_l" >&2
+        grep '^check:' "$_sf_l" >&2 || echo "(no 'check:' reason line in this log)" >&2
+        echo "---- last 15 lines:" >&2
+        tail -n 15 "$_sf_l" >&2
+    done
+    echo "----" >&2
+}
+
+# st_on_exit: EXIT trap of --self-test. A non-zero status prints the failure
+# report; the private Go cache directory (go build leaves read-only files) is
+# removed on every way out.
 st_on_exit() {
     _se_rc=$?
     trap - EXIT
+    [ "$_se_rc" -eq 0 ] || st_failure_report
     if [ -n "${st_go_private:-}" ]; then
         chmod -R u+w "$st_go_private" 2>/dev/null || true
         rm -rf "$st_go_private"
@@ -1270,7 +1305,7 @@ esac
 EOF
     chmod +x "$stub_wrong"
 
-    echo "== self-test: stub that changes nothing (expect fail on every task) =="
+    st_case "== self-test: stub that changes nothing (expect fail on every task) =="
     task_idx=0
     _fail_count=0
     for task in $tasks; do
@@ -1281,7 +1316,7 @@ EOF
     done
     [ "$_fail_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
 
-    echo "== self-test: stub that applies the solution (expect pass on every task) =="
+    st_case "== self-test: stub that applies the solution (expect pass on every task) =="
     task_idx=0
     _pass_count=0
     for task in $tasks; do
@@ -1292,7 +1327,7 @@ EOF
     done
     [ "$_pass_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
 
-    echo "== self-test: go-empty-home (one Go check with an empty HOME, GOTOOLCHAIN=local and a failing go first on PATH passes) =="
+    st_case "== self-test: go-empty-home (one Go check with an empty HOME, GOTOOLCHAIN=local and a failing go first on PATH passes) =="
     # The check must reach the toolchain the harness resolved at start by its
     # location, not by looking "go" up again: here the only "go" on PATH is one
     # that fails the way a host does when HOME does not hold the cached
@@ -1318,7 +1353,7 @@ EOF
         echo "  skipped (no resolved Go toolchain or no fix-test task)"
     fi
 
-    echo "== self-test: toolchain-pinned (every go call of a check or setup runs with the resolved GOTOOLCHAIN and GOPROXY=off) =="
+    st_case "== self-test: toolchain-pinned (every go call of a check or setup runs with the resolved GOTOOLCHAIN and GOPROXY=off) =="
     # A recording go in front of PATH, forwarding to the real one. It logs the
     # environment of each call; the real runs below are the ordinary solve and
     # prep paths, so the log shows what the checks and setup.sh really used.
@@ -1384,7 +1419,7 @@ REC
         echo "  skipped (no Go task selected)"
     fi
 
-    echo "== self-test: rc-mapping, verdict-required, preflight-real-go (the result class of a check) =="
+    st_case "== self-test: rc-mapping, verdict-required, preflight-real-go (the result class of a check) =="
     # check_result_for_rc: only 0 and an explicit 1 are verdicts.
     for _m in "0 pass" "1 fail" "2 error" "99 error" "124 error" "126 error" "127 error" "137 error"; do
         _m_rc=${_m% *}; _m_want=${_m#* }
@@ -1427,7 +1462,7 @@ VEOF
     fi
     echo "  status 0/1 map to pass/fail, every other status to error; an unannounced status 1 becomes 99; the preflight accepts the real Go"
 
-    echo "== self-test: stub go (host Go too old): preflight-stops, preflight-stops-on-check, check-error-not-fail =="
+    st_case "== self-test: stub go (host Go too old): preflight-stops, preflight-stops-on-check, check-error-not-fail =="
     # A black-box driver runs a copy of this bench.sh with a stub go that
     # prints "go: go.mod requires go >= 1.26 (running go 1.25.1;
     # GOTOOLCHAIN=local)". It forwards "go env" to the real go in one case, so
@@ -1444,7 +1479,7 @@ VEOF
         echo "  skipped (no Go task selected or no fix-test task)"
     fi
 
-    echo "== self-test: binary-hang (add-flag: the agent's binary sleeps past the limit -> fail, check: binary timed out) =="
+    st_case "== self-test: binary-hang (add-flag: the agent's binary sleeps past the limit -> fail, check: binary timed out) =="
     # A fake agent that writes a cmd/grep which ignores TERM and sleeps. The
     # limit is 2s and the grace 1s, so the case stays seconds long; the check
     # must judge the agent (fail), not hang and not blame the environment.
@@ -1505,7 +1540,7 @@ EOF
         echo "  hanging binary -> fail, 'check: binary timed out' (${_hang_secs}s)"
     fi
 
-    echo "== self-test: binary-exit (add-flag: right output but exit status 1, or the binary's own 126, must be fail, not pass and not error) =="
+    st_case "== self-test: binary-exit (add-flag: right output but exit status 1, or the binary's own 126, must be fail, not pass and not error) =="
     if [ -d "$tasks_dir/add-flag" ]; then
         stub_bexit="$tmpdir/wakil-bexit"
         cat > "$stub_bexit" <<'EOF'
@@ -1545,7 +1580,7 @@ EOF
         echo "  exit status 1 and the binary's own 126 -> fail"
     fi
 
-    echo "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
+    st_case "== self-test: declined run that still solved the task (expect pass with exit_reason=declined) =="
     # Also asserts that bench.sh passes --allow-destructive to `wakil run`.
     stub_declined="$tmpdir/wakil-declined"
     cat > "$stub_declined" <<'EOF'
@@ -1600,7 +1635,7 @@ EOF
     fi
     echo "  declined+check.sh OK (--allow-destructive passed; result from check.sh, exit_reason preserved)"
 
-    echo "== self-test: agent-written test code must not fake a pass (expect fail) =="
+    st_case "== self-test: agent-written test code must not fake a pass (expect fail) =="
     # A fake agent that leaves the bug in place and writes code that makes
     # "go test" succeed without the hidden test running: a TestMain that
     # exits 0, and a package-level init() that prints a PASS line and exits.
@@ -1676,7 +1711,7 @@ EOF
     done
     echo "  TestMain-exit-0, init()-prints-PASS and underscore-package cheats scored fail, each with a check: reason"
 
-    echo "== self-test: no generator, seed or check in the work folder or its history =="
+    st_case "== self-test: no generator, seed or check in the work folder or its history =="
     # The real long-read folder, as built by prep_workdir: only docs/ and
     # go.mod, nothing generated-from in the tree or in git history.
     if [ -d "$tasks_dir/long-read" ]; then
@@ -1723,7 +1758,7 @@ EOF
     done
     echo "  no generator/seed/check in tree or history; leak_check refuses all six leak kinds"
 
-    echo "== self-test: an agent that plants the solution dir after prep (expect error, check.sh not run) =="
+    st_case "== self-test: an agent that plants the solution dir after prep (expect error, check.sh not run) =="
     stub_plant="$tmpdir/wakil-plant"
     cat > "$stub_plant" <<'EOF'
 #!/bin/sh
@@ -1762,7 +1797,7 @@ EOF
     grep -q 'changed files under .*/.wakil' "$_plant_err" || { echo "self-test FAILED: a change under .wakil/ was not reported" >&2; cat "$_plant_err" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  planted solution/ -> error leak-detected; .wakil/ change reported"
 
-    echo "== self-test: CSV cells with a comma, a quote and a newline (model, version) =="
+    st_case "== self-test: CSV cells with a comma, a quote and a newline (model, version) =="
     # csv_field itself.
     _nl='
 '
@@ -1802,7 +1837,7 @@ EOF
     printf '%s\n' "$_tbl" | grep -q "$_csv_task" || { echo "self-test FAILED: print_table cannot read the quoted row" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  csv_field and a full row with comma/quote/newline read back intact (16 cells, one line)"
 
-    echo "== self-test: a second bench on a task that is already being run (expect exit 75, folder untouched) =="
+    st_case "== self-test: a second bench on a task that is already being run (expect exit 75, folder untouched) =="
     # The first bench holds the task's lock (lock_task, as run_one does) and
     # its folder holds a marker. A second run_one on the same task, in a
     # subshell with its own open file description, must refuse with a clear
@@ -1836,7 +1871,7 @@ EOF
     [ ! -e "$_lock_workdir/.bench-lock-marker" ] || { echo "self-test FAILED: after the lock was released the folder was not refilled" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  held lock -> exit 75, message, folder and CSV untouched; released lock -> run proceeds"
 
-    echo "== self-test: --runs 2 on a terminal (heartbeat on): the series holds the lock, no started program does, nothing is left alive, a second bench is refused =="
+    st_case "== self-test: --runs 2 on a terminal (heartbeat on): the series holds the lock, no started program does, nothing is left alive, a second bench is refused =="
     # The heartbeat only runs when stdout is a terminal, so the case switches it
     # on (is_tty) with an interval no other sleep in the harness uses, and runs
     # the real run_all with a stub that finishes long before one interval. Shims
@@ -1949,7 +1984,7 @@ EOF
     echo "  --runs 2 with the heartbeat on: 2 rows in ${_ls_secs}s; lock held in both runs, no started program holds it, a second bench exits 75 in both runs, nothing left alive, lock free afterwards"
     fi
 
-    echo "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
+    st_case "== self-test: stub that sleeps past the timeout (expect timeout, exit 124) =="
     # Use the harness's own timeout path with a short per-run timeout so
     # the whole self-test stays fast: the slow stub is killed at 2s.
     _saved_timeout="$timeout_sec"
@@ -1965,7 +2000,7 @@ EOF
         rm -rf "$tmpdir" "$_self_work_root"; exit 1
     fi
 
-    echo "== self-test: stub that ignores TERM (expect timeout via exit 137, check.sh not run) =="
+    st_case "== self-test: stub that ignores TERM (expect timeout via exit 137, check.sh not run) =="
     # A stub that traps TERM and keeps running: timeout sends TERM at the
     # deadline, waits the grace period, then KILLs it, and exits 137. The
     # stub has already written a result JSON saying "pass" with the right
@@ -2029,7 +2064,7 @@ EOF
     fi
     echo "  TERM-ignoring run -> timeout (exit 137 after ${_row_secs}s), no check.sh, no sandbox-not-acknowledged"
 
-    echo "== self-test: workdir guard per backend (docker not verifiable; hisn resolved path; direct mismatch) =="
+    st_case "== self-test: workdir guard per backend (docker not verifiable; hisn resolved path; direct mismatch) =="
     # One fake binary whose result JSON is set by the caller: the workdir it
     # reports and the sandbox backend it names (empty = an older binary with
     # no sandbox_backend field). Each case states the result, the exit_reason
@@ -2103,7 +2138,7 @@ EOF
     done
     echo "  docker -> error workdir-not-verifiable (check.sh skipped); hisn resolved/symlinked path accepted; direct and hisn mismatch -> wrong-workdir; no backend field -> plain comparison"
 
-    echo "== self-test: stub that reports a wrong workdir (expect error + stop) =="
+    st_case "== self-test: stub that reports a wrong workdir (expect error + stop) =="
     _saved_timeout="$timeout_sec"
     timeout_sec=5
     task_idx=1
@@ -2117,7 +2152,7 @@ EOF
     fi
     echo "  wrong-workdir guard fired correctly (bench stopped with exit 1)"
 
-    echo "== self-test: stub that reports a missing workdir (expect error + stop) =="
+    st_case "== self-test: stub that reports a missing workdir (expect error + stop) =="
     # Stub that writes a result-json without a workdir field — the guard
     # must treat a missing workdir as an error.
     stub_missing="$tmpdir/wakil-missing"
@@ -2156,7 +2191,7 @@ EOF
     fi
     echo "  missing-workdir guard fired correctly (bench stopped with exit 1)"
 
-    echo "== self-test: sandbox approval error detection (both wordings, before workdir guard) =="
+    st_case "== self-test: sandbox approval error detection (both wordings, before workdir guard) =="
     for _msg_case in "not-ack:sandbox risk is not acknowledged (label signing)" "not-approved:.wakil/sandbox.json has not been approved (or changed since)"; do
         _case_name=${_msg_case%%:*}
         _case_msg=${_msg_case#*:}
@@ -2217,7 +2252,7 @@ EOF
     done
     echo "  sandbox approval stop OK (both wordings caught before workdir guard)"
 
-    echo "== self-test: fixed-path freshness (expect marker gone in run 2) =="
+    st_case "== self-test: fixed-path freshness (expect marker gone in run 2) =="
     # Run 1 leaves a marker file; run 2 must not see it (the folder is
     # emptied and refilled before each run).
     _fresh_task="$(echo "$tasks" | awk '{print $1}')"
@@ -2232,7 +2267,7 @@ EOF
     fi
     echo "  freshness OK (marker gone after refill)"
 
-    echo "== self-test: .wakil/ preservation (sandbox.json byte-identical after two refills) =="
+    st_case "== self-test: .wakil/ preservation (sandbox.json byte-identical after two refills) =="
     # A .wakil/sandbox.json with unusual formatting (indentation, trailing
     # newline) placed before a run must survive two refills byte-identical
     # (the approval is keyed on its content hash — sha256 of its raw
@@ -2288,7 +2323,7 @@ EOF
     fi
     echo "  .wakil/ preservation OK (sandbox.json byte-identical after 2 refills, no extra files, markers gone)"
 
-    echo "== self-test: fixed-path stability (expect same path across runs) =="
+    st_case "== self-test: fixed-path stability (expect same path across runs) =="
     # Two real preparations: the folder is at the same canonical path, and the
     # second one refilled it (a marker the first run's agent could have left
     # is gone).
@@ -2305,7 +2340,7 @@ EOF
     fi
     echo "  path stability OK ($_stab_path1), second prep refilled the folder"
 
-    echo "== self-test: cached-% and 4-decimal cost formatting =="
+    st_case "== self-test: cached-% and 4-decimal cost formatting =="
     _tbl_out=$(print_table "$csv_file" "$resolved_model")
     if ! printf '%s\n' "$_tbl_out" | grep -q '75%'; then
         echo "self-test FAILED: print_table missing cached-% (75%) column" >&2
@@ -2322,7 +2357,7 @@ EOF
     fi
     echo "  cached-% (75%) and 4-decimal cost (\$0.0012) OK"
 
-    echo "== self-test: nothing written into the repo's bench/results =="
+    st_case "== self-test: nothing written into the repo's bench/results =="
     if [ -d "$_saved_results_dir" ] && [ -n "$(find "$_saved_results_dir" -newer "$_st_marker" 2>/dev/null | head -n 1)" ]; then
         echo "self-test FAILED: the self-test wrote under $_saved_results_dir:" >&2
         find "$_saved_results_dir" -newer "$_st_marker" >&2
@@ -2331,7 +2366,7 @@ EOF
     case "$csv_file" in "$cache_home"/wakil-bench/selftest/*) ;; *) echo "self-test FAILED: CSV not in the cache selftest dir: $csv_file" >&2; exit 1 ;; esac
     echo "  CSV and logs under $selftest_dir; bench/results untouched"
 
-    echo "== self-test: --no-preflight is the only way to skip the preflight, and says so =="
+    st_case "== self-test: --no-preflight is the only way to skip the preflight, and says so =="
     # A normal run with the old variables set (and nothing else) must neither
     # skip the preflight nor warn about it; the flag prints exactly one warning
     # line that names the cache directory. Both runs stop at the unknown task,
@@ -2352,7 +2387,7 @@ EOF
     rm -rf "$_np_cache"
     echo "  old variables ignored without a warning; --no-preflight warns once"
 
-    echo "== self-test: .wakil/ recovered after interrupted prep_workdir =="
+    st_case "== self-test: .wakil/ recovered after interrupted prep_workdir =="
     # Simulate an interrupted prep: .wakil/ is in the saved directory but
     # the work folder has no .wakil/. The next prep_workdir must recover it.
     _rec_task="$(echo "$tasks" | awk '{print $1}')"
@@ -2385,7 +2420,7 @@ EOF
     fi
     echo "  .wakil/ recovery OK (sandbox.json byte-identical after interrupted prep)"
 
-    echo "== self-test: prep_workdir abort paths (saved copy and live .wakil/ both exist; the save fails) =="
+    st_case "== self-test: prep_workdir abort paths (saved copy and live .wakil/ both exist; the save fails) =="
     _ab_task="$(echo "$tasks" | awk '{print $1}')"
     _ab_workdir="$work_root/$_ab_task"
     _ab_saved="$work_root/.wakil-saved-$_ab_task"
@@ -2423,7 +2458,7 @@ EOF
     chmod 755 "$work_root"; work_root="$_ab_work_save"
     rm -rf "$_ab_ro"
 
-    echo "== self-test: leak_check fails closed when grep cannot scan; python3 up front; resolve_go ignores GOFLAGS and an experiment suffix =="
+    st_case "== self-test: leak_check fails closed when grep cannot scan; python3 up front; resolve_go ignores GOFLAGS and an experiment suffix =="
     _lk_task="$(echo "$tasks" | awk '{print $1}')"
     prep_workdir "$_lk_task" >/dev/null 2>&1
     _lk_stub=$(mktemp -d "${TMPDIR:-/tmp}/bench-grepstub.XXXXXX")
@@ -2467,7 +2502,7 @@ EOF
     fi
     echo "  leak_check fail-closed, python3 up front, GOFLAGS cleared, experiment suffix OK"
 
-    echo "== self-test: tar in the required-tools list =="
+    st_case "== self-test: tar in the required-tools list =="
     # A PATH that holds exactly the harness's tools minus tar (tool_dir) must
     # give the one "required tool(s) not found: tar" line and exit 1: nothing
     # else may be lost with tar (the old case lost dirname when both lived in one
@@ -2484,7 +2519,7 @@ EOF
     echo "  tar required OK (the one line, exit 1, with every other tool on PATH)"
     rm -rf "$_no_tar_dir"
 
-    echo "== self-test: tools-first (a missing tool gives one line naming every missing tool, before anything else runs) =="
+    st_case "== self-test: tools-first (a missing tool gives one line naming every missing tool, before anything else runs) =="
     # Each case's PATH is tool_dir minus the named tools: nothing else is lost.
     # The output must be exactly the one line (a shell error from a program used
     # before the check would be a second line), and the exit status 1. The
@@ -2513,7 +2548,7 @@ EOF
     done
     echo "  $_tf_n cases (dirname; dirname+head+tar; jq): one line naming every missing tool, exit 1, also for -h"
 
-    echo "== self-test: tools-list-sufficient (every task, run for real with only the listed tools on PATH) =="
+    st_case "== self-test: tools-list-sufficient (every task, run for real with only the listed tools on PATH) =="
     # The solve stub on every task, through a real bench.sh process whose whole
     # PATH is tool_dir (the harness's tools, sh, go, python3). A program the
     # list leaves out would show as "not found" in the output or as a row that
@@ -2537,10 +2572,20 @@ EOF
             ${go_cache:+GOCACHE="$go_cache"} ${go_modcache:+GOMODCACHE="$go_modcache"} ${go_path:+GOPATH="$go_path"} \
             "$_ts_dir/bin/sh" "$0" --no-preflight --wakil "$_ts_dir/wakil" --task "$_ts_t" --runs 1 >"$_ts_out" 2>&1 || _ts_rc=$?
         _ts_row=$(sed -n 2p "$_ts_dir"/cache/wakil-bench/nopreflight/*-bench.csv 2>/dev/null | awk -F, '{ print $6 }')
-        rm -rf "$_ts_dir/cache/wakil-bench/nopreflight"
         if [ "$_ts_rc" -ne 0 ] || grep -qi 'not found' "$_ts_out" || [ "$_ts_row" != pass ]; then
             _ts_bad="$_ts_bad $_ts_t(rc=$_ts_rc,row=$_ts_row: $(grep -i -m1 'not found' "$_ts_out" || head -n 1 "$_ts_out"))"
+            # Keep what the failing task logged: the inner log and the inner
+            # bench's own output, under the self-test's directory, so the exit
+            # report can show them after this case removed its directory.
+            mkdir -p "$selftest_dir/tools-list-sufficient"
+            for _ts_lg in "$_ts_dir"/cache/wakil-bench/nopreflight/*.log; do
+                [ -f "$_ts_lg" ] || continue
+                cat "$_ts_out" "$_ts_lg" > "$selftest_dir/tools-list-sufficient/$_ts_t.log"
+            done
+            [ -f "$selftest_dir/tools-list-sufficient/$_ts_t.log" ] || cp "$_ts_out" "$selftest_dir/tools-list-sufficient/$_ts_t.log"
+            st_fail_logs="$st_fail_logs $selftest_dir/tools-list-sufficient/$_ts_t.log"
         fi
+        rm -rf "$_ts_dir/cache/wakil-bench/nopreflight"
         _ts_n=$((_ts_n + 1))
     done
     if [ -n "$_ts_bad" ]; then
@@ -2549,6 +2594,39 @@ EOF
     fi
     rm -rf "$_ts_dir"
     echo "  $_ts_n task(s) solved and checked with a PATH of exactly the listed tools"
+
+    st_case "== self-test: failure-report (a failed case prints the check: reason and the last 15 lines of the task log) =="
+    # A nested self-test on a copy of the tree whose fix-test repo already holds
+    # the solution: the stub that changes nothing then passes where the case
+    # expects a fail, so the nested self-test fails on purpose, on its first
+    # case. The failure must come with the "check:" reason line and the log
+    # tail of the task that failed, printed before its directories were removed.
+    if [ -d "$tasks_dir/fix-test/solution" ]; then
+        _fr_dir=$(mktemp -d "${TMPDIR:-/tmp}/bench-failrep.XXXXXX")
+        mkdir -p "$_fr_dir/tree"
+        cp -R "$repo_root/scripts" "$repo_root/bench" "$_fr_dir/tree/"
+        cp "$repo_root/go.mod" "$_fr_dir/tree/go.mod"
+        rm -rf "$_fr_dir/tree/bench/results"
+        cp -R "$tasks_dir/fix-test/solution/." "$_fr_dir/tree/bench/tasks/fix-test/repo/"
+        _fr_rc=0
+        XDG_CACHE_HOME="$_fr_dir/cache" sh "$_fr_dir/tree/scripts/bench.sh" --self-test --task fix-test >"$_fr_dir/out" 2>"$_fr_dir/err" || _fr_rc=$?
+        _fr_why=""
+        [ "$_fr_rc" -eq 1 ] || _fr_why="$_fr_why the nested self-test ended with $_fr_rc, want 1;"
+        grep -q 'self-test FAILED: noop fix-test: expected fail, got pass' "$_fr_dir/err" || _fr_why="$_fr_why no failure message;"
+        grep -q '^---- log of the failing task: .*/fix-test-self-noop-' "$_fr_dir/err" || _fr_why="$_fr_why no log header for the failing task;"
+        grep -q '^check: ok (TestCountCaseInsensitive)$' "$_fr_dir/err" || _fr_why="$_fr_why no check: reason line;"
+        grep -q '^---- last 15 lines:$' "$_fr_dir/err" || _fr_why="$_fr_why no log tail header;"
+        grep -q '^--- check.sh (fix-test) ---$' "$_fr_dir/err" || _fr_why="$_fr_why the log tail lacks the check.sh section;"
+        if [ -n "$_fr_why" ]; then
+            echo "self-test FAILED: failure-report:$_fr_why" >&2
+            cat "$_fr_dir/err" >&2
+            rm -rf "$tmpdir" "$_self_work_root" "$_st_marker" "$_fr_dir"; exit 1
+        fi
+        rm -rf "$_fr_dir"
+        echo "  forced failure prints the reason line, the log header and the log tail"
+    else
+        echo "  skipped (no fix-test task)"
+    fi
 
     echo
     echo "== self-test summary =="
