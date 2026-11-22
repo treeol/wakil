@@ -115,6 +115,47 @@ func TestLoadConfigContextModeInvalid(t *testing.T) {
 	}
 }
 
+// TestConfig_ContextModulesFlagPrecedence pins the flag > env > config
+// precedence for --context-modules, mirroring --prompt-mode.
+func TestConfig_ContextModulesFlagPrecedence(t *testing.T) {
+	os.Unsetenv("WAKIL_CONTEXT_MODULES")
+
+	// Flag wins over everything.
+	cfg, err := LoadConfig([]string{"--base-url", "http://unused", "--context-modules", "on"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ContextModules != "on" {
+		t.Errorf("ContextModules = %q, want %q", cfg.ContextModules, "on")
+	}
+	if !cfg.ContextModulesExplicit {
+		t.Error("ContextModulesExplicit should be true after --context-modules flag")
+	}
+
+	// Env wins over the config file value (config file says off here because
+	// the default is off and there is no config path in this test).
+	t.Setenv("WAKIL_CONTEXT_MODULES", "on")
+	cfg, err = LoadConfig([]string{"--base-url", "http://unused"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ContextModules != "on" {
+		t.Errorf("WAKIL_CONTEXT_MODULES=on: ContextModules = %q, want %q", cfg.ContextModules, "on")
+	}
+	if cfg.ContextModulesExplicit {
+		t.Error("ContextModulesExplicit should be false when only the env var is set")
+	}
+
+	// Flag beats env.
+	cfg, err = LoadConfig([]string{"--base-url", "http://unused", "--context-modules", "off"})
+	if err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if cfg.ContextModules != "off" {
+		t.Errorf("flag --context-modules off must beat WAKIL_CONTEXT_MODULES=on: got %q", cfg.ContextModules)
+	}
+}
+
 func TestLoadConfigContextModeLongAlias(t *testing.T) {
 	// "long" should be normalized to "long-session" by LoadConfig.
 	cfg, err := LoadConfig([]string{"--base-url", "http://unused", "--context-mode", "long"})

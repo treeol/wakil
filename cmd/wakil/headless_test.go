@@ -258,3 +258,27 @@ func TestParseRunArgs_NoMemoryDefault(t *testing.T) {
 		t.Error("NoMemory should be false by default")
 	}
 }
+
+func TestParseRunArgs_ContextModules(t *testing.T) {
+	for _, v := range []string{"on", "off"} {
+		_, _, flags, err := parseRunArgs([]string{"--context-modules", v, "do task"})
+		if err != nil {
+			t.Fatalf("--context-modules %s: unexpected error: %v", v, err)
+		}
+		if flags.ContextModules != v {
+			t.Errorf("--context-modules %s: got %q", v, flags.ContextModules)
+		}
+	}
+	_, _, flags, err := parseRunArgs([]string{"do task"})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if flags.ContextModules != "" {
+		t.Errorf("default ContextModules = %q, want empty (config wins)", flags.ContextModules)
+	}
+	for _, bad := range [][]string{{"--context-modules", "maybe", "task"}, {"--context-modules"}} {
+		if _, _, _, err := parseRunArgs(bad); err == nil {
+			t.Errorf("parseRunArgs(%v) should error", bad)
+		}
+	}
+}

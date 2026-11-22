@@ -855,11 +855,12 @@ type Config struct {
 	// may apply: an explicit flag or env var for this run always wins over a
 	// restored value. Computed once in LoadConfig from the same flagsSet map
 	// resolveEndpoint already uses for model/base-url override precedence.
-	ModelExplicit       bool `json:"-"`
-	AutoExplicit        bool `json:"-"`
-	ContextModeExplicit bool `json:"-"` // set when --context-mode was passed
-	PromptModeExplicit  bool `json:"-"` // set when --prompt-mode was passed
-	ThinkExplicit       bool `json:"-"` // set when --think was passed
+	ModelExplicit          bool `json:"-"`
+	AutoExplicit           bool `json:"-"`
+	ContextModeExplicit    bool `json:"-"` // set when --context-mode was passed
+	PromptModeExplicit     bool `json:"-"` // set when --prompt-mode was passed
+	ContextModulesExplicit bool `json:"-"` // set when --context-modules was passed
+	ThinkExplicit          bool `json:"-"` // set when --think was passed
 
 	// ThinkEffort is the reasoning effort level set by the --think CLI flag.
 	// Applied to the main model's session ReasoningEffort at startup. Empty = no
@@ -2205,6 +2206,7 @@ func LoadConfig(argv []string) (Config, error) {
 	fs.StringVar(&cfg.TraceDir, "trace-dir", cfg.TraceDir, "directory for trace files (default ~/.local/share/wakil/traces)")
 	fs.StringVar(&cfg.ContextMode, "context-mode", cfg.ContextMode, "context mode: long-session (default, finished requests collapsed to Q+A with archive pointers) | standard (full history sent)")
 	fs.StringVar(&cfg.PromptMode, "prompt-mode", cfg.PromptMode, "prompt mode: full (default, complete system prompt) | core (core-only preamble, extension lazy-loaded on task detection)")
+	fs.StringVar(&cfg.ContextModules, "context-modules", cfg.ContextModules, "context modules: off (default, full tool array) | on (core tools in the array, deferred tools reached through load_module/call_tool)")
 	fs.StringVar(&cfg.ThinkEffort, "think", "", "set the reasoning/thinking effort level for the main model: off|none|minimal|low|medium|high|xhigh|max (session-scoped; overrides config and /think)")
 	// Help must show only built-in defaults, never the user's own file/env
 	// values that cfg currently carries. Reset every printed default to the
@@ -2251,6 +2253,7 @@ func LoadConfig(argv []string) (Config, error) {
 	cfg.AutoExplicit = flagsSet["auto"]
 	cfg.ContextModeExplicit = flagsSet["context-mode"]
 	cfg.PromptModeExplicit = flagsSet["prompt-mode"]
+	cfg.ContextModulesExplicit = flagsSet["context-modules"]
 	cfg.ThinkExplicit = flagsSet["think"]
 
 	// Validate --think effort level at load time so a typo fails immediately

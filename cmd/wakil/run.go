@@ -34,6 +34,7 @@ type RunFlags struct {
 	AllowDestructive bool
 	NoOracle         bool
 	NoMemory         bool
+	ContextModules   string
 	TranscriptFile   string
 	ResultJSONFile   string
 	AllowExternal    bool
@@ -66,7 +67,7 @@ func parseDurationStrict(s string) (time.Duration, error) {
 // parseRunArgs parses the args that follow "run":
 //
 //	[--plan] [--auto] [--allow-destructive] [--allow-external]
-//	[--auto-counsel] [--max-counsel N] [--no-oracle] [--no-memory] [--transcript <file>]
+//	[--auto-counsel] [--max-counsel N] [--no-oracle] [--no-memory] [--context-modules on|off] [--transcript <file>]
 //	[--attach-image <path>] [--policy <path>] [--profile <name>] [--verify]
 //	[--budget $N] [--continue --max-turns N --max-time D --verify-cmd CMD] "<task>"
 func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, err error) {
@@ -94,6 +95,15 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 			flags.NoOracle = true
 		case "--no-memory":
 			flags.NoMemory = true
+		case "--context-modules":
+			i++
+			if i >= len(args) {
+				return "", false, flags, fmt.Errorf("--context-modules requires on|off")
+			}
+			if args[i] != "on" && args[i] != "off" {
+				return "", false, flags, fmt.Errorf("--context-modules requires on|off, got %q", args[i])
+			}
+			flags.ContextModules = args[i]
 		case "--transcript":
 			i++
 			if i >= len(args) {
@@ -182,7 +192,7 @@ func parseRunArgs(args []string) (task string, planMode bool, flags RunFlags, er
 	}
 	if task == "" {
 		return "", false, flags, fmt.Errorf(
-			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--no-memory] [--transcript <file>] [--result-json <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
+			"usage: wakil run [--plan] [--auto] [--allow-destructive] [--allow-external] [--auto-counsel [--max-counsel N]] [--no-oracle] [--no-memory] [--context-modules on|off] [--transcript <file>] [--result-json <file>] [--attach-image <path>] [--policy <path>] [--profile <name>] [--verify] [--budget $N] " +
 				"[--continue --max-turns N --max-time D [--verify-cmd CMD]] \"<task>\"")
 	}
 	// No default cap is baked in here: --max-counsel 0 means "not set" and
@@ -221,6 +231,7 @@ func RunHeadless(cfg config.Config, args []string) int {
 		AllowExternal:    flags.AllowExternal,
 		NoOracle:         flags.NoOracle,
 		NoMemory:         flags.NoMemory,
+		ContextModules:   flags.ContextModules,
 		AutoCounsel:      flags.AutoCounsel,
 		MaxCounsel:       flags.MaxCounsel,
 		AttachImage:      flags.AttachImage,

@@ -54,8 +54,13 @@ type HeadlessOptions struct {
 	AllowExternal bool
 	NoOracle      bool // skip oracle review entirely; log "oracle disabled by flag"
 	NoMemory      bool // skip memory store, tools, and digest (bench: no carry-over)
-	AutoCounsel   bool
-	MaxCounsel    int
+	// ContextModules, when non-empty, overrides the config value for this run
+	// ("on" | "off"). Empty = use config. The CLI flag parse holds the same
+	// precedence as every other flag: flag > env (WAKIL_CONTEXT_MODULES) >
+	// config file.
+	ContextModules string
+	AutoCounsel    bool
+	MaxCounsel     int
 	// AttachImage is the path(s) to an image file attached to the first user
 	// message. Multiple paths can be comma-separated (--attach-image).
 	AttachImage string
@@ -260,6 +265,13 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	// resolve one.
 	opts.Workdir = cfg.HostWorkDir
 	opts.SandboxBackend = cfg.Sandbox.Backend
+
+	// A --context-modules flag (or its env equivalent, already resolved by
+	// config.LoadConfig) wins over the config file for this run. The
+	// precedence flag > env > config is the same as every other flag.
+	if opts.ContextModules != "" {
+		cfg.ContextModules = opts.ContextModules
+	}
 
 	// Bootstrap failures must still leave a result file (bench harness).
 	defer func() {
