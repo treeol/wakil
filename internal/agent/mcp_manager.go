@@ -903,6 +903,13 @@ func collapseContextToolDef() proxy.Tool {
 // NOT by the __ separator alone: built-in tools such as mashura__review
 // also contain "__" and must never be mistaken for MCP.
 func (a *App) toolsForTurn() []proxy.Tool {
+	// When context modules are on, MCP tools live in modules, not in the
+	// core tool array. toolsForTurn must NOT re-inject live MCP tools —
+	// they are reached through load_module + call_tool. The core array
+	// is frozen at session start and stays byte-stable for cache.
+	if ContextModulesEnabled(a.Cfg) {
+		return a.Tools
+	}
 	if a.MCP == nil || len(a.MCP.ServerNames()) == 0 {
 		return a.Tools
 	}
@@ -1015,7 +1022,18 @@ func keyPresentForMashura(cfg config.Config) bool {
 	return err == nil
 }
 
+// BuildTools assembles the full tool list in stable groups: built-ins → searxng
+// → MCP → oracle → LSP → browser.
+//
+// When context_modules is "on" (config key context_modules, env
+// WAKIL_CONTEXT_MODULES), the returned array is core-only (the deferred tools
+// are reached through load_module + call_tool). When "off" (the default),
+// the array is byte-identical to the pre-feature behaviour.
 func BuildTools(cfg config.Config, cwd string, mcp *MCPManager, repoLevel string) []proxy.Tool {
+	if ContextModulesEnabled(cfg) {
+		core, _ := BuildToolsWithModules(cfg, cwd, mcp, repoLevel)
+		return core
+	}
 	// Group 1: built-ins (DefaultTools already has a fixed order).
 	t := wtools.DefaultTools(cwd)
 	// check_pending is always available — it is the read-only
