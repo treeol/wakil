@@ -194,6 +194,10 @@
   "_comment_prompt_mode": "Split system prompt. prompt_mode: full (default — complete system prompt always loaded) | core (lean preamble with identity + safety gates only; the workflow extension is lazy-loaded as a second system message when the classifier detects a task). Flag: --prompt-mode. Env: WAKIL_PROMPT_MODE. A custom agent_prompt_path bypasses the split (the full file is used).",
   "prompt_mode": "full",
 
+  "_comment_context_modules": "Context modules. context_modules: off (default — the tool array and preamble are byte-identical to today) | on (the tool array is core-only; deferred tools are reached through load_module(name) + call_tool(name, arguments); the module index is appended to messages[0] at session start). mcp_module_keywords: per-MCP-server keyword lists for turn-1 pre-loading; when the task text matches a server's keyword the server's module (mcp:<server>) is pre-loaded on the first request. Nil or empty = built-in defaults (trello: board, card, trello, list; context7: library, docs, documentation, API reference). Flag: --context-modules. Env: WAKIL_CONTEXT_MODULES.",
+  "context_modules": "off",
+  "mcp_module_keywords": {},
+
   "max_tool_iterations": 0,
 
   "_comment_subagent_budget": "Subagent tool-loop budgets. 0 = use built-in defaults. subagent_max_tool_iterations caps tool round-trips per dispatch (default 40). subagent_turn_tool_budget caps cumulative tool output per dispatch (default 120000, auto-clamped to 35% of active hardMax). subagent_tool_result_cap limits per-result chars (default 12000).",

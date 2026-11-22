@@ -443,6 +443,21 @@ type Config struct {
 	// validates.
 	PromptMode string `json:"prompt_mode,omitempty"`
 
+	// ContextModules: "off" (default) | "on". When off, the tool array and
+	// preamble are byte-identical to today (the golden "off is byte-identical"
+	// test). When on, the tool array is core-only and deferred tools are
+	// reached through load_module(name) + call_tool(name, arguments). Per-repo
+	// setting; --context-modules and WAKIL_CONTEXT_MODULES override it.
+	ContextModules string `json:"context_modules,omitempty"` // "off" (default) | "on"
+
+	// MCPModuleKeywords: per-MCP-server keyword lists for turn-1 pre-loading.
+	// When the task text matches a server's keyword, the server's module
+	// (mcp:<server>) is pre-loaded on the first request. Nil = built-in
+	// defaults (trello: board, card, trello, list; context7: library, docs,
+	// documentation, API reference). Matching is word-boundary,
+	// case-insensitive.
+	MCPModuleKeywords map[string][]string `json:"mcp_module_keywords,omitempty"`
+
 	// EffectiveCtxMaxChars is an absolute cap (in chars) on the effective context
 	// used to compute compaction thresholds. When the backend reports a large
 	// context window (e.g. 1M tokens → ~3.2M chars effective), models often
@@ -1561,6 +1576,8 @@ func DefaultConfig() Config {
 
 		PromptMode: PromptModeFull, // full = complete system prompt always loaded
 
+		ContextModules: "off", // off = byte-identical to today (default)
+
 		ReasoningBudgetTokens:      4096,   // headroom for extended thinking
 		AnswerMarginTokens:         4096,   // headroom for the final answer
 		ContextTokensFallback:      128000, // assumed n_ctx when the backend is unreachable (unified with counsel fallback 128000 in 0.8.3)
@@ -2150,6 +2167,7 @@ func LoadConfig(argv []string) (Config, error) {
 	envStr(&cfg.TraceDir, "WAKIL_TRACE_DIR")
 	envStr(&cfg.ContextMode, "WAKIL_CONTEXT_MODE")
 	envStr(&cfg.PromptMode, "WAKIL_PROMPT_MODE")
+	envStr(&cfg.ContextModules, "WAKIL_CONTEXT_MODULES")
 
 	// 3) flags (highest precedence)
 	//
@@ -3129,6 +3147,12 @@ func validateEnums(cfg Config) error {
 		if strings.ContainsAny(cfg.SubagentBackend, " \t\n") {
 			return fmt.Errorf("subagent_backend must not contain whitespace (got %q)", cfg.SubagentBackend)
 		}
+	}
+	// Context modules: off|on; default off means byte-identical to today.
+	switch cfg.ContextModules {
+	case "", "off", "on":
+	default:
+		return fmt.Errorf("context_modules must be one of: off, on (got %q)", cfg.ContextModules)
 	}
 	// The mashura block: unknown tool names and levels are rejected at
 	// load with a clear message.

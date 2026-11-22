@@ -1458,3 +1458,32 @@ func TestExplicitConfigNeverYieldsNoConfigError(t *testing.T) {
 		t.Fatalf("want the old error text, got %v", err)
 	}
 }
+
+// TestContextModulesValidation verifies that validateEnums accepts "off" and
+// "on" and rejects unknown values.
+func TestContextModulesValidation(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool // true = valid
+	}{
+		{"", true},      // empty defaults to off
+		{"off", true},   // explicit off
+		{"on", true},    // on
+		{"true", false}, // invalid
+		{"yes", false},  // invalid
+		{"ON", false},   // case-sensitive
+	}
+	for _, tc := range tests {
+		cfg := DefaultConfig()
+		cfg.ContextModules = tc.value
+		err := validateEnums(cfg)
+		if tc.want && err != nil {
+			if strings.Contains(err.Error(), "context_modules") {
+				t.Errorf("context_modules %q should be valid but got error: %v", tc.value, err)
+			}
+		}
+		if !tc.want && err == nil {
+			t.Errorf("context_modules %q should be invalid but validation passed", tc.value)
+		}
+	}
+}
