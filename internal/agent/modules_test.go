@@ -530,3 +530,225 @@ func TestHandleCallTool_SingleDispatchPath_Destructive(t *testing.T) {
 		t.Errorf("error should say 'core tool': %s", result)
 	}
 }
+
+// ── Block 4: MCP modules and keyword pre-load ───────────────────────────────
+
+// TestMCPModules_BuiltFromServers verifies that mcpModules builds one module
+// per connected MCP server, named mcp:<server>.
+func TestMCPModules_BuiltFromServers(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards", "get_card"),
+		connectedServer("context7", &fakeMCPSession{}, "resolve-library-id", "query-docs"),
+	)
+	mods := mcpModules(mcp)
+	if len(mods) != 2 {
+		t.Fatalf("expected 2 MCP modules, got %d", len(mods))
+	}
+	if mods[0].Name != "mcp:trello" {
+		t.Errorf("module 0 name = %q, want %q", mods[0].Name, "mcp:trello")
+	}
+	if len(mods[0].Tools) != 2 {
+		t.Errorf("trello module should have 2 tools, got %d", len(mods[0].Tools))
+	}
+	if mods[1].Name != "mcp:context7" {
+		t.Errorf("module 1 name = %q, want %q", mods[1].Name, "mcp:context7")
+	}
+}
+
+// TestMCPModules_NilManager verifies mcpModules returns nil for a nil manager.
+func TestMCPModules_NilManager(t *testing.T) {
+	if mods := mcpModules(nil); mods != nil {
+		t.Errorf("mcpModules(nil) = %v, want nil", mods)
+	}
+}
+
+// TestMatchMCPKeywords_Match verifies keyword matching against task text.
+func TestMatchMCPKeywords_Match(t *testing.T) {
+	tests := []struct {
+		name     string
+		text     string
+		keywords []string
+		want     bool
+	}{
+		{"trello board", "add a card to the trello board", []string{"board", "card", "trello", "list"}, true},
+		{"trello card", "create a card", []string{"board", "card", "trello", "list"}, true},
+		{"trello list", "show me the list", []string{"board", "card", "trello", "list"}, true},
+		{"context7 library", "docs for the library", []string{"library", "docs", "documentation", "api reference"}, true},
+		{"context7 api reference", "look up the API reference", []string{"library", "docs", "documentation", "api reference"}, true},
+		{"no match", "write a hello world program", []string{"board", "card", "trello", "list"}, false},
+		{"word boundary", "listless behaviour", []string{"list"}, false},
+		{"word boundary 2", "listed items", []string{"list"}, false},
+		{"word boundary 3", "check the listing", []string{"list"}, false},
+		{"multi-word", "find the API reference for react", []string{"api reference"}, true},
+		{"multi-word no match", "find the API", []string{"api reference"}, false},
+		{"empty keywords", "some text", nil, false},
+		{"empty text", "", []string{"board"}, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := matchMCPKeywords(tc.text, tc.keywords)
+			if got != tc.want {
+				t.Errorf("matchMCPKeywords(%q, %v) = %v, want %v", tc.text, tc.keywords, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestMCPModulePreload_Match verifies that MCPModulePreload returns the right
+// module names when the task text matches keywords.
+func TestMCPModulePreload_Match(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards", "get_card"),
+		connectedServer("context7", &fakeMCPSession{}, "resolve-library-id"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+	preload := reg.MCPModulePreload("add a card to the trello board", nil)
+	if len(preload) != 1 || preload[0] != "mcp:trello" {
+		t.Errorf("preload = %v, want [mcp:trello]", preload)
+	}
+	reg.PreloadModules(preload)
+	if !reg.IsLoaded("mcp:trello") {
+		t.Error("mcp:trello should be loaded after PreloadModules")
+	}
+}
+
+// TestMCPModulePreload_NoMatch verifies that MCPModulePreload returns nil when
+// no keywords match.
+func TestMCPModulePreload_NoMatch(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+	preload := reg.MCPModulePreload("write a hello world program", nil)
+	if len(preload) != 0 {
+		t.Errorf("preload = %v, want empty", preload)
+	}
+}
+
+// TestMCPModulePreload_UserOverride verifies that user-provided keywords in
+// config override the built-in defaults.
+func TestMCPModulePreload_UserOverride(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("myserver", &fakeMCPSession{}, "do_thing"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	cfg.MCPModuleKeywords = map[string][]string{
+		"myserver": {"custom", "keyword"},
+	}
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+	preload := reg.MCPModulePreload("use the custom tool", cfg.MCPModuleKeywords)
+	if len(preload) != 1 || preload[0] != "mcp:myserver" {
+		t.Errorf("preload = %v, want [mcp:myserver]", preload)
+	}
+}
+
+// TestMCPModulePreload_UserOverrideDisablesDefaults verifies that a user
+// override for a known server (trello) replaces the built-in defaults.
+func TestMCPModulePreload_UserOverrideDisablesDefaults(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	cfg.MCPModuleKeywords = map[string][]string{
+		"trello": {"kanban"},
+	}
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+	preload := reg.MCPModulePreload("add a card to the board", cfg.MCPModuleKeywords)
+	if len(preload) != 0 {
+		t.Errorf("preload with user override should not match built-in 'board': %v", preload)
+	}
+	preload = reg.MCPModulePreload("update the kanban", cfg.MCPModuleKeywords)
+	if len(preload) != 1 || preload[0] != "mcp:trello" {
+		t.Errorf("preload with user keyword 'kanban' = %v, want [mcp:trello]", preload)
+	}
+}
+
+// TestMCPModulePreload_EmptyText verifies that empty task text produces no
+// pre-load.
+func TestMCPModulePreload_EmptyText(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+	preload := reg.MCPModulePreload("", nil)
+	if len(preload) != 0 {
+		t.Errorf("preload for empty text = %v, want empty", preload)
+	}
+}
+
+// TestModuleCapabilityLine_Loaded verifies that when a module is loaded, the
+// full inventory line is returned.
+func TestModuleCapabilityLine_Loaded(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	cfg.LSPEnabled = true
+	reg := NewModuleRegistry(cfg, "/work", nil)
+	reg.PreloadModules([]string{"lsp"})
+	full := "LSP code intelligence available: lsp_definition"
+	line := moduleCapabilityLine("lsp", reg, full)
+	if line != full {
+		t.Errorf("loaded module should return full line: got %q, want %q", line, full)
+	}
+}
+
+// TestModuleCapabilityLine_NotLoaded verifies that when a module is not loaded,
+// a shorter line naming the module is returned.
+func TestModuleCapabilityLine_NotLoaded(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	cfg.LSPEnabled = true
+	reg := NewModuleRegistry(cfg, "/work", nil)
+	line := moduleCapabilityLine("lsp", reg, "full line")
+	if !strings.Contains(line, "load_module") {
+		t.Errorf("not-loaded line should mention load_module: %q", line)
+	}
+	if !strings.Contains(line, "lsp") {
+		t.Errorf("not-loaded line should name the module: %q", line)
+	}
+}
+
+// TestPreloadModules_MarksLoaded verifies that PreloadModules marks the named
+// modules as loaded in the registry.
+func TestPreloadModules_MarksLoaded(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+	reg.PreloadModules([]string{"mcp:trello"})
+	if !reg.IsLoaded("mcp:trello") {
+		t.Error("mcp:trello should be loaded after PreloadModules")
+	}
+}
+
+// TestPreloadModules_UnknownName verifies that PreloadModules silently skips
+// unknown module names.
+func TestPreloadModules_UnknownName(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", nil)
+	reg.PreloadModules([]string{"nonexistent"})
+	for _, m := range reg.modules {
+		if reg.IsLoaded(m.Name) {
+			t.Errorf("module %q should not be loaded", m.Name)
+		}
+	}
+}
+
+// TestMCPModulePreload_NilRegistry verifies that MCPModulePreload on a nil
+// registry returns nil safely.
+func TestMCPModulePreload_NilRegistry(t *testing.T) {
+	var reg *ModuleRegistry
+	if preload := reg.MCPModulePreload("some text", nil); preload != nil {
+		t.Errorf("nil registry should return nil, got %v", preload)
+	}
+}

@@ -408,6 +408,139 @@ func ModuleRegistryForApp(cfg config.Config, cwd string, mcp *MCPManager) *Modul
 	return reg
 }
 
+// defaultMCPKeywords returns the built-in keyword list for a server name.
+// Used when the user has not provided an explicit keyword list in config.
+func defaultMCPKeywords(serverName string) []string {
+	switch strings.ToLower(serverName) {
+	case "trello":
+		return []string{"board", "card", "trello", "list"}
+	case "context7":
+		return []string{"library", "docs", "documentation", "api reference"}
+	default:
+		return nil
+	}
+}
+
+// mcpKeywordsForServer returns the keyword list for a server: user config if
+// present, else the built-in defaults.
+func mcpKeywordsForServer(serverName string, userKeywords map[string][]string) []string {
+	if kws, ok := userKeywords[serverName]; ok && len(kws) > 0 {
+		return kws
+	}
+	return defaultMCPKeywords(serverName)
+}
+
+// matchMCPKeywords reports whether the task text contains any of the server's
+// keywords (word-boundary, case-insensitive). A keyword with a space (e.g.
+// "API reference") matches as a substring (case-insensitive) since the space
+// is the boundary.
+func matchMCPKeywords(taskText string, keywords []string) bool {
+	if len(keywords) == 0 {
+		return false
+	}
+	lower := strings.ToLower(taskText)
+	for _, kw := range keywords {
+		lkw := strings.ToLower(kw)
+		if strings.Contains(lkw, " ") {
+			if strings.Contains(lower, lkw) {
+				return true
+			}
+			continue
+		}
+		// Single-word keyword: match on a word boundary so "list" does not
+		// match "listed" or "listing". A word boundary is a transition
+		// between a word char [a-z0-9_] and a non-word char (or string edge).
+		if containsWord(lower, lkw) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsWord reports whether s contains word as a whole word
+// (case-sensitive; caller lowercases both). A word boundary is a transition
+// between a word char [a-z0-9_] and a non-word char (or string edge).
+func containsWord(s, word string) bool {
+	if word == "" {
+		return false
+	}
+	start := 0
+	for {
+		idx := strings.Index(s[start:], word)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		// Check the char before the match.
+		beforeOK := idx == 0 || !isWordChar(s[idx-1])
+		// Check the char after the match.
+		afterIdx := idx + len(word)
+		afterOK := afterIdx >= len(s) || !isWordChar(s[afterIdx])
+		if beforeOK && afterOK {
+			return true
+		}
+		start = idx + 1
+	}
+}
+
+// isWordChar reports whether r is a word character (letter, digit, or
+// underscore).
+func isWordChar(r byte) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_'
+}
+
+// MCPModulePreload returns the list of MCP module names to pre-load on the
+// first request, based on keyword matching against the task text. Only
+// modules whose server has keywords and whose keywords match the task text
+// are returned. A server with no keywords (and no user override) is not
+// pre-loaded — it stays reachable by load_module.
+func (r *ModuleRegistry) MCPModulePreload(taskText string, userKeywords map[string][]string) []string {
+	if r == nil || taskText == "" {
+		return nil
+	}
+	var preload []string
+	for _, m := range r.modules {
+		if !strings.HasPrefix(m.Name, "mcp:") {
+			continue
+		}
+		serverName := strings.TrimPrefix(m.Name, "mcp:")
+		kws := mcpKeywordsForServer(serverName, userKeywords)
+		if len(kws) == 0 {
+			continue
+		}
+		if matchMCPKeywords(taskText, kws) {
+			preload = append(preload, m.Name)
+		}
+	}
+	return preload
+}
+
+// PreloadModules marks the given module names as loaded (pre-loaded at session
+// start, before the first request). This is used by the MCP keyword pre-load
+// so the module's tools are available on the first request without a
+// load_module round trip.
+func (r *ModuleRegistry) PreloadModules(names []string) {
+	for _, n := range names {
+		if _, ok := r.byName[n]; ok {
+			r.loaded[n] = true
+		}
+	}
+}
+
+// moduleCapabilityLine returns the preamble inventory line for a conditional
+// tool group (LSP, browser) when context modules are on. If the module is
+// pre-loaded (loaded at construction time), the full line stays as today. If
+// not, a shorter line names the module to load. The line is frozen at session
+// start — it depends only on construction-time state, never on mid-session
+// loads.
+func moduleCapabilityLine(moduleName string, reg *ModuleRegistry, fullLine string) string {
+	if reg.IsLoaded(moduleName) {
+		return fullLine
+	}
+	return fmt.Sprintf("%s tools are available but not loaded — call load_module(%q) to load them.",
+		moduleName, moduleName)
+}
+
 // handleLoadModule implements the load_module tool. It loads a module's
 // schemas from the registry and returns them as a pinned tool result (so
 // they survive eviction). Idempotent: loading an already-loaded module

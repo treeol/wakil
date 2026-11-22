@@ -1270,6 +1270,22 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 	if memCtx := a.retrieveMemoryContext(ctx, stripRetrievalBlock(userText)); memCtx != "" {
 		stored = memCtx + "\n" + stored
 	}
+	// Context modules MCP pre-load: on the first request of a session
+	// (preambleDay is empty), match the task text against MCP server
+	// keywords and pre-load matching modules before ensurePreamble so the
+	// pre-loaded state is reflected in messages[0]. This is a turn-1-only
+	// pre-load; turn 2+ matches go through load_module (one round trip).
+	if a.Modules != nil && !a.IsSubagent {
+		a.stateMu.RLock()
+		firstTurn := a.preambleDay == ""
+		a.stateMu.RUnlock()
+		if firstTurn {
+			preload := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
+			if len(preload) > 0 {
+				a.Modules.PreloadModules(preload)
+			}
+		}
+	}
 	a.ensurePreamble()
 	// Split-prompt activation: in core mode, classify the user message and
 	// append the extension prompt as a second system message (Turn==0, Pinned)
@@ -1966,6 +1982,14 @@ func (a *App) buildPreambleForNetwork(today, netMode string) string {
 	} else {
 		parts = append(parts, corePrompt)
 	}
+	// Context modules index: when the switch is on, append the module index
+	// after the core prompt and before AGENTS.md. It is frozen at session
+	// start (construction-time state only), so loading a module mid-session
+	// never invalidates the cache prefix. With the switch off this is absent
+	// and the preamble is byte-identical to today.
+	if ContextModulesEnabled(a.Cfg) && a.Modules != nil {
+		parts = append(parts, a.Modules.ModuleIndex())
+	}
 	// AGENTS.md (advisory project instructions) — loaded from the workspace
 	// root and ancestor directories (bounded by the workspace root, never
 	// walking above it). Inserted AFTER Wakil's own instructions and BEFORE
@@ -2013,19 +2037,41 @@ func (a *App) buildPreambleForNetwork(today, netMode string) string {
 		}
 	}
 	// LSP code intelligence inventory.
+	// With context modules on, the LSP tools are in the "lsp" module (not in
+	// the core tool array). The inventory line is frozen at session start:
+	// if the module is pre-loaded it stays as today; if not, it names the
+	// module to load. With the switch off the line is byte-identical to today.
 	if a.LSP != nil {
-		parts = append(parts, "LSP code intelligence available: lsp_definition, lsp_references, "+
-			"lsp_hover, lsp_symbols. Pass a file path + 1-based line number (as shown by read_file) "+
-			"+ symbol name — the client resolves the position. Prefer these over search_files for "+
-			"symbol-level navigation (definition lookup, finding callers).")
+		if ContextModulesEnabled(a.Cfg) && a.Modules != nil {
+			parts = append(parts, moduleCapabilityLine("lsp", a.Modules,
+				"LSP code intelligence available: lsp_definition, lsp_references, "+
+					"lsp_hover, lsp_symbols. Pass a file path + 1-based line number (as shown by read_file) "+
+					"+ symbol name — the client resolves the position. Prefer these over search_files for "+
+					"symbol-level navigation (definition lookup, finding callers)."))
+		} else {
+			parts = append(parts, "LSP code intelligence available: lsp_definition, lsp_references, "+
+				"lsp_hover, lsp_symbols. Pass a file path + 1-based line number (as shown by read_file) "+
+				"+ symbol name — the client resolves the position. Prefer these over search_files for "+
+				"symbol-level navigation (definition lookup, finding callers).")
+		}
 	}
 	// Browser tools inventory.
+	// Same module-aware pattern as LSP.
 	if a.Browser != nil {
-		parts = append(parts, "Headless browser available: browser_navigate, browser_screenshot, "+
-			"browser_viewport, browser_click, browser_eval, browser_text, browser_html, "+
-			"browser_reduced_motion. Use for visual verification, DOM inspection, responsive "+
-			"layout checks (set viewport to 375x812 for mobile), interaction testing, and "+
-			"prefers-reduced-motion emulation.")
+		if ContextModulesEnabled(a.Cfg) && a.Modules != nil {
+			parts = append(parts, moduleCapabilityLine("browser", a.Modules,
+				"Headless browser available: browser_navigate, browser_screenshot, "+
+					"browser_viewport, browser_click, browser_eval, browser_text, browser_html, "+
+					"browser_reduced_motion. Use for visual verification, DOM inspection, responsive "+
+					"layout checks (set viewport to 375x812 for mobile), interaction testing, and "+
+					"prefers-reduced-motion emulation."))
+		} else {
+			parts = append(parts, "Headless browser available: browser_navigate, browser_screenshot, "+
+				"browser_viewport, browser_click, browser_eval, browser_text, browser_html, "+
+				"browser_reduced_motion. Use for visual verification, DOM inspection, responsive "+
+				"layout checks (set viewport to 375x812 for mobile), interaction testing, and "+
+				"prefers-reduced-motion emulation.")
+		}
 	}
 	// Repo map: lightweight file-tree outline. Day-stable —
 	// rebuilt only on session start or day rollover. The full outline is
