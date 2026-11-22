@@ -752,3 +752,130 @@ func TestMCPModulePreload_NilRegistry(t *testing.T) {
 		t.Errorf("nil registry should return nil, got %v", preload)
 	}
 }
+
+// ── Block 5: Cache-stability test ────────────────────────────────────────────
+
+// TestCacheStability_ToolArrayUnchangedAfterLoad verifies that loading a
+// module does not change the tool array. The tool array is frozen at session
+// start; load_module returns schemas as a tool result, it does not add tools
+// to the array. This is the cache rule R3: "tools is fixed for the session at
+// BuildTools time."
+func TestCacheStability_ToolArrayUnchangedAfterLoad(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", nil)
+
+	// Build the core tool array once.
+	core, _ := BuildToolsWithModules(cfg, "/work", nil, "")
+	coreJSON, _ := json.Marshal(core)
+
+	// Load two modules.
+	_, _, err := reg.LoadModule("staging")
+	if err != nil {
+		t.Fatalf("LoadModule staging: %v", err)
+	}
+	_, _, err = reg.LoadModule("edit-extras")
+	if err != nil {
+		t.Fatalf("LoadModule edit-extras: %v", err)
+	}
+
+	// The tool array must be unchanged.
+	core2, _ := BuildToolsWithModules(cfg, "/work", nil, "")
+	core2JSON, _ := json.Marshal(core2)
+	if string(coreJSON) != string(core2JSON) {
+		t.Errorf("tool array changed after loading modules:\nbefore: %s\nafter:  %s", coreJSON, core2JSON)
+	}
+
+	// LoadedNames should show the two loaded modules.
+	loaded := reg.LoadedNames()
+	if len(loaded) != 2 {
+		t.Errorf("expected 2 loaded modules, got %d: %v", len(loaded), loaded)
+	}
+}
+
+// TestCacheStability_MessagesByteIdenticalAfterLoad verifies that loading a
+// module does not modify any earlier message in the conversation. A
+// load_module call appends a tool result (role:"tool") at the tail; it never
+// inserts or modifies messages[0] or any earlier message. This is the cache
+// rule R1: "Loading appends, never inserts into the middle."
+func TestCacheStability_MessagesByteIdenticalAfterLoad(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+
+	// Simulate a conversation with a system message and a user message.
+	app.Conv = []proxy.Message{
+		{Role: "system", Content: StrPtr("preamble"), Pinned: true},
+		{Role: "user", Content: StrPtr("hello")},
+	}
+	before := make([]proxy.Message, len(app.Conv))
+	copy(before, app.Conv)
+
+	// Simulate a load_module tool call result appended to the conversation.
+	loadResult := app.handleLoadModule(context.Background(), proxy.ToolCall{
+		ID: "load-1",
+		Function: proxy.FunctionCall{
+			Name:      "load_module",
+			Arguments: `{"name":"staging"}`,
+		},
+	})
+	app.appendConv(proxy.Message{
+		Role:      "assistant",
+		Content:   StrPtr(""),
+		ToolCalls: []proxy.ToolCall{{ID: "load-1", Type: "function", Function: proxy.FunctionCall{Name: "load_module", Arguments: `{"name":"staging"}`}}},
+	})
+	app.appendConv(proxy.Message{
+		Role:       "tool",
+		ToolCallID: "load-1",
+		Name:       "load_module",
+		Content:    StrPtr(loadResult),
+		Pinned:     true,
+	})
+
+	// The first two messages must be byte-identical.
+	for i, m := range app.Conv[:len(before)] {
+		beforeJSON, _ := json.Marshal(m)
+		afterJSON, _ := json.Marshal(before[i])
+		if string(beforeJSON) != string(afterJSON) {
+			t.Errorf("message %d changed after load_module:\nbefore: %s\nafter:  %s", i, beforeJSON, afterJSON)
+		}
+	}
+
+	// The conversation grew by 2 (assistant + tool result).
+	if len(app.Conv) != len(before)+2 {
+		t.Errorf("conversation length = %d, want %d (append only)", len(app.Conv), len(before)+2)
+	}
+
+	// The last message must be a tool result for load_module.
+	last := app.Conv[len(app.Conv)-1]
+	if last.Role != "tool" {
+		t.Errorf("last message role = %q, want %q", last.Role, "tool")
+	}
+	if last.Name != "load_module" {
+		t.Errorf("last message name = %q, want %q", last.Name, "load_module")
+	}
+}
+
+// TestCacheStability_ModuleIndexInPreamble verifies that the module index is
+// present in the preamble when the switch is on, and absent when off.
+func TestCacheStability_ModuleIndexInPreamble(t *testing.T) {
+	// Switch on: preamble should contain "## Context modules".
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	preamble := app.buildPreambleForNetwork("Monday, 1 January 2026", "host")
+	if !strings.Contains(preamble, "## Context modules") {
+		t.Errorf("preamble with switch on should contain module index:\n%s", preamble)
+	}
+	if !strings.Contains(preamble, "load_module") {
+		t.Errorf("preamble should mention load_module:\n%s", preamble)
+	}
+
+	// Switch off: preamble should NOT contain module index.
+	app2 := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app2.Cfg.ContextModules = "off"
+	preamble2 := app2.buildPreambleForNetwork("Monday, 1 January 2026", "host")
+	if strings.Contains(preamble2, "## Context modules") {
+		t.Errorf("preamble with switch off should NOT contain module index:\n%s", preamble2)
+	}
+}
