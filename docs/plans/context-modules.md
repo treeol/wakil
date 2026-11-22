@@ -2206,7 +2206,8 @@ not survive:
    and no size.** The user's sessions carry `trello__*`
    (9 distinct tools, 153 sessions on `trello__get_lists` alone) and
    `context7__*`. The "65 tools" of the earlier draft is now explained: 49
-   default tools plus the MCP servers (§1.3 measured 49 without MCP). The count
+   default tools plus the MCP servers (§1.3 measured 49 without MCP; Trello
+   ≈9 + context7 ≈2 would give ≈60). The exact count
    itself is **inferred, not measured** — traces record tools that were
    *called*, not tools that were *sent* (see §F1.3.5), so MCP is a large real
    prefix whose size the design never measured.
@@ -2232,9 +2233,10 @@ not survive:
 | 4 | `CHANGELOG.md` | two `[Unreleased]` lines |
 
 No change to `prompts/`, no change to which tools a request sends, no Go change
-outside `internal/trace`.
+outside `internal/trace` (an earlier edit to `internal/wiring` was reverted; the
+drop warning lives inside `Store.Close`).
 
-## F1.3 The blocks
+## F1.4 The blocks (implementation plan)
 
 ### Block 1 — trace files are never written partially
 
@@ -2275,10 +2277,8 @@ outside `internal/trace`.
 
 ### Block 3 — design updated with real usage data
 
-- Saving rule, per module:
-  `saving = size × (1 − share) − load_cost × share`, where `share` is the
-  session share that needs it, and `load_cost` is the size plus one round trip
-  for a mid-session load, or the size alone when pre-loaded on turn 1.
+- Saving rule, per module (corrected in §F1.3.1 — the naive `load_cost × share`
+  form double-counts; use the delta-vs-baseline form there).
 - Re-decide with numbers: Subagents / Durable Memory / Async prompt sections;
   the memory tool group; the mashura tools; the git tools; the skill-authoring
   tools including `capture_skill_template`.
@@ -2344,9 +2344,11 @@ on every session, so a session that pre-loads pays exactly what it paid before
   `saving = size × (1 − share) − round_trip × share − index_line`
 
 `index_line = 12` est. tokens (one `load_module` index line, measured in §7.2
-at ≈ 40 B each). `round_trip = 1 000` est. tokens (one extra request that
-re-sends the prefix at cache-read price plus one tool-call and one tool-result
-message — an estimate, flagged in the document). `share` is the **union** of
+at ≈ 40 B each). `round_trip = 1 000` est. tokens is a **per-session** one-time
+cost (one extra request that re-sends the prefix plus one tool-call and one
+tool-result message), an estimate; the table below spreads it over one request
+per session, so treat the numbers as tokens-per-session-request and see
+§F1.3.9 for the per-turn caveat. `share` is the **union** of
 sessions needing the module, reported as a range `[max single tool, Σ tools]`
 because per-tool session counts cannot be summed and the true union is
 unmeasured (§F1.3.2).
@@ -2359,7 +2361,7 @@ counts double-counts a session that used two tools of the group, so the union
 lies between the largest single tool (`lo`) and the sum clipped at `N` (`hi`).
 The script now reports the union directly with `--union` (added this session),
 but the user has not yet run it on the host, so the table below uses the
-`[lo, hi]` bounds. The `--union` command for exact figures is in §F1.3.7.
+`[lo, hi]` bounds. The `--union` command for exact figures is in §F1.3.8.
 
 ## F1.3.3 The saving table (this user's sessions, N = 498)
 
@@ -2388,6 +2390,12 @@ it is loaded in so many sessions that the round trip outweighs what it hides.
 
 ## F1.3.4 The re-decisions, with the numbers
 
+> **Provisional.** The shares below are `[lo, hi]` bounds, not measured unions
+> (§F1.3.2). `memory`, `subagents` and `async` have sign-flipping ranges, so
+> their "stay core" calls must be re-checked against the exact `--union` output
+> (§F1.3.8) before any code depends on them. The decisions that do *not* flip
+> — `skills-authoring` saves under every bound, `git` never pays — are firm.
+
 **Subagents section (≈1 768 tok, share 48–91 %) — stays CORE.**
 `dispatch_subagent` (239) + `dispatch_subagents` (212) are already core tools,
 and the section is prompt-only: there is no unknown-tool error to signal that a
@@ -2414,21 +2422,21 @@ low bound +459, below the cost of one round trip. `wait_for_completion` (151),
 from the section decision.** The tools are *not* prompt-only: a deferred
 `memory_put` is discoverable through `memory_search`'s description, and the
 unknown-tool error gives a real detection signal. `memory_put` (173),
-`memory_promote` (125) are the frequent ones; the rarer defs
-(`memory_forget` 25, `memory_list` 67) are what defers well. Proposal:
-**keep the section core, defer the 4 rare memory defs** (`memory_forget`,
-`memory_list`, `memory_promote_from_staging`, `memory_promote`) as a
-`memory-admin` module (≈1 000 B ≈ 250 tok), which never clears its own cost and
-is therefore **not worth a module either — leave the group core**. Net: memory
-stays entirely core. The measurement says the earlier "defer memory" proposal
-does not pay for this user.
+`memory_promote` (125) and `memory_get` (135) are the frequent ones; the rarer
+defs are `memory_forget` (25) and `memory_list` (67). A `memory-admin` module
+of the four rarest defs (`memory_forget`, `memory_list`,
+`memory_promote_from_staging`, and the smallest remaining def) is ≈250 tok; at
+a realistic share its saving is a few hundred tokens at best and it adds an
+index line and a round trip for the sessions that do load it. **Not worth a
+module — leave the memory group core.** The measurement says the earlier
+"defer memory" proposal does not pay for this user.
 
 **Mashūra tools (4, size unmeasured) — stays config-gated, on-demand.**
 299 sessions used `mashura__review`; that is a *large* share (≈60 % of N). The
 tools are already absent unless configured, so the saving today is zero for a
 user without a key and only pays for a configured user who rarely calls them —
 which this user is not. **Keep as today (config-gated); do not defer further.**
-Size unmeasured (no key); the host command is in §F1.3.7.
+Size unmeasured (no key); the host command is in §F1.3.8.
 
 **Git tools (5, 562 tok, share 21–53 %) — REMOVE from the module plan; keep
 core.** `git_status` (107), `git_log` (72), `git_diff` (72) are used, but
@@ -2507,20 +2515,32 @@ Unchanged in substance, but the tool stage shrinks and two prompt modules drop:
 
 1. **Stage 0** — measure the two facts (§7.9): tools-cache position and bench
    noise. Still first; unchanged.
-2. **Stage 1 (tools)** — core array + `load_module` + `call_tool`. The core tool
-   list (§7.1.1) loses `git` (stays core anyway, so no change) and the deferred
-   set is now `skills-authoring` (2 346) + the existing `edit-extras`,
-   `staging`, `misc` (≈1 248) + conditional groups ⇒ ≈ **3 590 est. tokens** off
-   every request for a default install. This is now the **first and largest**
-   stage, ahead of the prompt split — the data made the tool side more valuable
-   than the prompt side (the prompt's big sections must stay core).
+2. **Stage 1 (tools)** — core array + `load_module` + `call_tool`. The deferred
+   set is `skills-authoring` (2 346) + `edit-extras`, `staging`, `misc`
+   (≈1 248), whose gross size is ≈3 594 and whose net saving for a default
+   install (every union at its low bound) is ≈3 205 est. tokens. The `git`
+   group stays core, so it is neither deferred nor counted. This is now the
+   **first and largest** stage, ahead of the prompt split — the data made the
+   tool side more valuable than the prompt side (the prompt's big sections must
+   stay core).
 3. **Stage 2 (prompt)** — module files, but **only** `search`, `long-session`,
-   `implement`, `write` (≈2 553 est. tokens). `memory`, `subagents`, `async`
-   stay in the core prompt per §F1.3.4. Smaller than the pre-data plan (which
-   had ≈8 689) and should come **after** Stage 1, not before.
+   `implement`, `write`, whose gross size is 1 529 + 1 133 + 338 + 146 =
+   **3 146 est. tokens** (a default-config install excludes `search`, leaving
+   2 243). `memory`, `subagents`, `async` stay in the core prompt per §F1.3.4.
+   Smaller than the pre-data plan (which had ≈8 689) and should come **after**
+   Stage 1, not before.
 4. **Stage 3 (style)** — user-owned `writing-style.md`, unchanged, no saving.
 5. **Stage 4 (pre-loading)** — now includes MCP keyword pre-loading. Unchanged
    otherwise; still last, and still gated on Stage 0's cache finding.
+
+## F1.3.9 Caveat: per-request vs per-turn saving
+
+The table's `size` is paid on **every** request, but a mid-session load pays its
+`round_trip` **once**, and every later turn in that session re-sends the loaded
+module (cached at cache-read price). So the true per-turn saving is larger than
+the table for long sessions and smaller for one-turn sessions. The table is a
+single-request approximation and is labelled as such; §8 (bench measurement)
+is what turns it into a measured number.
 
 ## F1.3.8 Host commands to close the estimate gaps
 
@@ -2528,7 +2548,7 @@ Unchanged in substance, but the tool stage shrinks and two prompt modules drop:
 # exact module unions (integers only, nothing else printed)
 sh scripts/context_usage.sh "$HOME"/.local/share/wakil/traces/*.jsonl \
   --union "subagents=dispatch_subagent,dispatch_subagents" \
-  --union "memory=memory_put,memory_get,memory_search,memory_list,memory_promote,memory_promote_from_staging,memory_forget,memory_put" \
+  --union "memory=memory_put,memory_get,memory_search,memory_list,memory_promote,memory_promote_from_staging,memory_forget,memory_promote_from_staging" \
   --union "async=check_pending,wait_for_completion,read_process_log,kill_process,run_background" \
   --union "trello=trello__get_boards,trello__get_board,trello__get_lists,trello__get_cards,trello__get_card,trello__create_card,trello__move_card,trello__update_card,trello__add_comment" \
   --union "context7=context7__resolve-library-id,context7__query-docs"
