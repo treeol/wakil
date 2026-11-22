@@ -901,3 +901,116 @@ already warns about it.
 2. The digest is bounded and cheap; modularising it is not worth it.
 3. The retrieval block is already correctly placed for caching; the only
    gains there are correctness (strip) and quality (per-entry cap), not bytes.
+
+---
+
+# Question 5 — Inventory
+
+Every class below is a **proposal**, with its reason. "Core" = always in the
+request; "workspace" = per repo, loaded once at session start; "on-demand" =
+loaded when a task needs it; "remove" = the bytes are not worth their place.
+
+## 5.1 Prompt sections
+
+Sizes are the `##`-heading spans measured in §2.1 (`prompts/agent.txt`). All
+sections currently ship in the full prompt (the default).
+
+| Section | Bytes | Est. tokens | Needed by | Proposed class | Reason |
+|---|---|---|---|---|---|
+| Global precedence ladder | 2 385 | 596 | every turn — it is the conflict resolver | **core** | Cheap, and a wrong precedence decision is the most expensive failure mode. |
+| Role | 830 | 207 | every turn | **core** | Identity; removing it changes nothing else. |
+| Core loop | 3 401 | 850 | every turn | **core** | The procedure itself. |
+| Secrets | 3 911 | 977 | every turn | **core** | Tier-1 safety. Never deferred. |
+| Shell | 2 486 | 621 | any turn that calls `run_shell` | **core** (compact) | Nearly every session shells out; but ~40 % is approval-gate prose that could move to the tool description. Proposal: keep a 1 200 B version core, move the rest. |
+| Files | 1 340 | 335 | any turn that reads/writes | **core** | Small. |
+| External side-effect gating | 2 872 | 718 | any turn with a mutation | **core** | Tier-2 safety. Never deferred. |
+| Honesty Invariants | 860 | 215 | every turn | **core** | Tier-4. |
+| Recovery | 277 | 69 | rare | **core** | Negligible size. |
+| Documentation upkeep | 1 353 | 338 | implement tasks only | **on-demand** (`implement`) | Only fires when code changes; 338 tokens saved on read/answer turns. |
+| What "verified" means | 779 | 194 | turns that claim completion | **core** (compact) | It is the contract for every final report; but the per-output-class table could shrink to the three most-used rows. |
+| Search & Research | 4 987 | 1 246 | turns that search | **on-demand** (`search`) | Large; only useful when the model searches or delegates. |
+| File vs. Inline Decision | 585 | 146 | turns producing long content | **on-demand** (`write`) | Rare in coding sessions. |
+| Skills | 1 617 | 404 | turns touching skills | **on-demand** (`skills`) | |
+| Tool / Cost Discipline | 620 | 155 | rare | **remove** | Tier-5 guidance that fits in one sentence; cheap but redundant with the Role section. |
+| Durable Memory | 8 402 | 2 100 | turns that read/write memory | **on-demand** (`memory`) | **The single biggest section.** Only needed when the model uses a memory tool — and `memory_search`'s own description can point at the module. |
+| Truncated tool results & collapse | 2 772 | 693 | long sessions | **on-demand** (`long-session`) | Only meaningful when `context_mode: long-session` or results get spilled. |
+| Async execution | 4 446 | 1 111 | turns using async tools | **on-demand** (`async`) | Large; the four async tool descriptions already carry most of the rule. |
+| Subagents | 7 073 | 1 768 | turns that dispatch | **on-demand** (`subagents`) | **Second biggest.** The `dispatch_subagent` tool description duplicates the trigger rules. |
+| Interaction & Output | 1 220 | 305 | every turn | **core** (compact) | Report structure matters every turn; could halve. |
+
+Core total under this proposal: 2 385 + 830 + 3 401 + 3 911 + 1 200 + 1 340 +
+2 872 + 860 + 277 + 400 + 620 ≈ **18 100 B ≈ 4 525 est. tokens**, versus
+13 214 today for the whole prompt — a **~8 700 est.-token saving** on the
+system prompt, at the cost of an index (below).
+
+## 5.2 Tool definitions
+
+Measured from the serialised `[]proxy.Tool` (§1.3). Only the default 49-tool
+set is listed; conditional groups follow.
+
+| Tool | Bytes | Est. tokens | Needed by | Proposed class | Reason |
+|---|---|---|---|---|---|
+| `capture_skill_template` | 3 746 | 936 | skill authoring | **on-demand** | Largest single definition; used rarely, and only after `skill-create` intent. |
+| `dispatch_subagent` | 2 279 | 569 | delegation | **core** (shorten) | The description restates the whole Subagents prompt section; halve it. |
+| `apply_skill_template` | 1 941 | 485 | skill authoring | **on-demand** | |
+| `dispatch_subagents` | 1 921 | 480 | delegation | **core** (shorten) | Near-duplicate of the singular form's description. |
+| `collapse_context` | 1 762 | 440 | long-session mode | **on-demand** (gated to `long-session`) | 440 tokens in a mode that may never be active. |
+| `memory_put` | 1 613 | 403 | memory writes | **on-demand** (`memory` group) | |
+| `save_skill` | 1 203 | 300 | skill authoring | **on-demand** | |
+| `read_file` | 1 069 | 267 | every task | **core** | |
+| `edit_file` | 1 032 | 258 | edit tasks | **core** | |
+| `run_background` | 915 | 228 | server/dev tasks | **core** | Common enough; the async group is cohesive. |
+| `load_skill` | 899 | 224 | skills | **core** (it is the loader for skill modules) | |
+| `write_binary_file` | 896 | 224 | rare | **on-demand** (`edit-extras`) | |
+| `staging_put` | 854 | 213 | subagent handoff | **on-demand** (`staging`) | |
+| `update_skill` | 851 | 212 | skill authoring | **on-demand** | |
+| `read_file_full` | 844 | 211 | every task | **core** | |
+| `memory_promote_from_staging` | 812 | 203 | memory | **on-demand** (`memory`) | |
+| `list_dir` | 805 | 201 | every task | **core** | |
+| `search_files` | 791 | 197 | every task | **core** | |
+| `run_shell` | 786 | 196 | every task | **core** | |
+| `move_file` | 728 | 182 | refactors | **on-demand** (`edit-extras`) | |
+| `check_skill_template` | 707 | 176 | skill authoring | **on-demand** | |
+| `git_diff` | 688 | 172 | git work | **on-demand** (`git`) | 562 tokens for the whole git group, used only in git-aware sessions. |
+| `memory_search` | 671 | 167 | memory | **on-demand** (`memory`) | But this is the *entry point* — must stay discoverable. |
+| `check_pending` | 650 | 162 | async | **core** | Small, always relevant. |
+| `memory_list` … `memory_forget` | 632+541+409+398+361 = 2 341 | 585 | memory | **on-demand** (`memory`) | |
+| `delete_file`, `write_file` | 605+563 = 1 168 | 291 | edit tasks | **core** | |
+| `find_files` | 599 | 149 | every task | **core** | |
+| `math_eval` | 552 | 138 | rare | **on-demand** (`misc`) | |
+| `open_url` | 512 | 128 | host interaction | **on-demand** (`misc`) | |
+| `git_log`, `git_blame`, `git_show`, `git_status` | 510+406+340+304 = 1 560 | 390 | git work | **on-demand** (`git`) | |
+| `skill_history`, `skill_search`, `list_skills` | 450+420+291 = 1 161 | 290 | skills | **on-demand** (`skills`) | Except `list_skills`/`skill_search` if skills stay core-discoverable. |
+| `wait_for_completion` | 442 | 110 | async | **core** | |
+| `read_process_log`, `kill_process` | 382+395 = 777 | 194 | async | **core** | |
+| `staging_*` (get/get_many/list/delete) | 346+398+352+354 = 1 450 | 362 | subagent handoff | **on-demand** (`staging`) | |
+
+Conditional groups (not in the default set):
+
+| Group | Tools | Bytes | Est. tokens | Proposed class | Reason |
+|---|---|---|---|---|---|
+| Mashūra | 4 | not measured (no key) | — | **on-demand** | Already gated by config; could be gated by intent too. |
+| LSP | 4 | 2 575 | 643 | **on-demand** | Only useful in languages with a server. |
+| Browser | 8 | 4 685 | 1 171 | **on-demand** | Largest optional block. |
+| Search (searxng) | 2 | 1 135 | 283 | **on-demand** | |
+| MCP | variable | unbounded | — | **on-demand, essential** | MCP servers can contribute arbitrarily many tools; this is where the design pays off most. |
+
+## 5.3 The size of the proposal
+
+| Bucket | Bytes | Est. tokens |
+|---|---|---|
+| Core tools (proposed) | ≈ 16 500 | ≈ 4 100 |
+| On-demand tools | ≈ 23 000 | ≈ 5 800 |
+| **Total today** | **39 563** | **9 890** |
+
+So the tool side has ~5 800 est. tokens of movable bytes — but the index and
+the loader tool cost some of that back (§7).
+
+## 5.4 Caveat
+
+These are single-configuration measurements (default config, this repo).
+Conditional on: `prompt_mode`, `context_prune`, `searxng_url`, `lsp_enabled`,
+`browser_enabled`, MCP servers, `--no-memory`, `style_guides_enabled`. A
+single static table understates MCP-heavy or Docker-heavy setups and
+overstates the bench's `--no-memory` headless runs (which lack the 1 359
+est.-token memory group and the 147-token digest).
