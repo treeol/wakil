@@ -281,3 +281,58 @@ func TestTrace_FlushedPrefixEndsOnLineBoundary(t *testing.T) {
 		}
 	}
 }
+
+// TestOpen_RepairsCutTailBeforeAppending proves a session resumed onto a cut
+// file does not glue its new store_header onto the partial line: the torn tail
+// stays on its own line (readers skip it) and the header starts a new one.
+func TestOpen_RepairsCutTailBeforeAppending(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "s.jsonl")
+	// A crashed earlier session: one good line, then a cut tail with no newline.
+	cut := `{"type":"turn","session_id":"s","turn_index":0}` + "\n" + `{"type":"turn","sess`
+	if err := os.WriteFile(path, []byte(cut), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	s, err := Open(dir, "s", "m", "/w")
+	if err != nil {
+		t.Fatalf("Open on cut file: %v", err)
+	}
+	s.Write(Record{Type: "turn", SessionID: "s", TurnIndex: 1})
+	s.Close()
+
+	recs, skipped, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if skipped != 1 {
+		t.Fatalf("skipped = %d, want 1 (the torn tail)", skipped)
+	}
+	// good turn, new header, new turn.
+	if len(recs) != 3 {
+		t.Fatalf("records = %d, want 3; the header was glued to the tail", len(recs))
+	}
+	if recs[1].Type != "store_header" {
+		t.Fatalf("second record type = %q, want store_header (a glued line would lose it)", recs[1].Type)
+	}
+}
+
+// TestReadFile_ReadsRecordLargerThanBuffer proves a single record bigger than
+// the 64 KiB read/write buffer is still parsed whole (bufio.Scanner would have
+// failed at its 64 KiB token limit).
+func TestReadFile_ReadsRecordLargerThanBuffer(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "big.jsonl")
+	big := `{"type":"turn","session_id":"s","turn_index":0,"grounding":["` +
+		strings.Repeat("q", 200*1024) + `"]}`
+	if err := os.WriteFile(path, []byte(big+"\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	recs, skipped, err := ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if skipped != 0 || len(recs) != 1 {
+		t.Fatalf("records=%d skipped=%d, want 1 and 0", len(recs), skipped)
+	}
+}

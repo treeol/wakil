@@ -225,6 +225,89 @@ fi
 assert_no_marker "malformed trace (stdout)" "$tmp/bad.out"
 assert_no_marker "malformed trace (stderr)" "$tmp/bad.err"
 
+# --- case 9b: a file CUT MID-LINE (the 65536-byte shape) still reports ------
+#
+# A trace whose last line was cut mid-record: the good records must still be
+# counted, the broken tail skipped, and the skip summary must name the count.
+cat > "$tmp/cut.jsonl" <<EOF
+{"type":"turn","session_id":"c1","ts":"2026-11-22T10:01:00Z","sft_eligible":false,"turn_index":0,"turn_type":"tool_loop","tool_calls":[{"name":"read_file","pre_cap_bytes":1,"post_cap_bytes":1,"capped":false}],"message":"$MARKER-cut-msg"}
+{"type":"turn","session_id":"c1","ts":"2026-11-22T10:01:01Z","sft_eligible":false,"turn_index":1,"turn_ty
+EOF
+got=$("$script" "$tmp/cut.jsonl" 2>"$tmp/cut.err")
+if [ "$got" = "$(printf 'TOOL\tCALLS\tSESSIONS\nread_file\t1\t1')" ]; then
+    pass "a file cut mid-line still reports its good records"
+else
+    fail "cut-mid-line file"
+    printf '  got: %s\n' "$got" >&2
+fi
+if grep -q 'skipped 1 unparsable line(s) in 1 file(s)' "$tmp/cut.err"; then
+    pass "the cut line is reported as skipped"
+else
+    fail "cut line not reported"
+    printf '  stderr: %s\n' "$(cat "$tmp/cut.err")" >&2
+fi
+printf '%s\n' "$got" > "$tmp/cut.out"
+assert_no_marker "cut-mid-line (stdout)" "$tmp/cut.out"
+assert_no_marker "cut-mid-line (stderr)" "$tmp/cut.err"
+
+# --- case 9c: a VALID record after a broken line is still counted ---------
+#
+# The resumed-session shape: a torn tail, then a new session's header and turns
+# appended after it.
+cat > "$tmp/resumed.jsonl" <<EOF
+{"type":"turn","session_id":"r1","ts":"2026-11-22T10:02:00Z","sft_eligible":false,"turn_index":0,"turn_type":"tool_loop","tool_calls":[{"name":"run_shell","pre_cap_bytes":1,"post_cap_bytes":1,"capped":false}]}
+{"type":"turn","session_id":"r1","turn_ca
+{"type":"store_header","session_id":"r1","ts":"2026-11-22T10:03:00Z","sft_eligible":false,"model":"m","workspace":"w"}
+{"type":"turn","session_id":"r1","ts":"2026-11-22T10:03:01Z","sft_eligible":false,"turn_index":0,"turn_type":"tool_loop","tool_calls":[{"name":"edit_file","pre_cap_bytes":1,"post_cap_bytes":1,"capped":false}],"message":"$MARKER-resumed"}
+EOF
+got=$("$script" "$tmp/resumed.jsonl" 2>"$tmp/resumed.err")
+if printf '%s\n' "$got" | grep -q "^edit_file	1	1$" && printf '%s\n' "$got" | grep -q "^run_shell	1	1$"; then
+    pass "a valid record after a broken line is still counted"
+else
+    fail "record after a broken line was lost"
+    printf '  got: %s\n' "$got" >&2
+fi
+printf '%s\n' "$got" > "$tmp/resumed.out"
+assert_no_marker "resumed file (stdout)" "$tmp/resumed.out"
+assert_no_marker "resumed file (stderr)" "$tmp/resumed.err"
+
+# --- case 9d: the secret marker INSIDE a broken line never leaks ----------
+#
+# jq's parse-error text can quote the offending input; stderr must stay quiet
+# about it. The broken line carries the marker in a string field.
+printf '{"type":"turn","session_id":"b1","note":"%s-broken","tool_ca\n' "$MARKER" > "$tmp/brokensecret.jsonl"
+printf '{"type":"turn","session_id":"b1","tool_calls":[{"name":"list_dir"}]}\n' >> "$tmp/brokensecret.jsonl"
+"$script" "$tmp/brokensecret.jsonl" > "$tmp/brokensecret.out" 2> "$tmp/brokensecret.err" || true
+assert_no_marker "marker inside a broken line (stdout)" "$tmp/brokensecret.out"
+assert_no_marker "marker inside a broken line (stderr)" "$tmp/brokensecret.err"
+
+# --- case 9e: --union counts DISTINCT sessions across tools ---------------
+#
+# Two sessions: s_a used both dispatch_subagent and dispatch_subagents; s_b used
+# only dispatch_subagent. The union is 2, NOT 2+1=3.
+cat > "$tmp/union.jsonl" <<'EOF'
+{"type":"turn","session_id":"s_a","tool_calls":[{"name":"dispatch_subagent"},{"name":"dispatch_subagents"}]}
+{"type":"turn","session_id":"s_b","tool_calls":[{"name":"dispatch_subagent"}]}
+EOF
+got=$("$script" "$tmp/union.jsonl" --union "subagents=dispatch_subagent,dispatch_subagents" 2>/dev/null)
+row=$(printf '%s\n' "$got" | awk -F '\t' '$1 == "subagents"')
+if [ "$row" = "$(printf 'subagents\t2')" ]; then
+    pass "--union counts distinct sessions, not the sum"
+else
+    fail "--union counted wrongly"
+    printf '  want: subagents\t2\n  got:  %s\n' "$row" >&2
+fi
+
+# --- case 9f: the session denominator is on stderr -----------------------
+if "$script" "$tmp/union.jsonl" 2>"$tmp/denom.err" >/dev/null; then
+    if grep -q 'sessions=2 sessions_with_tools=2' "$tmp/denom.err"; then
+        pass "session denominator reported on stderr"
+    else
+        fail "session denominator missing"
+        printf '  stderr: %s\n' "$(cat "$tmp/denom.err")" >&2
+    fi
+fi
+
 # --- case 10: an empty file is not an error, it is an empty report -------
 : > "$tmp/empty.jsonl"
 got=$("$script" "$tmp/empty.jsonl" 2>/dev/null || true)

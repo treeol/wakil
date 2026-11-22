@@ -14,6 +14,7 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -81,6 +82,15 @@ func Open(dir, sessionID, model, workspace string) (*Store, error) {
 		return nil, err
 	}
 	path := filepath.Join(dir, sessionID+".jsonl")
+	// A session resumed after a crash may find a file whose last line was cut
+	// mid-record (an older writer flushed inside a record). O_APPEND would glue
+	// the new store_header onto that partial line, producing a broken line in
+	// the MIDDLE of the file and hiding the header. Terminate the torn tail
+	// first: the broken line stays (readers skip it), and the new record starts
+	// on its own line. Existing bytes are never rewritten.
+	if err := terminateCutTail(path); err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		return nil, err
@@ -158,6 +168,13 @@ func (s *Store) Close() {
 	// Wait outside the lock: the drain goroutine never takes the mutex, and
 	// concurrent closers must all block until the same flush completes.
 	s.wg.Wait()
+	// A full write channel drops records rather than blocking a turn. That is
+	// the right trade for latency, but it must not be silent: a session that
+	// lost turns says so once, so the trace is not trusted as complete when it
+	// is not. Reported from Close so no caller outside this package is needed.
+	if d := s.dropped.Load(); d > 0 {
+		diag.Printf("trace: dropped %d record(s) (write channel was full); the trace is incomplete", d)
+	}
 }
 
 func (s *Store) drainTo(f *os.File) {
@@ -181,9 +198,10 @@ func (s *Store) drainTo(f *os.File) {
 	}
 }
 
-// ReadFile parses every line of a trace file, skipping lines that do not
-// parse (a file cut mid-record by an older writer, or a torn tail) and
-// returning how many were skipped.
+// ReadFile parses every line of a trace file, skipping any line that does not
+// parse (a torn tail, or a broken line in the middle after a resumed session)
+// and returning how many were skipped. Later valid records are still returned:
+// only the unparsable lines are dropped.
 func ReadFile(path string) ([]Record, int, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -192,22 +210,59 @@ func ReadFile(path string) ([]Record, int, error) {
 	defer f.Close()
 	var recs []Record
 	skipped := 0
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	for sc.Scan() {
-		line := bytes.TrimSpace(sc.Bytes())
-		if len(line) == 0 {
-			continue
+	// bufio.Reader.ReadBytes has no token-size limit, unlike bufio.Scanner
+	// (default 64 KiB), so a single record larger than the write buffer is
+	// still read whole.
+	br := bufio.NewReaderSize(f, 64*1024)
+	for {
+		line, readErr := br.ReadBytes('\n')
+		if t := bytes.TrimSpace(line); len(t) > 0 {
+			var r Record
+			if err := json.Unmarshal(t, &r); err != nil {
+				skipped++
+			} else {
+				recs = append(recs, r)
+			}
 		}
-		var r Record
-		if err := json.Unmarshal(line, &r); err != nil {
-			skipped++
-			continue
+		if readErr != nil {
+			if readErr == io.EOF {
+				break
+			}
+			return recs, skipped, readErr
 		}
-		recs = append(recs, r)
-	}
-	if err := sc.Err(); err != nil {
-		return recs, skipped, err
 	}
 	return recs, skipped, nil
+}
+
+// terminateCutTail appends a newline to path when the file does not already
+// end in one, so a record appended afterwards cannot be glued onto a partial
+// line. It never rewrites or truncates existing bytes; a missing file is not an
+// error (nothing to repair).
+func terminateCutTail(path string) error {
+	f, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if st.Size() == 0 {
+		return nil
+	}
+	last := make([]byte, 1)
+	if _, err := f.ReadAt(last, st.Size()-1); err != nil {
+		return err
+	}
+	if last[0] == '\n' {
+		return nil
+	}
+	if _, err := f.WriteAt([]byte{'\n'}, st.Size()); err != nil {
+		return err
+	}
+	return nil
 }
