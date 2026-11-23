@@ -1307,9 +1307,9 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 			a.flushPendingModuleEvents()
 		}
 		if firstTurn {
-			preload := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
+			preload, reasons := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
 			if len(preload) > 0 {
-				a.Modules.PreloadModules(preload)
+				a.Modules.PreloadModules(preload, reasons)
 				if s, ok := a.Modules.PreloadedSchemas(preload); ok {
 					preloadedSchemas = s
 				}

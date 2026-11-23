@@ -641,11 +641,11 @@ func TestMCPModulePreload_Match(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ContextModules = "on"
 	reg := NewModuleRegistry(cfg, "/work", mcp)
-	preload := reg.MCPModulePreload("add a card to the trello board", nil)
+	preload, _ := reg.MCPModulePreload("add a card to the trello board", nil)
 	if len(preload) != 1 || preload[0] != "mcp:trello" {
 		t.Errorf("preload = %v, want [mcp:trello]", preload)
 	}
-	reg.PreloadModules(preload)
+	reg.PreloadModules(preload, nil)
 	if !reg.IsLoaded("mcp:trello") {
 		t.Error("mcp:trello should be loaded after PreloadModules")
 	}
@@ -660,7 +660,7 @@ func TestMCPModulePreload_NoMatch(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ContextModules = "on"
 	reg := NewModuleRegistry(cfg, "/work", mcp)
-	preload := reg.MCPModulePreload("write a hello world program", nil)
+	preload, _ := reg.MCPModulePreload("write a hello world program", nil)
 	if len(preload) != 0 {
 		t.Errorf("preload = %v, want empty", preload)
 	}
@@ -678,7 +678,7 @@ func TestMCPModulePreload_UserOverride(t *testing.T) {
 		"myserver": {"custom", "keyword"},
 	}
 	reg := NewModuleRegistry(cfg, "/work", mcp)
-	preload := reg.MCPModulePreload("use the custom tool", cfg.MCPModuleKeywords)
+	preload, _ := reg.MCPModulePreload("use the custom tool", cfg.MCPModuleKeywords)
 	if len(preload) != 1 || preload[0] != "mcp:myserver" {
 		t.Errorf("preload = %v, want [mcp:myserver]", preload)
 	}
@@ -696,11 +696,11 @@ func TestMCPModulePreload_UserOverrideDisablesDefaults(t *testing.T) {
 		"trello": {"kanban"},
 	}
 	reg := NewModuleRegistry(cfg, "/work", mcp)
-	preload := reg.MCPModulePreload("add a card to the board", cfg.MCPModuleKeywords)
+	preload, _ := reg.MCPModulePreload("add a card to the board", cfg.MCPModuleKeywords)
 	if len(preload) != 0 {
 		t.Errorf("preload with user override should not match built-in 'board': %v", preload)
 	}
-	preload = reg.MCPModulePreload("update the kanban", cfg.MCPModuleKeywords)
+	preload, _ = reg.MCPModulePreload("update the kanban", cfg.MCPModuleKeywords)
 	if len(preload) != 1 || preload[0] != "mcp:trello" {
 		t.Errorf("preload with user keyword 'kanban' = %v, want [mcp:trello]", preload)
 	}
@@ -715,7 +715,7 @@ func TestMCPModulePreload_EmptyText(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ContextModules = "on"
 	reg := NewModuleRegistry(cfg, "/work", mcp)
-	preload := reg.MCPModulePreload("", nil)
+	preload, _ := reg.MCPModulePreload("", nil)
 	if len(preload) != 0 {
 		t.Errorf("preload for empty text = %v, want empty", preload)
 	}
@@ -728,7 +728,7 @@ func TestModuleCapabilityLine_Loaded(t *testing.T) {
 	cfg.ContextModules = "on"
 	cfg.LSPEnabled = true
 	reg := NewModuleRegistry(cfg, "/work", nil)
-	reg.PreloadModules([]string{"lsp"})
+	reg.PreloadModules([]string{"lsp"}, nil)
 	full := "LSP code intelligence available: lsp_definition"
 	line := moduleCapabilityLine("lsp", reg, full)
 	if line != full {
@@ -761,7 +761,7 @@ func TestPreloadModules_MarksLoaded(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ContextModules = "on"
 	reg := NewModuleRegistry(cfg, "/work", mcp)
-	reg.PreloadModules([]string{"mcp:trello"})
+	reg.PreloadModules([]string{"mcp:trello"}, nil)
 	if !reg.IsLoaded("mcp:trello") {
 		t.Error("mcp:trello should be loaded after PreloadModules")
 	}
@@ -773,7 +773,7 @@ func TestPreloadModules_UnknownName(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.ContextModules = "on"
 	reg := NewModuleRegistry(cfg, "/work", nil)
-	reg.PreloadModules([]string{"nonexistent"})
+	reg.PreloadModules([]string{"nonexistent"}, nil)
 	for _, m := range reg.modules {
 		if reg.IsLoaded(m.Name) {
 			t.Errorf("module %q should not be loaded", m.Name)
@@ -785,7 +785,7 @@ func TestPreloadModules_UnknownName(t *testing.T) {
 // registry returns nil safely.
 func TestMCPModulePreload_NilRegistry(t *testing.T) {
 	var reg *ModuleRegistry
-	if preload := reg.MCPModulePreload("some text", nil); preload != nil {
+	if preload, _ := reg.MCPModulePreload("some text", nil); preload != nil {
 		t.Errorf("nil registry should return nil, got %v", preload)
 	}
 }
@@ -1001,11 +1001,11 @@ func TestPreload_FirstRequestContainsSchemas(t *testing.T) {
 	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
 
 	task := "add a card to the trello board"
-	preload := app.Modules.MCPModulePreload(task, app.Cfg.MCPModuleKeywords)
+	preload, reasons := app.Modules.MCPModulePreload(task, app.Cfg.MCPModuleKeywords)
 	if len(preload) != 1 || preload[0] != "mcp:trello" {
 		t.Fatalf("pre-load for %q = %v, want [mcp:trello]", task, preload)
 	}
-	app.Modules.PreloadModules(preload)
+	app.Modules.PreloadModules(preload, reasons)
 
 	schemas, ok := app.Modules.PreloadedSchemas(preload)
 	if !ok {
@@ -1100,6 +1100,87 @@ func TestExecuteToolCall_BareModuleToolNameEnforced(t *testing.T) {
 	})
 	if !strings.HasPrefix(result.text, "ERROR:") || !strings.Contains(result.text, "not loaded") {
 		t.Errorf("bare module tool with module not loaded must be rejected, got: %s", result.text)
+	}
+}
+
+// TestPreload_ServerNameOnly: with the default keywords, only the
+// server name itself pre-loads the module — "show my trello board"
+// matches on "trello", and the reason line names the matched keyword.
+func TestPreload_ServerNameOnly(t *testing.T) {
+	mcp := newFakeMCPManager(connectedServer("trello", &fakeMCPSession{}, "get_boards", "get_card"))
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+
+	preload, reasons := reg.MCPModulePreload("show my trello board", nil)
+	if len(preload) != 1 || preload[0] != "mcp:trello" {
+		t.Fatalf("preload = %v, want [mcp:trello]", preload)
+	}
+	if reasons["mcp:trello"] != "trello" {
+		t.Fatalf("reason = %q, want %q", reasons["mcp:trello"], "trello")
+	}
+	reg.PreloadModules(preload, reasons)
+	line, ok := reg.ModuleIndexLine("mcp:trello")
+	if !ok {
+		t.Fatal("no index line for mcp:trello")
+	}
+	if !strings.Contains(line, `pre-loaded: "trello" in your message`) {
+		t.Errorf("index line must carry the pre-load reason, got: %s", line)
+	}
+	if !strings.Contains(reg.ModuleIndex(), `pre-loaded: "trello" in your message`) {
+		t.Errorf("module index must carry the pre-load reason:\n%s", reg.ModuleIndex())
+	}
+}
+
+// TestPreload_CommonWordsDoNotLoad: the old built-in common words no
+// longer load any module — neither from the user's message nor from
+// the memory block / AGENTS.md / retrieval text.
+func TestPreload_CommonWordsDoNotLoad(t *testing.T) {
+	mcp := newFakeMCPManager(
+		connectedServer("trello", &fakeMCPSession{}, "get_boards"),
+		connectedServer("context7", &fakeMCPSession{}, "resolve-library-id"),
+	)
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+
+	scanned := map[string]string{
+		"user message with a common word": "add this to my list and check the board",
+		"user message with another":       "the board needs a card",
+		"user message":                    "checklist",
+		"memory block":                    "recent: list of cards, board of directors, generic list",
+		"agents.md":                       "## Notes\ncard list board\n",
+		"tool output":                     "list: board card",
+		"context7 common words":           "docs for the library documentation",
+	}
+	for where, text := range scanned {
+		if preload, _ := reg.MCPModulePreload(text, nil); len(preload) != 0 {
+			t.Errorf("%s: %q must not pre-load anything, got %v", where, text, preload)
+		}
+	}
+	// Sanity: the server name itself still matches.
+	if preload, _ := reg.MCPModulePreload("docs for context7", nil); len(preload) != 1 {
+		t.Errorf("the server name must still pre-load, got %v", preload)
+	}
+}
+
+// TestPreload_UserKeywordWorks: a keyword the user adds in
+// mcp_module_keywords matches, and the reason line names it.
+func TestPreload_UserKeywordWorks(t *testing.T) {
+	mcp := newFakeMCPManager(connectedServer("trello", &fakeMCPSession{}, "get_boards"))
+	cfg := config.DefaultConfig()
+	cfg.ContextModules = "on"
+	cfg.MCPModuleKeywords = map[string][]string{"trello": {"kanban"}}
+	reg := NewModuleRegistry(cfg, "/work", mcp)
+
+	preload, reasons := reg.MCPModulePreload("move it to the kanban", cfg.MCPModuleKeywords)
+	if len(preload) != 1 || preload[0] != "mcp:trello" {
+		t.Fatalf("preload = %v, want [mcp:trello]", preload)
+	}
+	reg.PreloadModules(preload, reasons)
+	line, _ := reg.ModuleIndexLine("mcp:trello")
+	if !strings.Contains(line, `pre-loaded: "kanban" in your message`) {
+		t.Errorf("index line must name the user keyword, got: %s", line)
 	}
 }
 

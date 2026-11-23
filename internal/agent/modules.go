@@ -273,6 +273,11 @@ type ModuleRegistry struct {
 	// LSP/browser lines are frozen at session start and never change on a
 	// mid-session rebuild.
 	preloadedAtConstruction map[string]bool
+	// preloadReason records, per module, the keyword that caused its
+	// pre-load (Block 2, Stage 1 fixes round 2), so the module table
+	// line can render the reason. Populated by PreloadModules; read by
+	// ModuleIndexLine / ModuleIndex. Guarded by mu.
+	preloadReason map[string]string
 	// mu guards every field above against concurrent access.
 	mu sync.Mutex
 }
@@ -294,6 +299,7 @@ func NewModuleRegistry(cfg config.Config, cwd string, mcp *MCPManager) *ModuleRe
 		disconnected:            make(map[string]bool),
 		announcedOnce:           make(map[string]bool),
 		preloadedAtConstruction: make(map[string]bool),
+		preloadReason:           make(map[string]string),
 	}
 	for _, m := range mods {
 		r.byName[m.Name] = m
@@ -505,11 +511,16 @@ func (r *ModuleRegistry) ToolModule(toolName string) string {
 func (r *ModuleRegistry) ModuleIndexLine(name string) (string, bool) {
 	r.mu.Lock()
 	m, ok := r.byName[name]
+	reason := r.preloadReason[name]
 	r.mu.Unlock()
 	if !ok {
 		return "", false
 	}
-	return fmt.Sprintf("  %-16s — %s", m.Name, m.Desc), true
+	line := fmt.Sprintf("  %-16s — %s", m.Name, m.Desc)
+	if reason != "" {
+		line += fmt.Sprintf(" (pre-loaded: %q in your message)", reason)
+	}
+	return line, true
 }
 
 // ModuleIndex returns the one-line-per-module index text appended to the
@@ -520,9 +531,17 @@ func (r *ModuleRegistry) ModuleIndex() string {
 	b.WriteString("Not loaded by default. Call load_module(name) to load one; unknown name lists all.\n")
 	r.mu.Lock()
 	mods := append([]Module(nil), r.modules...)
+	reasons := make(map[string]string, len(r.preloadReason))
+	for k := range r.preloadReason {
+		reasons[k] = r.preloadReason[k]
+	}
 	r.mu.Unlock()
 	for _, m := range mods {
-		fmt.Fprintf(&b, "  %-16s — %s\n", m.Name, m.Desc)
+		fmt.Fprintf(&b, "  %-16s — %s", m.Name, m.Desc)
+		if reason := reasons[m.Name]; reason != "" {
+			fmt.Fprintf(&b, " (pre-loaded: %q in your message)", reason)
+		}
+		b.WriteByte('\n')
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
@@ -610,17 +629,17 @@ func ModuleRegistryForApp(cfg config.Config, cwd string, mcp *MCPManager) *Modul
 	return reg
 }
 
-// defaultMCPKeywords returns the built-in keyword list for a server name.
-// Used when the user has not provided an explicit keyword list in config.
+// defaultMCPKeywords returns the built-in keyword list for a server
+// name. Used when the user has not provided an explicit keyword list
+// in config. Only the server name itself: a common word like "list"
+// or "card" would pre-load the module on unrelated tasks (the host
+// false positive that made mcp:trello load for a session with no
+// Trello content).
 func defaultMCPKeywords(serverName string) []string {
-	switch strings.ToLower(serverName) {
-	case "trello":
-		return []string{"board", "card", "trello", "list"}
-	case "context7":
-		return []string{"library", "docs", "documentation", "api reference"}
-	default:
+	if serverName == "" {
 		return nil
 	}
+	return []string{strings.ToLower(serverName)}
 }
 
 // mcpKeywordsForServer returns the keyword list for a server: user config if
@@ -637,15 +656,22 @@ func mcpKeywordsForServer(serverName string, userKeywords map[string][]string) [
 // "API reference") matches as a substring (case-insensitive) since the space
 // is the boundary.
 func matchMCPKeywords(taskText string, keywords []string) bool {
+	return matchedKeyword(taskText, keywords) != ""
+}
+
+// matchedKeyword returns the first keyword that matches the task text, or
+// "" when none does. Block 2 of the Stage 1 fixes round 2 uses it so the
+// module table can name the keyword that caused a pre-load.
+func matchedKeyword(taskText string, keywords []string) string {
 	if len(keywords) == 0 {
-		return false
+		return ""
 	}
 	lower := strings.ToLower(taskText)
 	for _, kw := range keywords {
 		lkw := strings.ToLower(kw)
 		if strings.Contains(lkw, " ") {
 			if strings.Contains(lower, lkw) {
-				return true
+				return kw
 			}
 			continue
 		}
@@ -653,10 +679,10 @@ func matchMCPKeywords(taskText string, keywords []string) bool {
 		// match "listed" or "listing". A word boundary is a transition
 		// between a word char [a-z0-9_] and a non-word char (or string edge).
 		if containsWord(lower, lkw) {
-			return true
+			return kw
 		}
 	}
-	return false
+	return ""
 }
 
 // containsWord reports whether s contains word as a whole word
@@ -696,11 +722,16 @@ func isWordChar(r byte) bool {
 // modules whose server has keywords and whose keywords match the task text
 // are returned. A server with no keywords (and no user override) is not
 // pre-loaded — it stays reachable by load_module.
-func (r *ModuleRegistry) MCPModulePreload(taskText string, userKeywords map[string][]string) []string {
+//
+// It also returns the keyword that matched each returned module, so the
+// module table can render the reason (pre-loaded: "trello" in your
+// message).
+func (r *ModuleRegistry) MCPModulePreload(taskText string, userKeywords map[string][]string) ([]string, map[string]string) {
 	if r == nil || taskText == "" {
-		return nil
+		return nil, nil
 	}
 	var preload []string
+	reasons := map[string]string{}
 	for _, m := range r.modules {
 		if !strings.HasPrefix(m.Name, "mcp:") {
 			continue
@@ -710,24 +741,31 @@ func (r *ModuleRegistry) MCPModulePreload(taskText string, userKeywords map[stri
 		if len(kws) == 0 {
 			continue
 		}
-		if matchMCPKeywords(taskText, kws) {
+		if kw := matchedKeyword(taskText, kws); kw != "" {
 			preload = append(preload, m.Name)
+			reasons[m.Name] = kw
 		}
 	}
-	return preload
+	return preload, reasons
 }
 
 // PreloadModules marks the given module names as loaded (pre-loaded at session
 // start, before the first request). Disconnected modules are skipped: marking
 // them would leave `loaded = true` with nothing delivered and the gate
 // passing for nothing.
-func (r *ModuleRegistry) PreloadModules(names []string) {
+//
+// reasons optionally records the keyword that caused each pre-load (the
+// module table renders it); a nil or missing entry records no reason.
+func (r *ModuleRegistry) PreloadModules(names []string, reasons map[string]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, n := range names {
 		if _, ok := r.byName[n]; ok && !r.disconnected[n] {
 			r.loaded[n] = true
 			r.preloadedAtConstruction[n] = true
+			if kw := reasons[n]; kw != "" {
+				r.preloadReason[n] = kw
+			}
 		}
 	}
 }
