@@ -13,6 +13,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"time"
 
 	"github.com/chromedp/chromedp"
@@ -145,27 +147,83 @@ func (m *Manager) launchSession() (*session, error) {
 		return ready, nil
 	}
 
+	// CDP readiness (0.8.11): poll the tunnel endpoint until it answers,
+	// then retry the connect+handshake itself — the Navigate opens a new
+	// tunnel connection (a new docker-exec forwarder), and a transient
+	// accept-then-EOF on it must not fail the launch. Each attempt builds
+	// a fresh allocator/context over the same tunnel URL; a failed
+	// attempt is torn down, never reused.
+	if err := waitCDPReady(lctx, cdpURL); err != nil {
+		_ = teardown()
+		return nil, err
+	}
+
 	// Remote allocator over the loopback endpoint. The first chromedp.Run uses
 	// the manager-owned context directly (never an operation context): see the
 	// note on newLocalLauncher — canceling a context used for the first Run can
 	// tear the browser down.
-	allocCtx, allocCancel := remote.NewAllocator(context.Background(), cdpURL)
-	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
-	sess := &session{ctx: browserCtx, ctxCancel: browserCancel, allocCancel: allocCancel, teardown: teardown}
+	var lastErr error
+	for attempt := 0; attempt < cdpConnectAttempts; attempt++ {
+		allocCtx, allocCancel := remote.NewAllocator(context.Background(), cdpURL)
+		browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+		sess := &session{ctx: browserCtx, ctxCancel: browserCancel, allocCancel: allocCancel, teardown: teardown}
 
-	done := make(chan error, 1)
-	safe.Go("browser-launch", func() { _, err := chromedp.Run(browserCtx, chromedp.Navigate("about:blank")); done <- err })
-	select {
-	case err := <-done:
-		if err != nil {
+		done := make(chan error, 1)
+		safe.Go("browser-launch", func() { _, err := chromedp.Run(browserCtx, chromedp.Navigate("about:blank")); done <- err })
+		select {
+		case err := <-done:
+			if err == nil {
+				return sess, nil
+			}
+			lastErr = err
 			_ = sess.close()
-			return nil, fmt.Errorf("cannot connect to Chromium at %s (%w)", cdpURL, err)
+		case <-lctx.Done():
+			_ = sess.close()
+			return nil, fmt.Errorf("timed out connecting to Chromium at %s", cdpURL)
 		}
-	case <-lctx.Done():
-		_ = sess.close()
-		return nil, fmt.Errorf("timed out connecting to Chromium at %s", cdpURL)
+		if lctx.Err() != nil {
+			break
+		}
 	}
-	return sess, nil
+	_ = teardown()
+	return nil, fmt.Errorf("cannot connect to Chromium at %s (%w)", cdpURL, lastErr)
+}
+
+// cdpConnectAttempts bounds the connect+handshake retries inside
+// launchTimeout. Each attempt spawns a new tunnel forwarder, so a transient
+// accept-then-EOF (observed in TestIntegrationOpenNetwork) costs one short
+// retry instead of the whole launch.
+const cdpConnectAttempts = 3
+
+// waitCDPReady polls GET /json/version on the tunnel URL until it answers
+// or ctx expires. The poll itself exercises the forwarder chain; a dead
+// browser never gets here (waitDevToolsPort fails first in the docker
+// launcher).
+func waitCDPReady(ctx context.Context, cdpURL string) error {
+	client := &http.Client{Timeout: 2 * time.Second}
+	var lastErr error
+	for {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdpURL+"/json/version", nil)
+		if err != nil {
+			return err
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			_, _ = io.Copy(io.Discard, resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusOK {
+				return nil
+			}
+			lastErr = fmt.Errorf("GET %s/json/version: %s", cdpURL, resp.Status)
+		} else {
+			lastErr = err
+		}
+		select {
+		case <-ctx.Done():
+			return fmt.Errorf("Chromium CDP not ready at %s after %s (%w)", cdpURL, launchTimeout, lastErr)
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
 }
 
 // close cancels the chromedp contexts and runs the launcher's teardown.

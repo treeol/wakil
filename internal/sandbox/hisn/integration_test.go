@@ -1200,9 +1200,15 @@ print(data.decode("utf-8", "replace"))
 			t.Fatalf("browser NewManager: %v", err)
 		}
 		defer bm.Close()
-		title, finalURL, err := bm.Navigate(bctx, "about:blank")
+		// Bounded: the launch waits for CDP readiness and retries the
+		// handshake inside launchTimeout (30 s); a dead browser fails with
+		// that bound named instead of hanging. The outer 60 s is the test's
+		// own guard so a hang is a test failure, not a stuck CI job.
+		nctx, ncancel := context.WithTimeout(bctx, 60*time.Second)
+		defer ncancel()
+		title, finalURL, err := bm.Navigate(nctx, "about:blank")
 		if err != nil {
-			t.Fatalf("browser Navigate to about:blank: %v", err)
+			t.Fatalf("browser Navigate to about:blank failed within the 60s test bound (launch bound 30s): %v", err)
 		}
 		t.Logf("browser: Navigate OK (title=%q url=%q)", title, finalURL)
 	}

@@ -105,6 +105,57 @@ func resolveBrowser(browserPath string) string {
 	return ""
 }
 
+// launchRunOnce starts one browser process through chromedp's ExecAllocator
+// and runs the first Navigate. It is one attempt: callers retry with a fresh
+// call, never Runs again on a spent context (the pipe binds the process for
+// its lifetime).
+func launchRunOnce(allocOpts []chromedp.ExecAllocatorOption, userDataDir string, triedMsg string) (func() error, *session, error) {
+	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
+	ctx, ctxCancel := chromedp.NewContext(allocCtx)
+	var owned hostProcess // the browser we started, identified at spawn (pidfd)
+	var haveOwned bool
+	teardown := func() error {
+		ctxCancel()
+		allocCancel()
+		waitGoneBounded(userDataDir, localExitWait)
+		if haveOwned {
+			killOwned(owned, diagf) // through the pidfd: never a reused pid
+		}
+		killUsingDir(userDataDir)
+		return os.RemoveAll(userDataDir)
+	}
+	sess := &session{ctx: ctx, ctxCancel: ctxCancel, allocCancel: allocCancel, teardown: teardown}
+	done := make(chan error, 1)
+	safe.Go("browser-launch", func() { _, err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); done <- err })
+	select {
+	case err := <-done:
+		if err != nil {
+			_ = sess.close()
+			return nil, nil, fmt.Errorf("cannot start Chromium, tried %s (%w) — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg, err)
+		}
+	case <-time.After(15 * time.Second):
+		_ = sess.close()
+		return nil, nil, fmt.Errorf("timed out launching Chromium after 15s, tried %s — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg)
+	}
+	proc := chromedp.FromContext(ctx).Browser.Process()
+	if proc == nil {
+		_ = sess.close()
+		return nil, nil, fmt.Errorf("cannot start Chromium, tried %s: no browser process was started", triedMsg)
+	}
+	rec, ok := recordHostProcess(proc.Pid, "--user-data-dir="+userDataDir)
+	if !ok {
+		_ = sess.close()
+		return nil, nil, fmt.Errorf("Chromium (pid %d) exited immediately, tried %s — it probably handed off to an already-running browser; nothing was opened there. Set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", proc.Pid, triedMsg)
+	}
+	if okOwn, why := rec.owns(); !okOwn {
+		rec.release()
+		_ = sess.close()
+		return nil, nil, fmt.Errorf("Chromium pid %d is not the browser started for this launch (%s), tried %s", proc.Pid, why, triedMsg)
+	}
+	owned, haveOwned = rec, true
+	return teardown, sess, nil
+}
+
 // launch starts the browser through chromedp's ExecAllocator and returns the
 // ready session.
 //
@@ -125,12 +176,6 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("create user-data-dir: %w", err)
 	}
-	// teardown (R3) is set below, once the allocator exists: it cancels the
-	// allocator, waits (bounded) for Chromium to exit, KILLs whatever still
-	// carries this launch's --user-data-dir, and only then removes the dir.
-	var teardown func() error
-	var owned hostProcess // the browser we started, identified at spawn (pidfd)
-	var haveOwned bool
 
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", "new"),
@@ -151,57 +196,27 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 	if exe := resolveBrowser(l.browserPath); exe != "" {
 		allocOpts = append(allocOpts, chromedp.ExecPath(exe))
 	}
-	allocCtx, allocCancel := chromedp.NewExecAllocator(context.Background(), allocOpts...)
-	ctx, ctxCancel := chromedp.NewContext(allocCtx)
-	teardown = func() error {
-		ctxCancel()
-		allocCancel()
-		waitGoneBounded(userDataDir, localExitWait)
-		if haveOwned {
-			killOwned(owned, diagf) // through the pidfd: never a reused pid
-		}
-		killUsingDir(userDataDir)
-		return os.RemoveAll(userDataDir)
-	}
-	sess := &session{ctx: ctx, ctxCancel: ctxCancel, allocCancel: allocCancel, teardown: teardown}
 
 	triedMsg := "PATH search (google-chrome, chromium, etc.)"
 	if l.browserPath != "" {
 		triedMsg = fmt.Sprintf("browser_path=%q", l.browserPath)
 	}
-	done := make(chan error, 1)
-	safe.Go("browser-launch", func() { _, err := chromedp.Run(ctx, chromedp.Navigate("about:blank")); done <- err })
-	select {
-	case err := <-done:
-		if err != nil {
-			_ = sess.close()
-			return "", nil, nil, fmt.Errorf("cannot start Chromium, tried %s (%w) — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg, err)
+	// Bounded retry (0.8.11): a transient first-Run failure gets one more
+	// attempt with a FRESH process + context (the pipe binds the process),
+	// inside the 15 s-per-attempt limit, not a re-Run on a spent context.
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		_, sess, runErr := launchRunOnce(allocOpts, userDataDir, triedMsg)
+		if runErr == nil {
+			return "", nil, sess, nil
 		}
-	case <-time.After(15 * time.Second):
-		_ = sess.close()
-		return "", nil, nil, fmt.Errorf("timed out launching Chromium after 15s, tried %s — set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", triedMsg)
+		lastErr = runErr
 	}
-	// The browser must be the process we started, alive, on our profile. A
-	// chromium that hands its URL to an already-running instance exits at once;
-	// the connection above would then have failed, but this closes the gap
-	// explicitly instead of reporting a launch that is not ours.
-	proc := chromedp.FromContext(ctx).Browser.Process()
-	if proc == nil {
-		_ = sess.close()
-		return "", nil, nil, fmt.Errorf("cannot start Chromium, tried %s: no browser process was started", triedMsg)
-	}
-	rec, ok := recordHostProcess(proc.Pid, "--user-data-dir="+userDataDir)
-	if !ok {
-		_ = sess.close()
-		return "", nil, nil, fmt.Errorf("Chromium (pid %d) exited immediately, tried %s — it probably handed off to an already-running browser; nothing was opened there. Set browser_path to a Chrome/Chromium binary, or set browser_enabled:false", proc.Pid, triedMsg)
-	}
-	if okOwn, why := rec.owns(); !okOwn {
-		rec.release()
-		_ = sess.close()
-		return "", nil, nil, fmt.Errorf("Chromium pid %d is not the browser started for this launch (%s), tried %s", proc.Pid, why, triedMsg)
-	}
-	owned, haveOwned = rec, true
-	return "", nil, sess, nil
+	// The last teardown removed userDataDir once; a second attempt reuses
+	// the same (now removed) dir — its removal is idempotent, and the
+	// error below still names the first failure.
+	_ = os.RemoveAll(userDataDir)
+	return "", nil, nil, lastErr
 }
 
 // localExitWait bounds how long direct-mode teardown waits for Chromium to exit
