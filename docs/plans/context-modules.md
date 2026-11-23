@@ -3523,3 +3523,359 @@ their reason so the record shows what was considered.
   (`modules.go:564`), so a model can recover by re-loading. Recorded in
   `## Follow-ups (not in Stage 1)`: registry/Conv divergence after
   compaction, and pre-load after a `/clear` or resume.
+
+---
+
+# Stage 1 fixes, round 2
+
+Branch `work/context-modules` at `6ac5b50`, verified clean (`git status
+--short` empty). Four problems found in live host use and on the bench.
+This section is the verified cause, the touched functions, the fix blocks
+with tests, and the open risks. Review material is this section only.
+
+## 1. Verified findings (read at `6ac5b50`, paths + lines)
+
+### 1.1 The three collapse paths, and the pinning code added in Stage 1
+
+**Turn-end collapse — `collapseFinishedTurns`,
+`internal/agent/collapse.go:1068`.**
+Archives the full turn `U+W+A` (`for i:=s.first;i<=s.last;i++` at
+`:1163-1165`, `archive:=wtools.SpillToCache(... "turn-%d", ...)`);
+`wOnly` is `s.first+1..s.last-1` (`:1167-1169`). Summary:
+`Note=buildCollapseNote(t,wOnly,archive)` (`:1179`),
+`Findings=buildFindings(wOnly,archive)` (`:1185`),
+`AnswerExcerpt=extractAnswerExcerpt(lastMsg)` (`:1192`), plus the prior
+partial's `Summary`/`NextSteps` (`:1187-1188`).
+**No `m.Pinned` check anywhere in `collapse.go`** — `search_files
+Pinned` over `collapse.go` returns zero matches. The only exemption is
+the turn-level `/keep`: `_,kept:=a.keep[t]; if kept{continue}` at
+`:1107-1115` (plus `alreadyCollapsed`, `isCleanAnswer`,
+`context_collapse_min_bytes`, async checks). A pinned `role:"tool"`
+message inside W is archived to disk and elided from the projection —
+the model never sees it again.
+
+**Mid-turn collapse — `collapseMidTurnPrefix`,
+`collapse.go:1802`.** Archives `taskIdx+1..tailStart-1`
+(`:1894-1923`); `taskIdx` is the first user-role message (`:1842-1845`);
+the kept tail is whole tool-call rounds from `collapseTailStart` (30%
+ceiling, ≥1 round). Summary: `Note=buildCollapseNote` (`:1917`),
+`Findings=buildFindings` (`:1929`), `Partial=true`, no model Summary.
+**Similarly no `Pinned` check** — only `_,kept:=a.keep[a.curTurn];
+if kept{return}` at `:1806-1811`.
+
+**Explicit `collapse_context` — `handleCollapseContext`,
+`collapse.go:1499`.** Archives `s.first+1..curAsstIdx-1`; the
+`collapse_context` call and its result are never archived
+(`tailStart=curAsstIdx`, `BoundaryCallID=tc.ID`). Model-required
+`Summary`/`NextSteps`/`memory_key` plus the deterministic note/findings.
+**Same: no `Pinned` check.**
+
+**Stage 1's pinning code.** `finalizeToolResult`
+(`internal/agent/turn_phases.go:548-554`):
+
+```go
+pinned := wtools.IsSubagentResult(tc.Function.Name)
+if tc.Function.Name == "load_module" {
+    pinned = true
+}
+```
+
+and the append at `:559-565` (`Role:"tool"`, `Name: tc.Function.Name`,
+`Content: StrPtr(text)`, `Pinned: pinned`). This protects the
+`load_module` result from `evictStaleToolResults`
+(`internal/agent/app.go:2463-2466` skips `m.Role=="tool" &&
+m.Pinned`) and from `CapOrStub` (`app.go:2407` exempts `load_module`).
+**It does not protect against any of the three collapse paths** —
+collapse never inspects `Pinned`. This is the host failure: the user
+ran `load_module("mcp:caj")`, the turn ended with a collapse
+(`· collapsed request 2: 904 tokens → 688 sent (msgs 5–6,
+load_module ×1) → .../turn-2-415986960.txt`), the pinned schema block
+was archived, and the next turn the model had no schemas — it read the
+archive file with `read_file` (itself a collapse trigger), and the
+turn after that it answered "Sorry, I don't have any context for 'caj__run_command'".
+`registry.loaded["mcp:caj"]` stayed `true`, so `call_tool` kept passing
+the gate, but the model had no schema to build arguments from and —
+rationally — refused to call a tool it could not see.
+
+`buildCollapseNote` (`collapse.go:274`) counts tool calls and lists
+read/write paths; **no module is ever named in a collapse note or a
+checkpoint block** (`buildPartialCheckpointBlock`, `:502-520`; the
+full-turn projection at `:934-954` emits only U + the capped A with the
+note). A turn-end collapse also archives the schema block even when the
+registry still says "loaded".
+
+### 1.2 Exactly what the keyword pre-load scans
+
+The scan input is the **raw `userText` parameter only**, at
+`internal/agent/app.go:1310`:
+`MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)`. It is **not**
+`stored` — the memory block and workflow directive are prepended to
+`userText` to form `stored` at `:1272-1280`, after (in source order)
+the pre-load call. The memory block, workflow directive, system
+preamble and AGENTS.md are **not scanned**: AGENTS.md is inside
+`ensurePreamble()` which runs at `:1319`, after the scan.
+
+Gate: `a.Modules != nil && !a.IsSubagent` (`:1290`) and
+`firstTurn := a.preambleDay == ""` (`:1292`, `:1309-1317`) — pre-load
+is turn-1-only; turn 2+ goes through `load_module`.
+
+Built-in keywords (`defaultMCPKeywords`, `internal/agent/modules.go:617-623`):
+trello = `board, card, trello, list`; context7 =
+`library, docs, documentation, api reference`; anything else = nil
+(never pre-loaded). Matching (`matchMCPKeywords`, `:639-660`):
+case-insensitive; a single-word keyword matches on a whole-word
+boundary (`containsWord`, `[a-z0-9_]` transitions, `:665-686`), so
+`list` does not match `listed`/`listing`/`checklist`; a multi-word
+keyword (`api reference`) matches as a substring. User config
+(`mcpKeywordsForServer`, `:628-633`) fully replaces the built-ins when
+non-empty. `MCPModulePreload` (`:699-718`) iterates only `mcp:*`
+modules, skips servers with no keywords, and returns matching names;
+`PreloadModules` (`:724-733`) marks them `loaded` +
+`preloadedAtConstruction` and skips disconnected ones.
+
+**What made `mcp:trello` pre-load in the observed session.** Live host
+observation: at session start Trello showed "loaded" with nothing
+about Trello in the turn, while the other eight modules showed "not
+loaded". Of the four trello keywords, `board` and `card` are everyday
+English (a task about building a dashboard, a build card, a whiteboard
+layout), and `list` is a whole word in most task sentences. The
+first user message need only contain one of the four as a whole word —
+in practice `list`. Combined with zero reason reporting, the module
+table showed the fact without the cause, so a false pre-load looked
+like a bug. There is no second scan source to blame: memory block,
+AGENTS.md, tool output and file contents are provably excluded by
+source order. (What the actual first message was is not in this
+session's evidence — the honest statement is "one of the four
+keywords matched the raw `userText`"; `list` is by far the most likely
+and is the mechanism.)
+
+### 1.3 How module text reaches the model, and with which role
+
+Every path funnels through `appendConv` (`collapse.go:31-55`), which
+stamps `Turn=curTurn` when 0 and preserves `Role`/`Pinned` exactly as
+passed. There is no role override.
+
+| Path | Where | Role | Pinned |
+|---|---|---|---|
+| Model-initiated `load_module` | `handleLoadModule` (`modules.go:794-822`) returns a string; the append happens in `finalizeToolResult` (`turn_phases.go:559-565`) | `tool` | `true` (`:552-554`) |
+| Turn-1 pre-loaded schemas | `PreloadedSchemas`/`ModuleSchemasBlock` (`modules.go:741-772`) return a string; `app.go:1320-1324` appends it after `ensurePreamble` | **`user`** | not set → `false` |
+| Late-connect announcement | `flushPendingModuleEvents` (`modules.go:864-874`) and the safety-net repeat (`:891-898`): `"Context module available: " + name + "\n" + line + "\nCall load_module(...)..."` | **`user`** | not set → `false` |
+
+So **two of the three module-text paths deliver MCP-server-controlled
+text as a user message**. The pre-loaded schema block is
+`Module %q loaded: %s\nTool schemas:\n%s` — tool names, descriptions
+and JSON schemas taken verbatim from the MCP server — rendered in the
+user role. The late-connect announcement is user-role and instructs
+`Call load_module` — a directive in the user's voice, written by
+server-derived index text. `MCPToolToOpenAI` (`mcp_manager.go:777`)
+builds names as `server__tool` from the server's own strings; nothing
+sanitises descriptions. This is the user-authority hole: an MCP
+server controls text the model reads in the user's role and treats
+with user authority. Turn-1 late-connect is silent (no announcement
+before `messages[0]`): `refreshMCPModulesSilently(..., false)` +
+`mcpEventBuf=nil` (`app.go:1301-1308`); the frozen preamble index is
+the only turn-1 announcement.
+
+### 1.4 Block 3 — the Haiku tool-call counts
+
+From the CSVs (`tool_calls` per run) and the per-run logs:
+
+| Pair | Off total | On total | Δ | Per-task Δ (run pairs, same task/run) |
+|---|---|---|---|---|
+| `20261122T221701`→`20261122T222041` | 96 | 121 | **+25** | rename +9, fix-test +8, long-read +7, add-flag +1, steps 0 |
+| `20261123T105801`→`20261123T110122` | 91 | 121 | **+30** | rename +18, long-read +8, add-flag +4, fix-test 0, steps 0 |
+
+Both ON totals are exactly 121; both OFF totals are 96 and 91.
+`steps` is 6 calls/run (18 total) in all four CSVs — identical — so the
+harness is stable and the delta is model-path variance, not systematic
+overhead. `load_module`/`call_tool` appear in exactly one sampled log
+(`rename-2-111655.log`, one each); add-flag and long-read ON logs show
+zero module calls yet their counts still rose. `modules_loaded` is
+`n/a` everywhere except `mcp:context7` on the three long-read runs of
+`20261123T110122` (pre-load only — no `load_module` in those logs).
+
+**Conclusion: do not fix here.** No tool Haiku used with the switch
+off is missing with it on: the bench tasks use `read_file`,
+`read_file_full`, `search_files`, `run_shell`, `write_file`,
+`list_dir`, `math_eval`, `edit_file` — all core tools, all still in the
+tool array (`TestBuildToolsWithModules_CoreOnly`). The module index
+adds ≈172 est. tokens and `load_module`/`call_tool` add their
+definitions; neither points at a cause in this branch. The
+`mcp:context7` pre-load on the long-read task **is** a cause for that
+task only: whatever the first message contained (`library`/`docs`,
+whole-word matches, §1.2), the model pre-loaded a module the task did
+not need, and the schema block was re-sent on every request. The
++8 there is the cost of a false-positive pre-load plus normal model
+variance (the OFF long-read logs span 4–8 calls/run by themselves).
+Removing `board`/`card`/`list` (Block 2) removes the false-positive
+mechanism. The rename +18 is unaccounted-by-mechanism: that task's
+tool-by-tool log rows show the same core tools, more iterations;
+Haiku is a small model and path variance between identical-task runs
+of ±10 calls is visible inside a single switch setting (OFF rename
+runs: 3, 13, 14). No code change in this block; the numbers are
+recorded here and the false-positive fix is Block 2.
+
+## 2. Touched functions (by name)
+
+- `collapseFinishedTurns` (`collapse.go:1068`), `collapseMidTurnPrefix`
+  (`:1802`), `handleCollapseContext` (`:1499`) — the three archive
+  sites; `buildCollapseNote` (`:274`), `buildPartialCheckpointBlock`
+  (`:502`), `projectTailAnswerContent` (`:965`) — the three note
+  rendering sites.
+- `finalizeToolResult` (`turn_phases.go:460`, pin at `:552`) — where
+  the `load_module` pin is set; unchanged, but its pin is now honoured
+  by collapse too, so the exemption logic lives in one place.
+- `handleLoadModule` (`modules.go:794`), `ModuleSchemasBlock`
+  (`:741`), `PreloadedSchemas` (`:755`), `flushPendingModuleEvents`
+  (`:853`, announcements at `:872` and `:896`), `refreshMCPModules`
+  (`:319`), `refreshMCPModulesSilently` (`:330`) — the three delivery
+  paths.
+- `MCPModulePreload` (`:699`), `matchMCPKeywords` (`:639`),
+  `defaultMCPKeywords` (`:615`), `mcpKeywordsForServer` (`:628`) — the
+  pre-load trigger.
+- `App.SendOutcome` pre-load block (`app.go:1289-1324`) — the one
+  caller.
+- `appendConv` (`collapse.go:31`) — the funnel; unchanged, but the only
+  insertion point for re-delivered schemas.
+- `buildPreambleForNetwork` / `ensurePreamble` (`app.go:1937`, `:2206`)
+  — where the module table / index is rendered and where the
+  pre-load reason line is shown (Block 2).
+- `defaultMCPKeywords` + `config.MCPModuleKeywords`
+  (`internal/config/config.go:453`) — Block 2's keyword change.
+
+## 3. Blocks with tests
+
+**Block 1 — Loaded modules survive every collapse.**
+Mechanism chosen: **the collapse never archives a loaded module's
+schemas, and the collapse note re-delivers them, appended.** Rationale
+vs. the alternative (re-delivery only): re-delivery alone writes a
+second copy of the schemas — up to ~2 k est. tokens per module — into
+the new tail on every collapse, and duplicates the byte range the
+cache has to re-read. Exclusion alone leaves the schemas at their
+original ked position, which is exactly where they are cached — the
+prefix stays byte-stable and the bytes stay free. The cost is that a
+loaded module's schemas are never shrinkable in-session, which is the
+same cost §7.4 R2 already accepted ("in practice nothing is unloaded
+mid-session") and §7.0.2's saving model already prices ("a loaded
+module is re-sent every turn"). Re-delivery is the belt-and-braces
+half: if a Pinned message is ever evicted by a mechanism other than
+collapse, the note restores it by the same append path. Both, not
+either.
+
+Implementation: at each of the three archive sites, partition W into
+schema-carrying and other messages; archive only the non-schema part
+(the schema messages stay in Conv in place); then extend the note with
+a loaded-modules line and re-append any loaded module whose schemas are
+**not** already present after the collapse (exactly once per module —
+the exactly-once check is by scanning Conv for that module's block, never
+by the registry flag alone). The registry's `loaded` flag is untouched,
+so `call_tool` keeps passing the gate with the schemas still present.
+The cache rule holds: the tool array is never touched, nothing earlier
+than the archive point is inserted, and a re-delivered block is
+appended after the turn (never inserted before it).
+
+Tests (`internal/agent/modules_test.go` and the existing collapse
+test file), each **run first at `6ac5b50` and shown failing**:
+`TestCollapse_LoadedModuleSurvivesTurnEndCollapse`,
+`TestCollapse_LoadedModuleSurvivesMidTurnCollapse`,
+`TestCollapse_LoadedModuleSurvivesCollapseContext`,
+`TestCollapse_NoteListsLoadedModules`,
+`TestCollapse_ReDeliversSchemasExactlyOnce`,
+`TestCollapse_UnloadedModuleNotDelivered`,
+`TestCollapse_CallToolWorksAfterCollapseWithoutReload`.
+
+**Block 2 — Pre-load only when asked for.**
+Built-in keywords become the server name only, per server:
+`trello` → `trello`, `context7` → `context7` (drop `board`,
+`card`, `list`; drop `library`, `docs`, `documentation`,
+`api reference`). The documented keyword sets in
+`docs/configuration.md` and `config.example.json` change to match.
+Matching stays whole-word (`matchMCPKeywords`/`containsWord`,
+unchanged) and stays on the raw `userText` only (unchanged — the
+scan-source question is already correct and is not the bug). The
+module table gains a reason line, populated when the pre-load reason
+is known: `pre-loaded: "trello" in your message` (the rendered index
+line carries which keyword matched; a module loaded by the model shows
+`loaded by you`, a module not loaded shows nothing).
+
+Tests: `TestPreload_ServerNameOnly` (`"show my trello board"` pre-loads
+`mcp:trello`, and the reason line reads
+`pre-loaded: "trello" in your message`);
+`TestPreload_CommonWordsDoNotLoad` (`"add this to my list"`,
+`"checklist"`, `"the board needs a card"` — no four old keywords load
+anything; the memory block / AGENTS.md / retrieval text containing
+`trello` or `list` does not either);
+`TestPreload_UserKeywordWorks` (a keyword the user added in
+`mcp_module_keywords` matches, and the reason line names it).
+
+**Block 3 — Extra tool calls with Haiku.** Findings and conclusion are
+§1.4. No code change.
+
+**Block 4 — No user role for module text.**
+Pre-load: the schemas block is delivered as a **synthetic
+`load_module` conversation** — an assistant message carrying a
+`load_module` tool call, followed by its `role:"tool"` result carrying
+the schemas — appended after the preamble and before the user's first
+message, byte-identical in form to what `handleLoadModule` returns
+(the same `ModuleSchemasBlock` rendering, the same pin). Late-connect:
+no more user-role announcements; the announcement is appended to the
+**next tool result** of the next tool call as a clearly marked part
+(`[module announcement] ...`), and if a turn has no tool result it
+waits for a future tool result; it is never a user message of its own.
+Every existing `appendConv(proxy.Message{Role:"user", ...})` call that
+carries module/MCP-derived text is removed.
+
+Tests: `TestPreload_DeliveredAsSyntheticLoadModule`,
+`TestLateConnect_AnnouncementAppendedToNextToolResult`,
+`TestLateConnect_WaitsForToolResult`,
+`TestNoUserRoleMessageCarriesMCPText` (scans every appended message in
+the pre-load and late-connect paths and asserts no `Role=="user"`
+message contains MCP server-provided text — the fake MCP session
+returns a description containing a marker, and the marker must appear
+only in `role=="tool"` content).
+
+**Block 5 — CHANGELOG `[Unreleased]` lines** for the user-visible
+changes: loaded modules surviving collapse, the pre-load reason line,
+the synthetic-load pre-load, the tool-result announcement.
+
+## 4. Open risks
+
+1. **Mid-turn collapse and schema position.** `collapseMidTurnPrefix`
+   keeps the newest whole rounds; a schema block appended *before* the
+   collapse point is inside W. The exclusions must preserve it *in
+   place*, not move it — a "move to tail" implementation would put the
+   schemas after newer tool calls and, on some providers, reorder the
+   conversation non-sequentially. The same for the synthetic
+   pre-load pair: they must stay at the head of turn 1, never be
+   elided as a mid-turn prefix while the rest of turn 1 survives.
+2. **Exactly-once / race.** A schema block is "in the context" if it
+   is in Conv. Two code paths (exclusion vs. re-delivery) must not both
+   assume responsibility; the check is over Conv content, evaluated
+   once per collapse under the same lock that performs it. The
+   concurrency test already required for the registry (connect during
+   `call_tool`) extends to collapse-during-announce.
+3. **Announcement in a tool result.** Some models follow instructions
+   in tool results less reliably than in user messages — that is the
+   point of the change, but it means the announcement may be *less*
+   effective, and the requirement that it "waits for the next tool
+   result" means a text-only conversation can go a long time without
+   hearing that `mcp:<server>` exists. Accepted: authority is worth
+   the delay.
+4. **Provider pair validity for the synthetic load.** The assistant
+   tool call needs a `tool_calls` entry with a valid id and the result
+   must carry the matching `ToolCallID`, matched exactly as
+   `handleToolCall` does — a malformed pair returns a 400 on some
+   gateways. The byte-identical-form test is the check; it is not a
+   live-model request, so pair validity on a pinned provider stays
+   **unverified** (host command in the final report).
+5. **Block 2 removes a real capability with the false positives.** A
+   task about Trello that does not say "trello" no longer pre-loads
+   `mcp:trello`; the model must call `load_module`. The index line
+   names the server, so this is one tool call, not a failure — but it
+   is a real recall loss, recorded in the CHANGELOG.
+6. **Block 3 is a recorded non-result.** The +25/+30 deltas are
+   explained by false-positive pre-load (long-read) plus model-path
+   variance (rename, add-flag, fix-test). No test pins either way, so
+   a future cause could hide inside "variance". The host bench pair in
+   the final report is the only check; it is not run here (no real
+   model requests in this stage).
