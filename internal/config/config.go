@@ -216,10 +216,17 @@ type Config struct {
 	workDirLoaded bool
 	// ResolvedWorkspace is the one workspace LoadConfig resolved (0.8.11):
 	// positional > --host-workdir > WAKIL_HOST_WORKDIR > cwd, canonicalised.
-	// It is the value every workspace consumer reads instead of re-deriving
-	// the split between WorkDir (direct) and HostWorkDir (docker). The
+	// It is the value every workspace consumer reads (store keys, mount,
+	// resume scope, banner) instead of re-deriving the split between
+	// WorkDir (direct executor root) and HostWorkDir (docker). The
 	// ignoredWorkDirKeys field (below, same block) names the settings that
 	// no longer steer the workspace; see IgnoredWorkDirKeysLine.
+	// NOTE the two direct-mode splits, both deliberate and pre-0.8.11:
+	// --host-workdir steers the workspace keys AND the mount but not the
+	// direct executor root (which follows positional/--workdir/cwd), and
+	// --workdir steers the direct executor root and the store keys but
+	// not the workspace resolution — so in direct mode WorkDir (executor)
+	// and ResolvedWorkspace (keys) can name different folders.
 	ResolvedWorkspace  string
 	ignoredWorkDirKeys []string
 	BaseURL            string `json:"base_url"` // full URL, e.g. "http://proxy-host:11400"
@@ -2370,7 +2377,11 @@ func LoadConfig(argv []string) (Config, error) {
 		cfg.workDirPositional = true
 	}
 
-	cfg.Sandbox.WorkDirExplicit = cfg.WorkDir != ""
+	// WorkDirExplicit tracks the docker in-container path only: the --workdir
+	// flag or a non-empty config-file work_dir. An ignored-as-workspace
+	// work_dir still sets the in-container directory in docker mode, so it
+	// still counts here (it only stopped steering the workspace).
+	cfg.Sandbox.WorkDirExplicit = cfg.WorkDirFlag || cfg.WorkDir != ""
 
 	// Resolve the workspace in one order (0.8.11): positional path,
 	// --host-workdir, WAKIL_HOST_WORKDIR, then the current folder. The

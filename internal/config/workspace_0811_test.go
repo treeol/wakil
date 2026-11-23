@@ -14,16 +14,13 @@ import (
 
 // loadWS loads a config with the given config-file body and flags, with the
 // workspace env vars cleared so each test controls one layer at a time.
+// A test that needs an env value (e.g. WAKIL_HOST_WORKDIR) sets it BEFORE
+// calling loadWS: the helper clears only when the test has NOT set one
+// (the non-empty check below), so the test's value survives; it never
+// re-clears on a later call in the same test.
 func loadWS(t *testing.T, body string, args ...string) Config {
 	t.Helper()
-	// Clear the workspace layers so each test controls exactly one. A
-	// previously Setenv'd value in the same test is restored by t.Setenv
-	// only at test end, and this helper would overwrite it mid-test — so
-	// the per-test env is set AFTER loadWS for the first load and the
-	// helper only clears on the first call. The tests that need an env
-	// value set it before calling loadWS and this helper respects a
-	// non-empty value set by the test: it clears only when the test has
-	// not set one. (t.Setenv pairs: the helper sets, the test sets after.)
+	// Clear the workspace layers so each test controls exactly one.
 	t.Setenv("HOME", t.TempDir())
 	if os.Getenv("WAKIL_HOST_WORKDIR") == "" {
 		t.Setenv("WAKIL_HOST_WORKDIR", "")
@@ -79,20 +76,24 @@ func chdir(t *testing.T, dir string) string {
 // layer, including --host-workdir and the config file.
 func TestWorkspaceOrderPositionalFirst(t *testing.T) {
 	root := t.TempDir()
-	cwd := chdir(t, filepath.Join(root, "cwd"))
+	chdir(t, filepath.Join(root, "cwd"))
 	for _, d := range []string{"pos", "flag", "cfg"} {
 		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
+	real := func(p string) string {
+		r, err := filepath.EvalSymlinks(p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
 	body := `{"base_url":"http://proxy:11400","host_work_dir":"` + filepath.Join(root, "cfg") + `"}`
 	cfg := loadWS(t, body, filepath.Join(root, "pos"), "--host-workdir", filepath.Join(root, "flag"))
-	_ = cwd
-	if cfg.HostWorkDir != filepath.Join(root, "pos") && cfg.HostWorkDir != filepath.Join(root, "flag") {
-		t.Errorf("HostWorkDir = %q, want positional %q or flag %q", cfg.HostWorkDir, filepath.Join(root, "pos"), filepath.Join(root, "flag"))
-	}
-	if cfg.HostWorkDir != filepath.Join(root, "pos") {
-		t.Errorf("positional must win over --host-workdir: HostWorkDir = %q", cfg.HostWorkDir)
+	pos, flag := real(filepath.Join(root, "pos")), real(filepath.Join(root, "flag"))
+	if cfg.HostWorkDir != pos {
+		t.Errorf("positional must win over --host-workdir: HostWorkDir = %q, want %q (flag was %q)", cfg.HostWorkDir, pos, flag)
 	}
 }
 
@@ -105,10 +106,16 @@ func TestWorkspaceOrderHostWorkDirFlag(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	flagReal, err := filepath.EvalSymlinks(filepath.Join(root, "flag"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("WAKIL_HOST_WORKDIR", filepath.Join(root, "env"))
+	// Note: loadWS is called AFTER this Setenv, and its env guard respects
+	// this non-empty value (clears only the unset layers).
 	cfg := loadWS(t, "", "--host-workdir", filepath.Join(root, "flag"))
-	if cfg.HostWorkDir != filepath.Join(root, "flag") {
-		t.Errorf("HostWorkDir = %q, want the flag %q", cfg.HostWorkDir, filepath.Join(root, "flag"))
+	if cfg.HostWorkDir != flagReal {
+		t.Errorf("HostWorkDir = %q, want the flag %q", cfg.HostWorkDir, flagReal)
 	}
 }
 
@@ -122,10 +129,14 @@ func TestWorkspaceOrderHostWorkDirEnv(t *testing.T) {
 	if err := os.Mkdir(envDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	envReal, err := filepath.EvalSymlinks(envDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("WAKIL_HOST_WORKDIR", envDir)
 	cfg := loadWS(t, "")
-	if cfg.HostWorkDir != envDir {
-		t.Errorf("HostWorkDir = %q, want the env %q", cfg.HostWorkDir, envDir)
+	if cfg.HostWorkDir != envReal {
+		t.Errorf("HostWorkDir = %q, want the env %q", cfg.HostWorkDir, envReal)
 	}
 }
 
@@ -174,9 +185,25 @@ func TestWorkspaceIgnoresConfigKeys(t *testing.T) {
 			t.Errorf("warning must be one line: %q", line)
 		}
 	}
-	// Direct mode: config work_dir ignored as well.
-	cfg := loadWS(t, `{"base_url":"http://proxy:11400","work_dir":"`+cfgDir+`"}`, "--sandbox", "direct")
-	_ = cfg
+	// Direct mode: config work_dir ignored as well — the resolved workspace
+	// is the cwd and the executor root follows it (empty WorkDir = cwd).
+	dc := loadWS(t, `{"base_url":"http://proxy:11400","work_dir":"`+cfgDir+`"}`, "--sandbox", "direct")
+	if dc.WorkDir != "" {
+		t.Errorf("direct: WorkDir = %q, want empty (cwd fallback; config work_dir ignored)", dc.WorkDir)
+	}
+	if dc.ResolvedWorkspace != cwd {
+		t.Errorf("direct: ResolvedWorkspace = %q, want cwd %q", dc.ResolvedWorkspace, cwd)
+	}
+	if dc.IgnoredWorkDirKeysLine() == "" {
+		t.Error("direct: want the ignored-keys warning")
+	}
+	// WorkDirExplicit is true here: the config-file work_dir sets the
+	// docker in-container path even though it no longer steers the
+	// workspace. Direct mode has no in-container path, but the flag is
+	// set before the direct branch runs, so it stays true.
+	if !dc.Sandbox.WorkDirExplicit {
+		t.Error("direct: WorkDirExplicit should stay true for a config work_dir (it still sets the docker in-container path)")
+	}
 }
 
 // TestWorkspaceIgnoresWakilWorkdirEnv: WAKIL_WORKDIR gets the same ignored

@@ -46,18 +46,39 @@ func TestScreenCostLineWhileToolOutputExpanded(t *testing.T) {
 	})
 
 	screen := h.raw()
-	var costLine string
+	// The raw capture is the line-diff stream, not a final screen: a line
+	// whose bytes are identical across two consecutive paints is emitted
+	// twice (renderer redraw), so the cost text legitimately appears on
+	// two captured "lines" while being drawn once. The invariant that
+	// matters (the bug shape): the cost line must sit on its own screen
+	// line, never inside a streamed text line. We check: every captured
+	// line carrying it carries ONLY it (plus padding), and the tool
+	// output text stays intact on its own lines.
+	var costLines []string
 	for _, row := range strings.Split(screen, "\n") {
 		if strings.Contains(row, "mashūra panel:") {
-			costLine = row
+			costLines = append(costLines, row)
 		}
 	}
-	if costLine == "" {
+	if len(costLines) == 0 {
 		t.Fatalf("no screen line carries the cost line:\n%s", screen)
 	}
+	costLine := costLines[0]
 	for _, overlap := range []string{"op-9", "oracle suggests", "toolcache", "final answer"} {
 		if strings.Contains(costLine, overlap) {
 			t.Errorf("cost line shares a screen line with %q: %q", overlap, costLine)
+		}
+	}
+	// Every drawn instance of the cost line is just the cost line (plus
+	// box padding): a joined instance would carry streamed text.
+	if len(costLines) > 1 {
+		t.Logf("cost line drawn %d times in the raw capture (%d line-diff paints); all are padding-only rows", len(costLines), len(costLines))
+	}
+	for i, row := range costLines {
+		// Strip the box border characters the frame draws around the line.
+		trimmed := strings.Trim(row, " \t│\r")
+		if trimmed != "mashūra panel: $1.4447 total (3 calls)" {
+			t.Errorf("cost line #%d carries more than the cost text: %q (trimmed %q)", i, row, trimmed)
 		}
 	}
 	// The expanded tool output is intact, line for line.
@@ -65,12 +86,5 @@ func TestScreenCostLineWhileToolOutputExpanded(t *testing.T) {
 		if !strings.Contains(screen, frag) {
 			t.Errorf("tool output fragment missing after the cost line: %q\n%s", frag, screen)
 		}
-	}
-	if strings.Count(screen, "mashūra panel: $1.4447 total (3 calls)") != 1 {
-		// The line-diff renderer pastes line fragments across frames, so the
-		// settled screen can paste the cost text twice. The invariant that
-		// matters: exactly ONE screen line carries it (checked above).
-		t.Logf("cost text appears %d times in the raw capture (line-diff pasting); one line still carries it: %q",
-			strings.Count(screen, "mashūra panel: $1.4447 total (3 calls)"), costLine)
 	}
 }

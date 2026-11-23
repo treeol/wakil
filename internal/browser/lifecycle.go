@@ -166,6 +166,10 @@ func (m *Manager) launchSession() (*session, error) {
 	for attempt := 0; attempt < cdpConnectAttempts; attempt++ {
 		allocCtx, allocCancel := remote.NewAllocator(context.Background(), cdpURL)
 		browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+		// Per-attempt session: a failed attempt cancels only ITS chromedp
+		// contexts below — never the shared launcher teardown, which kills
+		// the browser and tunnel (session.close would run it). Teardown
+		// runs once, at the end, if every attempt failed.
 		sess := &session{ctx: browserCtx, ctxCancel: browserCancel, allocCancel: allocCancel, teardown: teardown}
 
 		done := make(chan error, 1)
@@ -176,9 +180,12 @@ func (m *Manager) launchSession() (*session, error) {
 				return sess, nil
 			}
 			lastErr = err
-			_ = sess.close()
+			browserCancel()
+			allocCancel()
 		case <-lctx.Done():
-			_ = sess.close()
+			browserCancel()
+			allocCancel()
+			_ = teardown()
 			return nil, fmt.Errorf("timed out connecting to Chromium at %s", cdpURL)
 		}
 		if lctx.Err() != nil {

@@ -1351,10 +1351,13 @@ func (a *App) emitCollapseNotice(text string) {
 
 // emitNotice is the one path for a status line that must not land in the
 // assistant or reasoning stream: SysNoteMsg when an event sink is attached,
-// otherwise a line on a.Out (headless mode, tests). The fallback line is
-// dimmed only when a.Out is a terminal and NO_COLOR is not set to a non-empty
-// value (https://no-color.org); in a pipe, a file or a test buffer it carries
-// no escape sequence.
+// otherwise a line on a.Out (headless mode, tests). Callers pass PLAIN text:
+// styled (Yellow/Dim) notices go through the sink path verbatim and the TUI
+// renders them; the zero-sink fallback adds Dim only when a.Out is a
+// terminal and NO_COLOR is unset, so a non-terminal fallback carries no
+// escape sequence. A nil a or a nil/outless a.Out drops the notice
+// (printMashuraPanelOutcome dropped its a.Out==nil guard, so nil-safety is
+// here, not at the call site).
 //
 // STATUS-LINE WRITERS (audit, 0.8.11): every fmt.Fprintln(a.Out, …) status
 // or cost writer that can fire WHILE output is on screen goes through this
@@ -1369,14 +1372,21 @@ func (a *App) emitCollapseNotice(text string) {
 // Stayed on a.Out (idle point, no screen race): prune/collapse warnings
 // (prune.go, collapse.go — turn-end paths), compact.go summaries,
 // styleguides, tool_handlers, subagent progress (before any stream),
-// turn_phases tool lines (main goroutine at idle). collapse.go:1369 is
-// emitNotice's own fallback.
+// turn_phases tool lines (main goroutine at idle).
 func (a *App) emitNotice(text string) {
+	if a == nil {
+		// A nil App is a test-harness artifact; there is nothing to write to.
+		return
+	}
 	a.callbackMu.Lock()
 	sink := a.EventSink
 	a.callbackMu.Unlock()
 	if sink != nil {
 		sink(SysNoteMsg{Text: text, Notice: true})
+		return
+	}
+	if a.Out == nil {
+		// No sink and no writer (closed headless pipe): drop rather than panic.
 		return
 	}
 	if noticeStyled(a.Out) {

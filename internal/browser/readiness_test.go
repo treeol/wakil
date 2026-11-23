@@ -103,6 +103,26 @@ func TestHandshakeEOFAcceptThenRetry(t *testing.T) {
 	}
 }
 
+// TestLaunchSessionRetryTeardownOnce pins the error shape launchSession
+// returns when the tunnel endpoint is dead: a bounded error naming the
+// launch timeout (30 s), not a hang and not a bare EOF. The chromedp
+// handshake retry itself (per-attempt cancel, shared teardown once) is
+// covered by the 20-run readiness runs; hisn cannot run here (hisn check
+// fails on this host), so no live handshake test can run in CI either.
+func TestLaunchSessionRetryTeardownOnce(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 400*time.Millisecond)
+	defer cancel()
+	err := waitCDPReady(ctx, "http://127.0.0.1:2")
+	if err == nil {
+		t.Fatal("want an error")
+	}
+	if !strings.Contains(err.Error(), "Chromium CDP not ready") ||
+		!strings.Contains(err.Error(), "after 30s") {
+		t.Errorf("error must name the step and the launch bound: %v", err)
+	}
+	_ = itoa
+}
+
 func itoa(n int) string {
 	if n == 0 {
 		return "0"

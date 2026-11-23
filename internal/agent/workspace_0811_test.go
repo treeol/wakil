@@ -43,10 +43,17 @@ func TestAllConsumersSameWorkspace0811(t *testing.T) {
 	if k.ChatPath != real {
 		t.Errorf("ResolveWorkspaceKeys ChatPath = %q, want %q", k.ChatPath, real)
 	}
-	// The session scope that main.go builds for --resume must be the same
-	// resolved path (PrintSessionsWithScope scopes by it).
+	// The --resume session scope main.go builds from ResolvedWorkspace is
+	// the same resolved path: a scoped listing under the scope sees
+	// sessions written under that workspace, and the scope's workspace
+	// key equals the keys report's FullKey.
 	scope := SessionScope{Workspace: cfg.ResolvedWorkspace}
-	_ = scope
+	if scope.Workspace != k.ChatPath {
+		t.Errorf("--resume scope workspace %q != keys report ChatPath %q", scope.Workspace, k.ChatPath)
+	}
+	if WorkspaceKey(scope.Workspace) != k.FullKey {
+		t.Errorf("scope key %q != keys report FullKey %q", WorkspaceKey(scope.Workspace), k.FullKey)
+	}
 	// SessionWorkspace (the App accessor) is ProjectDir for a loaded config.
 	app := &App{Cfg: cfg}
 	if got := app.SessionWorkspace(); got != real {

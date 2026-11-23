@@ -172,11 +172,44 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 	if testing.Testing() && os.Getenv(liveEnv) != "1" {
 		return "", nil, nil, errLaunchInTest
 	}
-	userDataDir, err := os.MkdirTemp("", "wakil-chrome-profile-")
-	if err != nil {
-		return "", nil, nil, fmt.Errorf("create user-data-dir: %w", err)
-	}
 
+	// NOTE: each attempt creates its own profile dir inside the loop (the
+	// previous attempt's teardown removed its dir), so no upfront dir here.
+	triedMsg := "PATH search (google-chrome, chromium, etc.)"
+	if l.browserPath != "" {
+		triedMsg = fmt.Sprintf("browser_path=%q", l.browserPath)
+	}
+	// Bounded retry (0.8.11): a transient first-Run failure gets one more
+	// attempt with a FRESH process + context (the pipe binds the process),
+	// inside the 15 s-per-attempt limit, not a re-Run on a spent context.
+	// Each attempt gets its own freshly-created profile dir: attempt 1's
+	// teardown REMOVES userDataDir, so reusing the path would lose the
+	// MkdirTemp permissions/uniqueness (and the dir may not exist at all).
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		dir, err := os.MkdirTemp("", "wakil-chrome-profile-")
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("create user-data-dir: %w", err)
+		}
+		// Allocator options are rebuilt per attempt so UserDataDir points
+		// at THIS attempt's fresh dir.
+		attemptOpts := buildLocalAllocOpts(l, dir)
+		_, sess, runErr := launchRunOnce(attemptOpts, dir, triedMsg)
+		if runErr == nil {
+			return "", nil, sess, nil
+		}
+		lastErr = runErr
+	}
+	// The returned error names the LAST failure (attempt 2); the first
+	// failure was already torn down with its profile dir. Both attempts
+	// are bounded (15 s each + teardown), no shared deadline — worst case
+	// ~30 s + teardown waits, matching the launch bound in the worst case.
+	return "", nil, nil, lastErr
+}
+
+// buildLocalAllocOpts builds the ExecAllocator options for one local launch
+// attempt against userDataDir: headless on a private pipe, no TCP port.
+func buildLocalAllocOpts(l *localLauncher, userDataDir string) []chromedp.ExecAllocatorOption {
 	allocOpts := append(chromedp.DefaultExecAllocatorOptions[:],
 		chromedp.Flag("headless", "new"),
 		// The DevTools channel is a private pipe (chromedp's default): no TCP
@@ -196,27 +229,7 @@ func (l *localLauncher) launch(_ context.Context) (string, func() error, *sessio
 	if exe := resolveBrowser(l.browserPath); exe != "" {
 		allocOpts = append(allocOpts, chromedp.ExecPath(exe))
 	}
-
-	triedMsg := "PATH search (google-chrome, chromium, etc.)"
-	if l.browserPath != "" {
-		triedMsg = fmt.Sprintf("browser_path=%q", l.browserPath)
-	}
-	// Bounded retry (0.8.11): a transient first-Run failure gets one more
-	// attempt with a FRESH process + context (the pipe binds the process),
-	// inside the 15 s-per-attempt limit, not a re-Run on a spent context.
-	var lastErr error
-	for attempt := 0; attempt < 2; attempt++ {
-		_, sess, runErr := launchRunOnce(allocOpts, userDataDir, triedMsg)
-		if runErr == nil {
-			return "", nil, sess, nil
-		}
-		lastErr = runErr
-	}
-	// The last teardown removed userDataDir once; a second attempt reuses
-	// the same (now removed) dir — its removal is idempotent, and the
-	// error below still names the first failure.
-	_ = os.RemoveAll(userDataDir)
-	return "", nil, nil, lastErr
+	return allocOpts
 }
 
 // localExitWait bounds how long direct-mode teardown waits for Chromium to exit
