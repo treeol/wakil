@@ -1229,20 +1229,22 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 		if s.Notice != "" {
 			a.printSubagentNotice(s.Notice)
 		} else if s.Err != "" {
-			// Distinguish error types for accurate warnings.
+			// Distinguish error types for accurate warnings. Notice path:
+			// commitAsyncSubagentEffects runs on the turn goroutine at
+			// delivery, where the stream may already be running again.
 			switch {
 			case strings.Contains(s.Err, "timed out"):
-				fmt.Fprintln(a.Out, Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  the child did not return within the configured timeout"))
+				a.emitNotice(Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("  the child did not return within the configured timeout"))
 			case strings.Contains(s.Err, "panicked"):
-				fmt.Fprintln(a.Out, Yellow("⚠ subagent panicked on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  the child worker crashed"))
+				a.emitNotice(Yellow("⚠ subagent panicked on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("  the child worker crashed"))
 			case strings.Contains(s.Err, "incomplete"):
-				fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope"))
+				a.emitNotice(Yellow("⚠ subagent incomplete on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope"))
 			default:
-				fmt.Fprintln(a.Out, Yellow("⚠ subagent failed on task: "+Truncate(s.Task, 80)))
-				fmt.Fprintln(a.Out, Yellow("  error: "+s.Err))
+				a.emitNotice(Yellow("⚠ subagent failed on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("  error: "+s.Err))
 			}
 		}
 	}

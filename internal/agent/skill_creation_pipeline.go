@@ -750,15 +750,17 @@ func (a *App) defaultSkillReview(ctx context.Context, question, briefing string)
 		// any of it to a third-party search.
 	}
 	raw := counsel.RunPanel(ctx, panel.Models, panel.Mode, question, briefing, ccfg, keys)
+	// Notice path, not a.Out: this runs in the review flow where output
+	// may already be streaming (same class as printMashuraPanelOutcome).
 	for _, r := range raw {
 		if r.Void {
-			fmt.Fprintln(a.Out, counsel.VoidLine(r))
+			a.emitNotice(counsel.VoidLine(r))
 		}
 		if r.BudgetStopped {
-			fmt.Fprintln(a.Out, fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
+			a.emitNotice(fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
 		}
 	}
-	fmt.Fprintln(a.Out, counsel.PanelOpCostLine(raw))
+	a.emitNotice(counsel.PanelOpCostLine(raw))
 	var out []skillReviewResult
 	for _, r := range raw {
 		a.RecordOracleCostFor(r.Model, r.Usage)

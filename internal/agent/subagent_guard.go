@@ -297,11 +297,13 @@ func partialNotice(chatID string, s SubagentSummary) string {
 }
 
 // printSubagentNotice writes a notice to the chat. MAIN GOROUTINE ONLY.
+// Notice path (0.8.11): callers run at delivery points where the turn may
+// be streaming again, so the line must not land on the streamed output.
 func (a *App) printSubagentNotice(notice string) {
 	if notice == "" {
 		return
 	}
-	fmt.Fprintln(a.Out, Yellow("⚠ "+notice))
+	a.emitNotice(Yellow("⚠ " + notice))
 }
 
 // subagentDoneErr is the Err string for SubagentDoneMsg / async results.

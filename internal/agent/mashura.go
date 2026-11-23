@@ -565,7 +565,7 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 		if reason == "stopping" {
 			why = "session shutting down"
 		}
-		fmt.Fprintln(a.Out, Dim("· "+why+" — running mashūra synchronously"))
+		a.emitNotice(Dim("· " + why + " — running mashūra synchronously"))
 		// Same bounded provider timeout as the async worker path (mashuraTimeout
 		// never returns 0 — ), with the debate 2× up-front so runDebate's
 		// derived 2× wall-time deadline isn't clipped to 1×.
@@ -585,19 +585,24 @@ func (a *App) runMashuraCore(ctx context.Context, name string, tc proxy.ToolCall
 // NOT COMPLETED line per budget-stopped member (always, not debug-only),
 // and the per-operation cost line, after every RunPanel call in
 // runMashuraCore (sync branch, async worker, sync fallback branch).
+//
+// Every line goes through the notice path (emitNotice): the async worker
+// calls this while the turn is still streaming, and a direct Fprintln on
+// the shared output races the streamed answer (0.8.11 — the cost line was
+// drawn on top of an expanded tool output).
 func printMashuraPanelOutcome(a *App, results []counsel.PanelMemberResult) {
-	if a == nil || a.Out == nil {
+	if a == nil {
 		return
 	}
 	for _, r := range results {
 		if r.Void {
-			fmt.Fprintln(a.Out, counsel.VoidLine(r))
+			a.emitNotice(counsel.VoidLine(r))
 		}
 		if r.BudgetStopped {
-			fmt.Fprintln(a.Out, fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
+			a.emitNotice(fmt.Sprintf("NOT COMPLETED %s review budget reached — what was obtained is kept", r.PrefixedModel))
 		}
 	}
-	fmt.Fprintln(a.Out, counsel.PanelOpCostLine(results))
+	a.emitNotice(counsel.PanelOpCostLine(results))
 }
 
 // recordMashuraResults commits cost + grounding for a synchronously-run panel
@@ -1245,6 +1250,7 @@ func (a *App) mashuraExpandDir(ctx context.Context, dirPath string) ([]string, e
 
 // mashuraLogReceipts emits read receipts to the step log (if in a workflow) and
 // to a.Out as a dim status line. Called after the user approves the gate.
+// Notice path (0.8.11): the gate approve runs mid-turn.
 func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMeta) {
 	if len(receipts) == 0 {
 		return
@@ -1254,7 +1260,7 @@ func (a *App) mashuraLogReceipts(ctx context.Context, receipts []mashuraSourceMe
 		parts = append(parts, fmt.Sprintf("%s (%d bytes)", r.Path, r.Bytes))
 	}
 	msg := "[mashura] sent: " + strings.Join(parts, ", ")
-	fmt.Fprintln(a.Out, Dim("· "+msg))
+	a.emitNotice(Dim("· " + msg))
 	if a.Workflow != nil && a.Exec != nil {
 		if content, e := a.Exec.ReadFile(ctx, a.Workflow.PlanPath); e == nil {
 			if _, err := a.Exec.WriteFile(ctx, a.Workflow.PlanPath, workflow.WFAppendToStepLog(content, msg)); err != nil {
@@ -1816,7 +1822,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		if reason != "" {
 			line += " (auto not run: " + reason + ")"
 		}
-		fmt.Fprintln(a.Out, Dim(line))
+		a.emitNotice(Dim(line))
 		a.struggleSuggested[symptom] = true
 		if reason == "" {
 			eval.ActionTaken = "suggest hint printed"
@@ -1870,7 +1876,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 		// Members are the effective panel size; the round is single-pass
 		// (A2) even at high — reasoning still follows the level.
 		_, members, _ := a.effectiveMashura("debug")
-		fmt.Fprintln(a.Out, fmt.Sprintf("⚡ struggle detected: starting mashura debug (level %s, %d members, single pass, round %d of %d)",
+		a.emitNotice(fmt.Sprintf("⚡ struggle detected: starting mashura debug (level %s, %d members, single pass, round %d of %d)",
 			level, len(members), a.counselCalls, capMax))
 		// Bypass the confirm gate when the session is also in /auto mode.
 		a.autoCounselSkipGate = skipGate
@@ -1901,7 +1907,7 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 				a.counselCalls--
 				a.lastPanelVoid = false
 				void = true
-				fmt.Fprintln(a.Out, Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
+				a.emitNotice(Yellow("⚠ auto-counsel: VOID reply — round not counted (cap unchanged)"))
 				eval.ActionTaken = fmt.Sprintf("auto-fired mashura__debug (VOID, round not counted; cap %d/%d)", a.counselCalls, capMax)
 			}
 		}
@@ -1960,10 +1966,10 @@ func (a *App) maybeSuggestDebug(ctx context.Context) {
 			Result:       result,
 			OriginChatID: a.chatID(),
 		})
-		fmt.Fprintln(a.Out, Dim(fmt.Sprintf("· auto-counsel %d/%d: %s",
+		a.emitNotice(Dim(fmt.Sprintf("· auto-counsel %d/%d: %s",
 			a.counselCalls, capMax, Truncate(result, 120))))
 		if a.counselCalls >= capMax {
-			fmt.Fprintln(a.Out, Dim(fmt.Sprintf(
+			a.emitNotice(Dim(fmt.Sprintf(
 				"· counsel cap reached (%d/%d) — reverting to suggest for this turn",
 				a.counselCalls, capMax)))
 		}

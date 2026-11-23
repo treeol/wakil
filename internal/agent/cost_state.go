@@ -53,7 +53,9 @@ func (a *App) checkBudgetExhausted() bool {
 	total, _ := a.Costs.Snapshot()
 	if total >= a.BudgetUSD {
 		a.budgetExhausted.Store(true)
-		fmt.Fprintln(a.Out, Yellow(fmt.Sprintf(
+		// Notice path (0.8.11): checkBudgetExhausted runs mid-stream (from
+		// streamTurn and from cost-completion paths).
+		a.emitNotice(Yellow(fmt.Sprintf(
 			"⚠ session budget exhausted: $%.4f spent (budget $%.2f) — further inference will be blocked",
 			total, a.BudgetUSD)))
 		return true

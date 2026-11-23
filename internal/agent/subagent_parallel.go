@@ -489,7 +489,7 @@ func renderSubagentResult(a *App, task string, summary SubagentSummary, filesCha
 }
 
 // warnSubagentIncomplete prints the loud incomplete warning. MAIN
-// GOROUTINE ONLY (writes a.Out — must not run on a worker). A harness notice
+// GOROUTINE ONLY (notice path — must not run on a worker). A harness notice
 // (off-task twice / partial that cannot be split further) replaces the generic
 // line: it names the decision the USER has to make. The wording never invites
 // the parent to take the work over.
@@ -501,8 +501,8 @@ func warnSubagentIncomplete(a *App, task string, summary SubagentSummary) {
 	if summary.Status != "incomplete" {
 		return
 	}
-	fmt.Fprintln(a.Out, Yellow("⚠ subagent incomplete on task: "+Truncate(task, 80)))
-	fmt.Fprintln(a.Out, Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope; the harness refuses identical re-dispatch"))
+	a.emitNotice(Yellow("⚠ subagent incomplete on task: "+Truncate(task, 80)))
+	a.emitNotice(Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope; the harness refuses identical re-dispatch"))
 }
 
 // sendSubagentFinished emits the display-only early completion event from the

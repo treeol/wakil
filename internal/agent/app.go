@@ -1149,7 +1149,7 @@ func (a *App) setChatID(chatID string) {
 		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 		defer cancel()
 		if err := b.BindChat(ctx, chatID); err != nil && a.Out != nil {
-			fmt.Fprintln(a.Out, Yellow("⚠ sandbox: "+err.Error()))
+			a.emitNotice(Yellow("⚠ sandbox: " + err.Error()))
 		}
 	}
 }
@@ -1518,7 +1518,7 @@ func (a *App) WarnContextPressure() {
 	}
 	a.CtxPressureWarned = true
 	a.stateMu.Unlock()
-	fmt.Fprintln(a.Out, Yellow(fmt.Sprintf(
+	a.emitNotice(Yellow(fmt.Sprintf(
 		"⚠ context pressure: ~%dk of %dk usable tokens in use (n_ctx %dk) — consider /compact or a fresh chat",
 		used/1000, usable/1000, lim.NCtx/1000)))
 }
