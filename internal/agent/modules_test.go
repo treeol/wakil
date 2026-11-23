@@ -1448,6 +1448,74 @@ func TestCollapse_LoadedModuleSurvivesTurnEndCollapse(t *testing.T) {
 	}
 }
 
+// TestPreloadPair_BeforeUserMessageSurvivesTurn1Collapse: the synthetic
+// pair is appended before the first user message with Turn 0, so it
+// never becomes the "U" of turn 1's span. Collapsing turn 1 keeps the
+// real user message, the pair, and pair validity.
+func TestPreloadPair_BeforeUserMessageSurvivesTurn1Collapse(t *testing.T) {
+	mcp := newFakeMCPManager(connectedServer("trello", &fakeMCPSession{}, "get_boards"))
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextModules = "on"
+	app.MCP = mcp
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
+	app.Cfg.ContextCollapseMinBytes = 20
+
+	pair := app.mcpPreloadPair("show my trello board")
+	if len(pair) != 2 {
+		t.Fatalf("pair = %d, want 2", len(pair))
+	}
+	// SendOutcome appends the pair as Turn -1 (normalised to 0).
+	for _, m := range pair {
+		app.appendConv(m)
+	}
+	app.appendConv(proxy.Message{Role: "user", Content: StrPtr("show my trello board"), Turn: 1})
+	app.appendConv(proxy.Message{Role: "assistant", Content: StrPtr("done"), Turn: 1})
+	for i := range app.Conv {
+		if app.Conv[i].Turn == 0 {
+			continue
+		}
+		app.Conv[i].Turn = 1
+	}
+	app.turnSeq = 2
+	// Push enough W bytes through the span so the min-bytes rule fires.
+	app.Conv = append(app.Conv, proxy.Message{Role: "tool", ToolCallID: "x", Name: "read_file", Content: StrPtr(bigContent), Turn: 1})
+	app.appendConv(proxy.Message{Role: "assistant", Content: StrPtr("done"), Turn: 1})
+	// Open a second, in-progress turn so collapseFinishedTurns is
+	// allowed to target turn 1 (Rule 6 blocks the most recent turn).
+
+	// U must be the real user message, not the synthetic assistant.
+	spans := turnSpansFromSlice(app.Conv)
+	if spans[1].first != 2 {
+		t.Fatalf("turn 1 span must start at the user message (index 2); spans=%v", spans)
+	}
+
+	app.collapseFinishedTurns()
+	if n, _ := app.CollapsedCount(); n != 1 {
+		t.Fatalf("turn 1 must collapse, got %d", n)
+	}
+	proj := app.contextProjection()
+	user := false
+	for _, m := range proj {
+		if m.Role == "user" && strings.Contains(DerefStr(m.Content), "show my trello board") {
+			user = true
+		}
+	}
+	if !user {
+		t.Fatal("the real user message must survive turn-1 collapse")
+	}
+	if !findSchemaBlock(proj, "mcp:trello") {
+		t.Fatal("the synthetic pre-load pair's schemas are the preserved payload")
+	}
+	assertNoOrphanedToolCalls(t, proj)
+	app.stateMu.RLock()
+	rec := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if rec.Archive != "" {
+		os.Remove(rec.Archive)
+	}
+}
+
 // TestCollapse_CoreToolPinnedResultsStillCollapse: a pinned tool result
 // that is NOT a load_module schema message (subagent results are pinned
 // too) must not be made uncollapsible — only load_module schemas are

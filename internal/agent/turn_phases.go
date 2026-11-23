@@ -556,6 +556,14 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// the returned text is always the unchanged tool result; the
 			// suggestion is a status notice at turn end, never in-band.
 			text = a.appendSkillHint(tc.Function.Name, result.ok, text)
+			// A queued module announcement rides on the next tool result
+			// as a clearly marked part, never as its own user-role
+			// message (Block 4, Stage 1 fixes round 2): the text is
+			// server-derived and must not carry user authority. If a
+			// turn has no tool result it waits for the next one.
+			if ann := a.takeModuleAnnouncement(); ann != "" {
+				text += "\n\n[module announcement]\n" + ann
+			}
 			a.appendConv(proxy.Message{
 				Role:       "tool",
 				ToolCallID: tc.ID,

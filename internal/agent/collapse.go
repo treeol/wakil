@@ -43,6 +43,16 @@ func (a *App) appendConv(msgs ...proxy.Message) {
 			msgs[i].Turn = a.curTurn
 		}
 	}
+	// The synthetic pre-load pair is marked Turn:-1 by SendOutcome (it
+	// must stay out of turn spans so it never becomes the "U" of turn
+	// 1). Normalise it to Turn 0 here, after stamping, so the message
+	// keeps a Turn the projection skips and provider code reads
+	// as preamble-adjacent.
+	for i := range msgs {
+		if msgs[i].Turn == -1 {
+			msgs[i].Turn = 0
+		}
+	}
 	a.convMu.Lock()
 	convIdx := len(a.Conv)
 	a.Conv = append(a.Conv, msgs...)
@@ -275,8 +285,10 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	toolCounts := map[string]int{}
 	autoRounds := countAutoRounds(w)
 	loadedMods := []string{}
+	seenMods := map[string]bool{}
 	for _, m := range w {
-		if name, ok := moduleSchemaName(m); ok {
+		if name, ok := moduleSchemaName(m); ok && !seenMods[name] {
+			seenMods[name] = true
 			loadedMods = append(loadedMods, name)
 		}
 	}
@@ -2050,7 +2062,15 @@ func messageSize(m proxy.Message) int {
 // projected payload by identity, never a content search, never the
 // registry flag alone.
 func isLoadModuleSchemas(m proxy.Message) bool {
-	return m.Role == "tool" && m.Name == "load_module" && m.Pinned
+	if m.Role != "tool" || m.Name != "load_module" || !m.Pinned {
+		return false
+	}
+	// A schemas message carries the harness-rendered
+	// `Module "name" loaded:` header. Error results of load_module are
+	// pinned too (finalizeToolResult pins the name), but they are NOT
+	// schemas and are never preserved across collapse.
+	_, ok := moduleSchemaName(m)
+	return ok
 }
 
 // moduleSchemaName extracts the module name from a schemas message's
@@ -2058,7 +2078,7 @@ func isLoadModuleSchemas(m proxy.Message) bool {
 // name is safe to compare exactly; a message whose header does not
 // parse is not a schemas message.
 func moduleSchemaName(m proxy.Message) (string, bool) {
-	if !isLoadModuleSchemas(m) {
+	if m.Role != "tool" || m.Name != "load_module" {
 		return "", false
 	}
 	c := DerefStr(m.Content)

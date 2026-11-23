@@ -851,14 +851,16 @@ func (a *App) mcpPreloadPair(userText string) []proxy.Message {
 		if !ok {
 			continue
 		}
-		callID := "preload-" + name
+		callID := syntheticCallID(name)
+		argsJSON, _ := json.Marshal(map[string]string{"name": name})
 		pair = append(pair, proxy.Message{
 			Role: "assistant",
 			ToolCalls: []proxy.ToolCall{{
 				ID:       callID,
 				Type:     "function",
-				Function: proxy.FunctionCall{Name: "load_module", Arguments: `{"name":"` + name + `"}`},
+				Function: proxy.FunctionCall{Name: "load_module", Arguments: string(argsJSON)},
 			}},
+			Turn: -1,
 		})
 		pair = append(pair, proxy.Message{
 			Role:       "tool",
@@ -866,9 +868,27 @@ func (a *App) mcpPreloadPair(userText string) []proxy.Message {
 			Name:       "load_module",
 			Content:    StrPtr(block),
 			Pinned:     true,
+			Turn:       -1,
 		})
 	}
 	return pair
+}
+
+// syntheticCallID returns a stable, provider-safe synthetic tool call id
+// ("preload-" + name with every non-alphanumeric dashed or underscored
+// char replaced by '-'), so the CHAT pair never collides with a real
+// call id and never carries a ':' or other suspect char into the wire.
+func syntheticCallID(name string) string {
+	s := make([]byte, 0, len(name))
+	for _, r := range name {
+		switch {
+		case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_':
+			s = append(s, byte(r))
+		default:
+			s = append(s, '-')
+		}
+	}
+	return "preload-" + string(s)
 }
 
 // moduleCapabilityLine returns the preamble inventory line for a conditional

@@ -1284,28 +1284,27 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 		stored = memCtx + "\n" + stored
 	}
 	// Context modules MCP pre-load: on the first request of a session
-	// (preambleDay is empty), match the task text against MCP server
-	// keywords and pre-load matching modules BEFORE ensurePreamble so the
-	// pre-loaded state is reflected in messages[0]. Pre-loaded schemas are
-	// delivered as a synthetic load_module conversation appended after
-	// ensurePreamble: an assistant tool call and its pinned role:"tool"
-	// result, byte-identical in form to what handleLoadModule returns.
-	// Never a user-role message: the schemas are MCP-server-controlled
-	// text and must not reach the model with user authority. This is a
-	// turn-1-only pre-load; turn 2+ matches go through load_module (one
-	// round trip).
-	preloadPair := a.mcpPreloadPair(userText)
+	// (preambleDay is empty), the silent refresh below folds any server
+	// that connected before this turn into the registry (its index line
+	// is framed by ensurePreamble, so no announcement runs on turn 1).
+	// After that refresh — before ensurePreamble — the syntactic pair is
+	// built from the final registry state, so a late-but-present server
+	// is both marked loaded and given its schema pair in one call, never
+	// one without the other. The pair is appended after ensurePreamble:
+	// an assistant tool call and its pinned role:"tool" result,
+	// byte-identical in form to what handleLoadModule returns. Never a
+	// user-role message: the schemas are MCP-server-controlled text and
+	// must not reach the model with user authority. Turn 2+ matches go
+	// through load_module (one round trip).
 	if a.Modules != nil && !a.IsSubagent {
 		a.stateMu.RLock()
 		firstTurn := a.preambleDay == ""
 		a.stateMu.RUnlock()
 		// Flush any MCP lifecycle events (connect/disconnect/reconnect)
-		// that arrived on background goroutines. The reconcile runs here so
-		// a server that connected after the registry snapshot becomes a
-		// module and is announced as an appended message before the model
-		// looks for it. On turn 1 the flush runs SILENTLY: ensurePreamble
-		// (below) frames the frozen module index, so an appended
-		// announcement would duplicate it and land before messages[0].
+		// that arrived on background goroutines. On turn 1 the flush runs
+		// SILENTLY: ensurePreamble (below) frames the frozen module
+		// index, so an appended announcement would duplicate it and land
+		// before messages[0].
 		if firstTurn {
 			a.Modules.refreshMCPModulesSilently(a.MCP, false)
 			a.stateMu.Lock()
@@ -1314,17 +1313,18 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 		} else {
 			a.flushPendingModuleEvents()
 		}
-		if firstTurn {
-			preload, reasons := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
-			if len(preload) > 0 {
-				a.Modules.PreloadModules(preload, reasons)
-			}
-		}
 	}
+	preloadPair := a.mcpPreloadPair(userText)
 	a.ensurePreamble()
 	if len(preloadPair) > 0 {
 		// Appended AFTER the preamble so messages[0] stays frozen; the
-		// tool array is not touched. Never a user-role message.
+		// tool array is not touched. Never a user-role message. Stamped
+		// Turn 0 so turn-span computation skips it: it must never
+		// become the "U" of turn 1's span or elide the real user
+		// message at collapse.
+		for i := range preloadPair {
+			preloadPair[i].Turn = 0
+		}
 		a.appendConv(preloadPair...)
 	}
 	// Split-prompt activation: in core mode, classify the user message and
