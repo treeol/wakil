@@ -65,6 +65,10 @@ var outboundAllowlist = map[string]string{
 	"internal/exec/exec.go":            "unix-socket IPC to the sandbox (DialTimeout \"unix\" — excluded by the unix-arg check)",
 	"internal/sandbox/hisn/kvrping.go": "unix-socket IPC to the kvr server (DialTimeout \"unix\" — excluded by the unix-arg check)",
 	"internal/staging/client.go":       "unix-socket IPC to the staging socket (DialTimeout \"unix\" — excluded by the unix-arg check)",
+	// CDP readiness probe (GET /json/version on the loopback tunnel to the
+	// sandbox-local Chromium; no key, no prompt/session content, no body —
+	// the same shape as the metadata probes above).
+	"internal/browser/lifecycle.go": "CDP readiness GET /json/version on the loopback tunnel to the sandbox Chromium (no key, no prompt/session content, no body)",
 }
 
 // outboundHTTPShapes lists the selector names that signal outbound HTTP.

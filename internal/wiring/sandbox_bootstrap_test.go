@@ -243,8 +243,9 @@ func TestSandboxTrustPositionalOverridesConfigWorkDir(t *testing.T) {
 }
 
 // TestSandboxTrustNoArgUsesConfigPrecedence verifies that calling trust with
-// no positional argument resolves WAKIL_HOST_WORKDIR > config host_work_dir >
-// cwd, matching `wakil run`, and prints "workspace: <resolved>".
+// no positional argument resolves WAKIL_HOST_WORKDIR > cwd — the config
+// file's host_work_dir no longer steers since 0.8.11 (matching `wakil run`)
+// — and prints "workspace: <resolved>".
 func TestSandboxTrustNoArgUsesConfigPrecedence(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	t.Setenv("WAKIL_WORKSPACE_KEY", "")
@@ -271,20 +272,37 @@ func TestSandboxTrustNoArgUsesConfigPrecedence(t *testing.T) {
 	}
 	t.Setenv("WAKIL_CONFIG", cfgFile)
 
-	// Without env or positional arg, config host_work_dir wins.
+	// Without env or positional arg, the cwd wins (config host_work_dir is
+	// ignored since 0.8.11). The test runs in an explicit cwd (a temp dir)
+	// so the expectation is deterministic.
+	cwd1, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	prevWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(cwd1); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chdir(prevWD) })
 	var out1 bytes.Buffer
 	if err := sandboxTrustWith(&out1, "", tty("yes\n"), fakeRisk("signing", "signing")); err != nil {
 		t.Fatalf("no-arg trust failed: %v\nout:\n%s", err, out1.String())
 	}
-	if !strings.Contains(out1.String(), "workspace: "+configuredDir+"\n") {
-		t.Errorf("no-arg trust must print configuredDir; got:\n%s", out1.String())
+	if !strings.Contains(out1.String(), "workspace: "+cwd1+"\n") {
+		t.Errorf("no-arg trust must print the cwd %q (config host_work_dir ignored since 0.8.11); got:\n%s", cwd1, out1.String())
+	}
+	if strings.Contains(out1.String(), "workspace: "+configuredDir+"\n") {
+		t.Errorf("no-arg trust must NOT resolve the config folder %q; got:\n%s", configuredDir, out1.String())
 	}
 	runCfg1, err := config.LoadConfig(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := loadProjectSurface(runCfg1); err != nil {
-		t.Fatalf("run in configuredDir must see approval: %v", err)
+	if runCfg1.ResolvedWorkspace != cwd1 {
+		t.Errorf("run ResolvedWorkspace = %q, want cwd %q", runCfg1.ResolvedWorkspace, cwd1)
 	}
 
 	// With WAKIL_HOST_WORKDIR set and no positional arg, env wins over config.
@@ -311,14 +329,14 @@ func TestSandboxTrustNoArgUsesConfigPrecedence(t *testing.T) {
 	}
 	t.Setenv("WAKIL_HOST_WORKDIR", "")
 	t.Setenv("WAKIL_CONFIG", filepath.Join(t.TempDir(), "nonexistent.json"))
-	prevWD, err := os.Getwd()
+	prevWD2, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chdir(cwdDir); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = os.Chdir(prevWD) })
+	t.Cleanup(func() { _ = os.Chdir(prevWD2) })
 	p := filepath.Join(cwdDir, ".wakil", "sandbox.json")
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)

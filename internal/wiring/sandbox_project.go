@@ -58,10 +58,11 @@ func loadProjectSurface(cfg config.Config) (hisn.Surface, project.Loaded, error)
 // approval is the user's decision, and a process an agent can drive must not
 // be able to make it.
 //
-// Workspace resolution matches `wakil run` (positional path >
-// WAKIL_HOST_WORKDIR > config > cwd): one canonical path is used for loading
-// and writing .wakil/sandbox.json, computing the profile risk, and keying the
-// approval store.
+// Workspace resolution matches `wakil run` (0.8.11 order: positional path >
+// --host-workdir > WAKIL_HOST_WORKDIR > cwd; the config file keys no longer
+// steer): one canonical path is used for loading and writing
+// .wakil/sandbox.json, computing the profile risk, and keying the approval
+// store.
 func SandboxTrust(out io.Writer, dir string, openTTY func() (io.ReadCloser, error)) error {
 	return sandboxTrustWith(out, dir, openTTY, productionRisk)
 }
@@ -120,15 +121,17 @@ func sandboxTrustWith(out io.Writer, dir string, openTTY func() (io.ReadCloser, 
 
 // resolveTrustWorkspace resolves the single workspace path for
 // `wakil sandbox trust [dir]` using the same precedence as `wakil run`
-// (positional path > WAKIL_HOST_WORKDIR > config > cwd).
+// (0.8.11 order: positional path > --host-workdir > WAKIL_HOST_WORKDIR >
+// cwd — config file host_work_dir no longer steers).
 //
-// When a config loads cleanly, cfg has both HostWorkDir and WorkDir aligned
-// with the resolved workspace (LoadConfig receives dir as its positional
-// workspace argument when non-empty). When no config file exists (e.g. a
-// unit test or a hand-written .wakil/sandbox.json before `wakil init`),
-// cfgErr is returned alongside the fallback workspace path so the
-// hand-written trust path still works while the bootstrap path surfaces
-// cfgErr.
+// When a config loads cleanly, cfg.ResolvedWorkspace is the one resolved
+// workspace (LoadConfig receives dir as its positional workspace argument
+// when non-empty). When no config file exists (e.g. a unit test or a
+// hand-written .wakil/sandbox.json before `wakil init`), cfgErr is
+// returned alongside the fallback workspace path so the hand-written trust
+// path still works while the bootstrap path surfaces cfgErr. Approval
+// keys are the folder path (WorkspaceKey), so starting in a new folder may
+// ask for trust again — never granted here.
 func resolveTrustWorkspace(dir string) (ws string, cfg config.Config, cfgErr error, err error) {
 	var argv []string
 	if dir != "" {
@@ -136,9 +139,14 @@ func resolveTrustWorkspace(dir string) (ws string, cfg config.Config, cfgErr err
 	}
 	cfg, cfgErr = config.LoadConfig(argv)
 	if cfgErr == nil {
-		raw := cfg.HostWorkDir
-		if cfg.ExecMode == "direct" && raw == "" {
-			raw = cfg.WorkDir
+		raw := cfg.ResolvedWorkspace
+		if raw == "" {
+			// Hand-built config (should not happen via LoadConfig): fall
+			// back to the pre-0.8.11 raw fields.
+			raw = cfg.HostWorkDir
+			if cfg.ExecMode == "direct" && raw == "" {
+				raw = cfg.WorkDir
+			}
 		}
 		if raw == "" {
 			raw = "."

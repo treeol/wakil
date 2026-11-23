@@ -501,7 +501,7 @@ func warnSubagentIncomplete(a *App, task string, summary SubagentSummary) {
 	if summary.Status != "incomplete" {
 		return
 	}
-	a.emitNotice(Yellow("⚠ subagent incomplete on task: "+Truncate(task, 80)))
+	a.emitNotice(Yellow("⚠ subagent incomplete on task: " + Truncate(task, 80)))
 	a.emitNotice(Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope; the harness refuses identical re-dispatch"))
 }
 

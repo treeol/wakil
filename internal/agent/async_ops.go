@@ -1234,17 +1234,17 @@ func (a *App) commitAsyncSubagentEffects(op *asyncOp) {
 			// delivery, where the stream may already be running again.
 			switch {
 			case strings.Contains(s.Err, "timed out"):
-				a.emitNotice(Yellow("⚠ subagent timed out on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("⚠ subagent timed out on task: " + Truncate(s.Task, 80)))
 				a.emitNotice(Yellow("  the child did not return within the configured timeout"))
 			case strings.Contains(s.Err, "panicked"):
-				a.emitNotice(Yellow("⚠ subagent panicked on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("⚠ subagent panicked on task: " + Truncate(s.Task, 80)))
 				a.emitNotice(Yellow("  the child worker crashed"))
 			case strings.Contains(s.Err, "incomplete"):
-				a.emitNotice(Yellow("⚠ subagent incomplete on task: "+Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("⚠ subagent incomplete on task: " + Truncate(s.Task, 80)))
 				a.emitNotice(Yellow("  the child ran out of budget or was cancelled — a follow-up must cover a strictly smaller scope"))
 			default:
-				a.emitNotice(Yellow("⚠ subagent failed on task: "+Truncate(s.Task, 80)))
-				a.emitNotice(Yellow("  error: "+s.Err))
+				a.emitNotice(Yellow("⚠ subagent failed on task: " + Truncate(s.Task, 80)))
+				a.emitNotice(Yellow("  error: " + s.Err))
 			}
 		}
 	}

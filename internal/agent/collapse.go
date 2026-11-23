@@ -1358,20 +1358,19 @@ func (a *App) emitCollapseNotice(text string) {
 //
 // STATUS-LINE WRITERS (audit, 0.8.11): every fmt.Fprintln(a.Out, …) status
 // or cost writer that can fire WHILE output is on screen goes through this
-// path. The audit list (grep fmt.Fprintln(a.Out, internal/agent/*.go):
-//   moved to emitNotice: printMashuraPanelOutcome (mashura.go:588),
-//   the same outcome printer in the skill-creation review
-//   (skill_creation_pipeline.go), the async-subagent warning block
-//   (async_ops.go commitAsyncSubagentEffects), printSubagentNotice
-//   (subagent_guard.go), warnSubagentIncomplete (subagent_parallel.go),
-//   the registry-full fallback note, read-receipt, struggle suggest and
-//   auto-counsel lines (mashura.go), checkBudgetExhausted (cost_state.go),
-//   the BindChat sandbox warning and the context-pressure warning (app.go).
-//   stayed on a.Out (idle point, no screen race): prune/collapse warnings
-//   (prune.go, collapse.go — turn-end paths), compact.go summaries,
-//   styleguides, tool_handlers, subagent progress (before any stream),
-//   turn_phases tool lines (main goroutine at idle),  collapse.go:1369 is
-//   emitNotice's own fallback.
+// path. Moved to emitNotice: printMashuraPanelOutcome (mashura.go), the
+// same outcome printer in the skill-creation review
+// (skill_creation_pipeline.go), the async-subagent warning block
+// (async_ops.go commitAsyncSubagentEffects), printSubagentNotice
+// (subagent_guard.go), warnSubagentIncomplete (subagent_parallel.go), the
+// registry-full fallback note, read-receipt, struggle suggest and
+// auto-counsel lines (mashura.go), checkBudgetExhausted (cost_state.go),
+// the BindChat sandbox warning and the context-pressure warning (app.go).
+// Stayed on a.Out (idle point, no screen race): prune/collapse warnings
+// (prune.go, collapse.go — turn-end paths), compact.go summaries,
+// styleguides, tool_handlers, subagent progress (before any stream),
+// turn_phases tool lines (main goroutine at idle). collapse.go:1369 is
+// emitNotice's own fallback.
 func (a *App) emitNotice(text string) {
 	a.callbackMu.Lock()
 	sink := a.EventSink

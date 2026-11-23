@@ -310,6 +310,14 @@ func TestStrugglePathThroughRealStartup(t *testing.T) {
 					out.WriteString(d.Text)
 				}
 			}
+			// Status lines go through the notice path (SysNoteMsg →
+			// KindSessionNote) since 0.8.11, not onto a.Out — collect them
+			// here (the struggle assertions below check these notes).
+			if ev.Kind == event.KindSessionNote {
+				if n, ok := ev.Payload.(event.SessionNote); ok {
+					out.WriteString(n.Text)
+				}
+			}
 		}
 		rt, cleanup, err := BootstrapTUI(cfg, exe, "", deliver, BootstrapTUIOpts{
 			CounselMode: cfg.AutoCounsel,          // "" = not set, level decides
