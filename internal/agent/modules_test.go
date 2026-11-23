@@ -1125,3 +1125,245 @@ func TestSwitchOff_HooksAreNoOps(t *testing.T) {
 		t.Error("switch off: the manager must not get a lifecycle handler")
 	}
 }
+
+// --- Stage 1 fixes round 2, Block 1: loaded modules survive collapse ---
+
+// schemaMsg builds the message as finalizeToolResult appends it for a
+// load_module result: role "tool", pinned, content = the schemas block.
+func schemaMsg(id, content string) proxy.Message {
+	m := trMsg(id, "load_module", content)
+	m.Pinned = true
+	return m
+}
+
+// findSchemaBlock looks for a module's schemas in the projected payload
+// by identity (role tool, name load_module, pinned, module named in the
+// content) — never by a loose content search.
+func findSchemaBlock(msgs []proxy.Message, module string) bool {
+	for _, m := range msgs {
+		if m.Role != "tool" || m.Name != "load_module" || !m.Pinned {
+			continue
+		}
+		c := DerefStr(m.Content)
+		if strings.Contains(c, `Module "`+module+`" loaded`) {
+			return true
+		}
+	}
+	return false
+}
+
+// TestCollapse_LoadedModuleSurvivesTurnEndCollapse: a turn containing a
+// pinned load_module result collapses, and the projected payload the
+// model receives still carries the schemas exactly once, paired with
+// its assistant tool call.
+func TestCollapse_LoadedModuleSurvivesTurnEndCollapse(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	if _, _, err := app.Modules.LoadModule("staging"); err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("use the staging tools"), Turn: 1},
+		tcMsg("tc0", "read_file", `{"path":"foo.go"}`),
+		trMsg("tc0", "read_file", bigContent),
+		tcMsg("ld1", "load_module", `{"name":"staging"}`),
+		schemaMsg("ld1", "Module \"staging\" loaded: staging\nTool schemas:\n[]"),
+		tcMsg("tc1", "search_files", `{"pattern":"bar"}`),
+		trMsg("tc1", "search_files", bigContent),
+		{Role: "assistant", Content: StrPtr("done"), Turn: 1},
+	}
+	for i := range app.Conv {
+		app.Conv[i].Turn = 1
+	}
+	app.turnSeq = 1
+
+	app.collapseFinishedTurns()
+
+	n, _ := app.CollapsedCount()
+	if n != 1 {
+		t.Fatalf("CollapsedCount = %d, want 1 (the turn must have collapsed)", n)
+	}
+	proj := app.contextProjection()
+	if !findSchemaBlock(proj, "staging") {
+		t.Fatalf("projected payload lost the loaded module's schemas; payload has %d messages", len(proj))
+	}
+	count := 0
+	for _, m := range proj {
+		if m.Role == "tool" && m.Name == "load_module" && strings.Contains(DerefStr(m.Content), `Module "staging" loaded`) {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("schemas must appear exactly once in the projected payload, got %d", count)
+	}
+	assertNoOrphanedToolCalls(t, proj)
+	app.stateMu.RLock()
+	rec := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if rec.Archive != "" {
+		os.Remove(rec.Archive)
+	}
+}
+
+// TestCollapse_CoreToolPinnedResultsStillCollapse: a pinned tool result
+// that is NOT a load_module schema message (subagent results are pinned
+// too) must not be made uncollapsible — only load_module schemas are
+// preserved.
+func TestCollapse_CoreToolPinnedResultsStillCollapse(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("delegate it"), Turn: 1},
+		tcMsg("ds1", "dispatch_subagent", `{"task":"x"}`),
+		func() proxy.Message {
+			m := trMsg("ds1", "dispatch_subagent", bigContent)
+			m.Pinned = true
+			return m
+		}(),
+		{Role: "assistant", Content: StrPtr("done"), Turn: 1},
+	}
+	for i := range app.Conv {
+		app.Conv[i].Turn = 1
+	}
+	app.turnSeq = 1
+
+	app.collapseFinishedTurns()
+
+	n, _ := app.CollapsedCount()
+	if n != 1 {
+		t.Fatalf("CollapsedCount = %d, want 1 — pinned subagent results must still collapse", n)
+	}
+	proj := app.contextProjection()
+	for _, m := range proj {
+		if m.Role == "tool" && strings.Contains(DerefStr(m.Content), bigContent[:64]) {
+			t.Errorf("pinned subagent result must still be elided from the projection")
+		}
+	}
+	app.stateMu.RLock()
+	rec := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if rec.Archive != "" {
+		os.Remove(rec.Archive)
+	}
+}
+
+// TestCollapse_LoadedModuleSurvivesExplicit: the same guarantee for the
+// explicit collapse_context path.
+func TestCollapse_LoadedModuleSurvivesExplicit(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	if _, _, err := app.Modules.LoadModule("staging"); err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	call := proxy.ToolCall{ID: "cc1", Type: "function", Function: proxy.FunctionCall{
+		Name: "collapse_context", Arguments: `{"summary":"done"}`}}
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("investigate"), Turn: 1},
+		tcMsg("ld1", "load_module", `{"name":"staging"}`),
+		schemaMsg("ld1", "Module \"staging\" loaded: staging\nTool schemas:\n[]"),
+		tcMsg("tcA", "read_file", `{"path":"a.go"}`),
+		trMsg("tcA", "read_file", bigContent),
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{call}, Turn: 1},
+	}
+	for i := range app.Conv {
+		app.Conv[i].Turn = 1
+	}
+	app.turnSeq = 1
+	app.curTurn = 1
+
+	if res := app.handleCollapseContext(call); strings.HasPrefix(res, "ERROR") {
+		t.Fatalf("collapse_context failed: %s", res)
+	}
+	proj := app.contextProjection()
+	if !findSchemaBlock(proj, "staging") {
+		t.Fatalf("after collapse_context the projected payload lost the loaded module's schemas (%d messages)", len(proj))
+	}
+	// Pair validity for the preserved schema pair (the collapse_context
+	// boundary call is answered by a result appended after the
+	// projection, so the whole-payload helper would flag it spuriously).
+	found := false
+	for _, m := range proj {
+		if m.Role == "assistant" {
+			for _, tc := range m.ToolCalls {
+				if tc.Function.Name == "load_module" && tc.ID == "ld1" {
+					found = true
+				}
+			}
+		}
+	}
+	if !found {
+		t.Error("preserved schema block has no preceding assistant load_module tool call in the projected payload")
+	}
+	app.stateMu.RLock()
+	rec := app.collapsed[1]
+	app.stateMu.RUnlock()
+	if rec.Archive != "" {
+		os.Remove(rec.Archive)
+	}
+}
+
+// TestCollapse_LoadedModuleSurvivesMidTurn: a schema message in the
+// archived mid-turn prefix is preserved in the projected payload,
+// paired with its parent tool call.
+func TestCollapse_LoadedModuleSurvivesMidTurn(t *testing.T) {
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.SetContextMode("long-session")
+	app.Cfg.ContextModules = "on"
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", nil)
+	if _, _, err := app.Modules.LoadModule("staging"); err != nil {
+		t.Fatalf("LoadModule: %v", err)
+	}
+	tail := tcMsg("tc9", "read_file", `{"path":"z.go"}`)
+	app.Conv = []proxy.Message{
+		{Role: "user", Content: StrPtr("task"), Turn: 1},
+		tcMsg("tc0", "read_file", `{"path":"foo.go"}`),
+		trMsg("tc0", "read_file", bigContent),
+		tcMsg("ld1", "load_module", `{"name":"staging"}`),
+		schemaMsg("ld1", "Module \"staging\" loaded: staging\nTool schemas:\n[]"),
+		tail,
+		trMsg("tc9", "read_file", bigContent),
+	}
+	for i := range app.Conv {
+		app.Conv[i].Turn = 1
+	}
+	app.turnSeq = 1
+	app.curTurn = 1
+	// Partial record anchored at the first kept tail batch (tc9).
+	app.stateMu.Lock()
+	if app.collapsed == nil {
+		app.collapsed = map[int]CollapseRecord{}
+	}
+	app.collapsed[1] = CollapseRecord{
+		Turn: 1, Partial: true, BoundaryCallID: "tc9",
+		Note: "note", Archive: "unused",
+	}
+	app.stateMu.Unlock()
+
+	proj := app.contextProjection()
+	if !findSchemaBlock(proj, "staging") {
+		t.Fatalf("mid-turn collapse: projected payload lost the loaded module's schemas (%d messages)", len(proj))
+	}
+	assertNoOrphanedToolCalls(t, proj)
+}
+
+// TestCollapse_NoteListsLoadedModules: the collapse note names the
+// modules whose schemas were preserved, and a turn with no schemas
+// lists none.
+func TestCollapse_NoteListsLoadedModules(t *testing.T) {
+	w := []proxy.Message{
+		tcMsg("ld1", "load_module", `{"name":"staging"}`),
+		schemaMsg("ld1", "Module \"staging\" loaded: staging\nTool schemas:\n[]"),
+	}
+	note := buildCollapseNote(1, w, "archive.txt")
+	if !strings.Contains(note, "staging") {
+		t.Errorf("collapse note must name the preserved loaded module; note:\n%s", note)
+	}
+	note = buildCollapseNote(1, []proxy.Message{trMsg("a", "read_file", "x")}, "archive.txt")
+	if strings.Contains(note, "modules loaded and preserved") {
+		t.Errorf("collapse note must not list modules when none are preserved; note:\n%s", note)
+	}
+}

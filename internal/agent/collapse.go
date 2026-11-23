@@ -274,6 +274,12 @@ func IsAutoRoundCallID(id string) bool {
 func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	toolCounts := map[string]int{}
 	autoRounds := countAutoRounds(w)
+	loadedMods := []string{}
+	for _, m := range w {
+		if name, ok := moduleSchemaName(m); ok {
+			loadedMods = append(loadedMods, name)
+		}
+	}
 	writeTargets := []string{}
 	reads := []string{}
 	seenWrite, seenRead := map[string]bool{}, map[string]bool{}
@@ -327,6 +333,9 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "[request %d working set collapsed — %d tool calls: %s · %dkb]\n",
 		turn, sumCounts(toolCounts), toolSummary, renderWorkingSetBytes(w)/1024)
+	if len(loadedMods) > 0 {
+		fmt.Fprintf(&b, "modules loaded and preserved: %s (schemas kept in context)\n", strings.Join(loadedMods, ", "))
+	}
 	if autoRounds > 0 {
 		fmt.Fprintf(&b, "automatic mashura rounds (started by wakil): %d\n", autoRounds)
 	}
@@ -360,6 +369,9 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 		var mb strings.Builder
 		fmt.Fprintf(&mb, "[request %d working set collapsed — %d tool calls · %dkb]\n",
 			turn, sumCounts(toolCounts), renderWorkingSetBytes(w)/1024)
+		if len(loadedMods) > 0 {
+			fmt.Fprintf(&mb, "modules loaded and preserved: %s (schemas kept in context)\n", strings.Join(loadedMods, ", "))
+		}
 		if autoRounds > 0 {
 			fmt.Fprintf(&mb, "automatic mashura rounds (started by wakil): %d\n", autoRounds)
 		}
@@ -796,6 +808,25 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 	// Build a set of collapsed turn numbers for fast lookup.
 	collapsedSet := collapsedCopy
 
+	// Preserved schema messages per collapsed turn (Block 1, Stage 1
+	// fixes round 2): a loaded module's schemas (role tool,
+	// name load_module, pinned) plus that message's parent tool call
+	// and its sibling results, by index, over the turn's elidable span.
+	// Built once per projection so every collapse site — turn-end,
+	// mid-turn and explicit — and materialiseCollapsed, which bakes
+	// this same projection into Conv, agree on what survives.
+	schemaPreserve := map[int]map[int]bool{}
+	for t, s := range spans {
+		if _, ok := collapsedSet[t]; !ok {
+			continue
+		}
+		keep := preservedSchemaMessages(conv, s.first+1, s.last)
+		if len(keep) == 0 {
+			continue
+		}
+		schemaPreserve[t] = keep
+	}
+
 	// Precompute resolved boundary indices for partial records. A partial
 	// record is only active if its BoundaryCallID still resolves to an
 	// assistant message after s.first+1 (so at least one message is elided).
@@ -923,7 +954,14 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 				continue
 			}
 			if idx > s.first && idx < bIdx {
-				// Elide the archived mid-turn prefix.
+				// Elide the archived mid-turn prefix — but never a loaded
+				// module's schemas: a pinned load_module result (with its
+				// parent tool call and siblings) survives the collapse, so
+				// the model keeps the schemas for every module the registry
+				// still reports as loaded.
+				if schemaPreserve[m.Turn] != nil && schemaPreserve[m.Turn][idx] {
+					out = append(out, m)
+				}
 				continue
 			}
 			// idx >= bIdx: pass through the first kept assistant batch
@@ -946,6 +984,17 @@ func (a *App) collapseProjection(conv []proxy.Message) []proxy.Message {
 		}
 		// Emit U (first message of the turn).
 		out = append(out, conv[s.first])
+		// A loaded module's schemas survive the collapse: its messages
+		// (result, parent tool call, siblings) are emitted in place,
+		// right after U, so the model keeps the schemas for every
+		// module the registry still reports as loaded.
+		if schemaPreserve[m.Turn] != nil {
+			for i := s.first + 1; i < s.last; i++ {
+				if schemaPreserve[m.Turn][i] {
+					out = append(out, conv[i])
+				}
+			}
+		}
 		// Emit A (last message) with the note appended to its content.
 		lastMsg := conv[s.last]
 		lastMsg.Content = projectTailAnswerContent(lastMsg.Content, rec, a.Cfg.ContextTailAnswerBytes)
@@ -1993,6 +2042,96 @@ func messageSize(m proxy.Message) int {
 
 // collapseArchiveFailed is declared on App (app.go) — this comment is the
 // field doc. Turn goroutine only — no lock needed.
+
+// isLoadModuleSchemas reports whether m is a loaded module's schemas
+// carrying message (identity: role tool, name load_module, pinned). This
+// is the one verdict Block 1 of the Stage 1 fixes round 2 uses
+// everywhere a collapse could drop it: presence is a boolean over the
+// projected payload by identity, never a content search, never the
+// registry flag alone.
+func isLoadModuleSchemas(m proxy.Message) bool {
+	return m.Role == "tool" && m.Name == "load_module" && m.Pinned
+}
+
+// moduleSchemaName extracts the module name from a schemas message's
+// content ("Module %q loaded:"). The content is harness-rendered, so the
+// name is safe to compare exactly; a message whose header does not
+// parse is not a schemas message.
+func moduleSchemaName(m proxy.Message) (string, bool) {
+	if !isLoadModuleSchemas(m) {
+		return "", false
+	}
+	c := DerefStr(m.Content)
+	rest, ok := strings.CutPrefix(c, `Module "`)
+	if !ok {
+		return "", false
+	}
+	name, _, ok := strings.Cut(rest, `" loaded`)
+	if !ok {
+		return "", false
+	}
+	return name, true
+}
+
+// preservedSchemaMessages returns the indices of every message in
+// msgs[from:to] that must survive a collapse: load_module schema
+// messages (by identity), plus their parent assistant tool-call
+// message and the sibling tool results of that message — never orphaned
+// in either direction (the Compact rule, compact.go:427-530). A pinned
+// result that is not a load_module schema message (a subagent result
+// is pinned too) is NOT preserved: only load_module schemas are exempt
+// from collapse.
+func preservedSchemaMessages(msgs []proxy.Message, from, to int) map[int]bool {
+	keep := map[int]bool{}
+	for i := from; i < to; i++ {
+		if !isLoadModuleSchemas(msgs[i]) {
+			continue
+		}
+		keep[i] = true
+		if msgs[i].ToolCallID == "" {
+			continue
+		}
+		// Parent: nearest preceding assistant message whose tool_calls
+		// carry this ToolCallID, bounded by the previous user message.
+		parent := -1
+		for j := i - 1; j >= from; j-- {
+			if msgs[j].Role == "user" {
+				break
+			}
+			if msgs[j].Role != "assistant" {
+				continue
+			}
+			for _, tc := range msgs[j].ToolCalls {
+				if tc.ID == msgs[i].ToolCallID {
+					parent = j
+					break
+				}
+			}
+			if parent >= 0 {
+				break
+			}
+		}
+		if parent < 0 {
+			continue
+		}
+		keep[parent] = true
+		// All sibling results of that assistant message, bounded by the
+		// next assistant or user message (mirrors compact.go:483-494).
+		ids := map[string]bool{}
+		for _, tc := range msgs[parent].ToolCalls {
+			ids[tc.ID] = true
+		}
+		for k := parent + 1; k < to; k++ {
+			if msgs[k].Role == "assistant" || msgs[k].Role == "user" {
+				break
+			}
+			if msgs[k].Role == "tool" && ids[msgs[k].ToolCallID] {
+				keep[k] = true
+			}
+		}
+	}
+	return keep
+}
 
 // materializeCollapsed replaces collapsed turns in a.Conv with their
 // U + A + note (the projection content), then clears all collapse records.
