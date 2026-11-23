@@ -63,9 +63,14 @@ type App struct {
 	// mcpEventBuf queues MCP lifecycle events (connect/disconnect/reconnect)
 	// recorded on background goroutines. flushPendingModuleEvents, run on
 	// the agent goroutine at turn start, folds them into the registry and
-	// announces new modules as appended messages. Guarded by stateMu.
+	// queues announcements for new modules as appended tool-result parts.
+	// Guarded by stateMu.
 	mcpEventBuf []mcpLifecycleEvent
-	Conv        []proxy.Message
+	// pendingModuleAnnouncements holds module announcements waiting to be
+	// appended to the next tool result. Guarded by stateMu. Never delivered
+	// as a user-role message.
+	pendingModuleAnnouncements []string
+	Conv                       []proxy.Message
 	// convMu guards Conv for concurrent reads from side-question goroutines.
 	// The main goroutine writes Conv inside Send/streamTurn; side-question
 	// goroutines take a read-lock snapshot. All Conv access must go through
@@ -1282,11 +1287,14 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 	// (preambleDay is empty), match the task text against MCP server
 	// keywords and pre-load matching modules BEFORE ensurePreamble so the
 	// pre-loaded state is reflected in messages[0]. Pre-loaded schemas are
-	// delivered as an appended user-role message after ensurePreamble (same
-	// form load_module returns), so the first request already carries them
-	// and no load_module round trip is needed. This is a turn-1-only
-	// pre-load; turn 2+ matches go through load_module (one round trip).
-	preloadedSchemas := ""
+	// delivered as a synthetic load_module conversation appended after
+	// ensurePreamble: an assistant tool call and its pinned role:"tool"
+	// result, byte-identical in form to what handleLoadModule returns.
+	// Never a user-role message: the schemas are MCP-server-controlled
+	// text and must not reach the model with user authority. This is a
+	// turn-1-only pre-load; turn 2+ matches go through load_module (one
+	// round trip).
+	preloadPair := a.mcpPreloadPair(userText)
 	if a.Modules != nil && !a.IsSubagent {
 		a.stateMu.RLock()
 		firstTurn := a.preambleDay == ""
@@ -1310,17 +1318,14 @@ func (a *App) SendOutcome(ctx context.Context, userText string) (outcome TurnOut
 			preload, reasons := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
 			if len(preload) > 0 {
 				a.Modules.PreloadModules(preload, reasons)
-				if s, ok := a.Modules.PreloadedSchemas(preload); ok {
-					preloadedSchemas = s
-				}
 			}
 		}
 	}
 	a.ensurePreamble()
-	if preloadedSchemas != "" {
+	if len(preloadPair) > 0 {
 		// Appended AFTER the preamble so messages[0] stays frozen; the
-		// tool array is not touched.
-		a.appendConv(proxy.Message{Role: "user", Content: StrPtr(preloadedSchemas)})
+		// tool array is not touched. Never a user-role message.
+		a.appendConv(preloadPair...)
 	}
 	// Split-prompt activation: in core mode, classify the user message and
 	// append the extension prompt as a second system message (Turn==0, Pinned)

@@ -1070,7 +1070,7 @@ func TestFlush_NoAnnounceBeforePreamble(t *testing.T) {
 
 // TestFlush_AnnouncesLateConnect: a server that connects after the
 // registry was built becomes a module at the next flush and its index line
-// reaches the model as an appended user message.
+// is queued as an appended tool-result part (never a user message).
 func TestFlush_AnnouncesLateConnect(t *testing.T) {
 	m := newFakeMCPManager()
 	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
@@ -1087,15 +1087,22 @@ func TestFlush_AnnouncesLateConnect(t *testing.T) {
 	if !app.Modules.HasModule("mcp:caj") {
 		t.Fatal("late server must be a module after the flush")
 	}
+	// The announcement is queued for the next tool result, never appended
+	// as a user-role message of its own.
 	conv := app.ConvSnapshot()
-	found := false
 	for _, msg := range conv {
-		if msg.Content != nil && strings.Contains(*msg.Content, "Context module available: mcp:caj") {
-			found = true
+		if msg.Role == "user" && msg.Content != nil && strings.Contains(*msg.Content, "Context module available: mcp:caj") {
+			t.Fatalf("the announcement must not be a user-role message, got %q", *msg.Content)
 		}
 	}
-	if !found {
-		t.Fatalf("late module must be announced as an appended message, Conv has %d messages", len(conv))
+	if len(conv) != 0 {
+		t.Fatalf("the flush must not append anything to Conv, got %d messages", len(conv))
+	}
+	if len(app.pendingModuleAnnouncements) != 1 {
+		t.Fatalf("one announcement must be queued, got %v", app.pendingModuleAnnouncements)
+	}
+	if !strings.Contains(app.pendingModuleAnnouncements[0], "mcp:caj") {
+		t.Errorf("queued announcement must name the module: %q", app.pendingModuleAnnouncements[0])
 	}
 }
 

@@ -770,12 +770,21 @@ func (r *ModuleRegistry) PreloadModules(names []string, reasons map[string]strin
 	}
 }
 
+// ModuleSchemasBlockFromTools renders a module's tool schemas in the exact
+// form handleLoadModule returns. One rendering, so the synthetic pre-load
+// conversation is byte-identical in form to a real load_module result.
+func ModuleSchemasBlockFromTools(name, desc string, tools []proxy.Tool) string {
+	schemasJSON, _ := json.MarshalIndent(tools, "", "  ")
+	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", name, desc, schemasJSON)
+}
+
 // ModuleSchemasBlock renders one module's tool schemas in the exact form
 // handleLoadModule returns, so a pre-loaded module needs no load_module
 // round trip: the model already has the schemas on the first request, and a
 // call_tool to any of its tools passes the loaded check. The block is
-// delivered as an appended user-role message, never by editing an earlier
-// message and never by changing the tool array.
+// delivered as a synthetic load_module conversation (assistant tool call +
+// pinned tool result), never by editing an earlier message and never by
+// changing the tool array.
 func (r *ModuleRegistry) ModuleSchemasBlock(name string) (string, bool) {
 	r.mu.Lock()
 	m, ok := r.byName[name]
@@ -783,8 +792,7 @@ func (r *ModuleRegistry) ModuleSchemasBlock(name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	schemasJSON, _ := json.MarshalIndent(m.Tools, "", "  ")
-	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", name, m.Desc, schemasJSON), true
+	return ModuleSchemasBlockFromTools(name, m.Desc, m.Tools), true
 }
 
 // PreloadedSchemas renders the schemas block for every module in names that
@@ -807,6 +815,60 @@ func (r *ModuleRegistry) PreloadedSchemas(names []string) (string, bool) {
 		return "", false
 	}
 	return strings.Join(blocks, "\n\n"), true
+}
+
+// mcpPreloadPair builds the synthetic load_module conversation for the
+// first request: an assistant message carrying a load_module tool call,
+// then its pinned role:"tool" result, byte-identical in form to what
+// handleLoadModule returns for the same module. It returns nil when
+// there is nothing to pre-load.
+//
+// The schemas are MCP-server-controlled text, so they must never reach
+// the model in the user role (Block 4, Stage 1 fixes round 2). The pair
+// is appended after the preamble and before the user's first message,
+// so messages[0] and the tool array stay frozen.
+func (a *App) mcpPreloadPair(userText string) []proxy.Message {
+	if a == nil || a.Modules == nil || a.IsSubagent {
+		return nil
+	}
+	a.stateMu.RLock()
+	firstTurn := a.preambleDay == ""
+	a.stateMu.RUnlock()
+	if !firstTurn {
+		return nil
+	}
+	preload, reasons := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
+	if len(preload) == 0 {
+		return nil
+	}
+	a.Modules.PreloadModules(preload, reasons)
+	var pair []proxy.Message
+	for _, name := range preload {
+		if a.Modules.IsDisconnected(name) {
+			continue
+		}
+		block, ok := a.Modules.ModuleSchemasBlock(name)
+		if !ok {
+			continue
+		}
+		callID := "preload-" + name
+		pair = append(pair, proxy.Message{
+			Role: "assistant",
+			ToolCalls: []proxy.ToolCall{{
+				ID:       callID,
+				Type:     "function",
+				Function: proxy.FunctionCall{Name: "load_module", Arguments: `{"name":"` + name + `"}`},
+			}},
+		})
+		pair = append(pair, proxy.Message{
+			Role:       "tool",
+			ToolCallID: callID,
+			Name:       "load_module",
+			Content:    StrPtr(block),
+			Pinned:     true,
+		})
+	}
+	return pair
 }
 
 // moduleCapabilityLine returns the preamble inventory line for a conditional
@@ -854,9 +916,7 @@ func (a *App) handleLoadModule(ctx context.Context, tc proxy.ToolCall) string {
 	if err != nil {
 		return err.Error()
 	}
-	// Return the tool schemas as JSON so the model can call them via call_tool.
-	schemasJSON, _ := json.MarshalIndent(tools, "", "  ")
-	return fmt.Sprintf("Module %q loaded: %s\nTool schemas:\n%s", args.Name, desc, schemasJSON)
+	return ModuleSchemasBlockFromTools(args.Name, desc, tools)
 }
 
 // RegisterMCPModules installs the MCP lifecycle consumer on the manager.
@@ -885,9 +945,11 @@ func (a *App) RegisterMCPModules(m *MCPManager) {
 // flushPendingModuleEvents runs on the agent goroutine at turn start. It
 // drains every queued lifecycle event, reconciles the registry against the
 // manager's live state (so a connect that completed before the handler was
-// registered is still picked up — the safety net), and announces newly
-// available modules as appended user-role messages. The tool array is never
-// touched here; earlier messages are never edited.
+// registered is still picked up — the safety net), and queues the
+// announcements for newly available modules as appended tool-result parts
+// (a module announcement is never a user-role message: the text is
+// server-derived and must not reach the model with user authority). The
+// tool array is never touched here; earlier messages are never edited.
 func (a *App) flushPendingModuleEvents() {
 	if a.Modules == nil || a.MCP == nil {
 		return
@@ -907,7 +969,7 @@ func (a *App) flushPendingModuleEvents() {
 		}
 		body := "Context module available: " + name + "\n" + line +
 			"\nCall load_module(\"" + name + "\") to load its tools, then call_tool(name, arguments) to use them."
-		a.appendConv(proxy.Message{Role: "user", Content: StrPtr(body)})
+		a.queueModuleAnnouncement(body)
 		diag.Printf("wakil: late MCP module announced: %s", name)
 	}
 	// Safety net: a connected server with tools must have a module. If the
@@ -931,9 +993,32 @@ func (a *App) flushPendingModuleEvents() {
 			if !ok {
 				continue
 			}
-			a.appendConv(proxy.Message{Role: "user", Content: StrPtr(
+			a.queueModuleAnnouncement(
 				"Context module available: " + name + "\n" + line +
-					"\nCall load_module(\"" + name + "\") to load its tools, then call_tool(name, arguments) to use them.")})
+					"\nCall load_module(\"" + name + "\") to load its tools, then call_tool(name, arguments) to use them.")
 		}
 	}
+}
+
+// queueModuleAnnouncement stores an announcement to be appended, as a
+// clearly marked part, to the next tool result produced in this turn. If
+// a turn produces no tool result, the announcement waits for the next
+// one. It is never delivered as a user-role message of its own.
+func (a *App) queueModuleAnnouncement(body string) {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	a.pendingModuleAnnouncements = append(a.pendingModuleAnnouncements, body)
+}
+
+// takeModuleAnnouncement returns the queued announcements for the next
+// tool result, consuming them.
+func (a *App) takeModuleAnnouncement() string {
+	a.stateMu.Lock()
+	defer a.stateMu.Unlock()
+	if len(a.pendingModuleAnnouncements) == 0 {
+		return ""
+	}
+	body := strings.Join(a.pendingModuleAnnouncements, "\n\n")
+	a.pendingModuleAnnouncements = nil
+	return body
 }

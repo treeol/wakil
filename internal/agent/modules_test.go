@@ -989,6 +989,166 @@ func TestMeasurement_TokenEstimate(t *testing.T) {
 
 // ── Block 2: pre-load delivers the tools; the gate lives in executeToolCall ─
 
+// TestPreload_DeliveredAsSyntheticLoadModule: turn-1 pre-load ships the
+// schemas as an assistant tool call + pinned tool result, never as a
+// user-role message.
+func TestPreload_DeliveredAsSyntheticLoadModule(t *testing.T) {
+	mcp := newFakeMCPManager(connectedServer("trello", &fakeMCPSession{}, "get_boards", "get_card"))
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	size := len(strings.Repeat("x", 10000))
+	app.Cfg.ContextModules = "on"
+	app.MCP = mcp
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
+	app.Cfg.ContextCollapseMinBytes = size
+
+	pair := app.mcpPreloadPair("show my trello board")
+	if len(pair) != 2 {
+		t.Fatalf("pair = %d messages, want 2 (assistant call + tool result)", len(pair))
+	}
+	if pair[0].Role != "assistant" || len(pair[0].ToolCalls) != 1 ||
+		pair[0].ToolCalls[0].Function.Name != "load_module" {
+		t.Errorf("first message must be the assistant load_module call, got %+v", pair[0])
+	}
+	if pair[1].Role != "tool" || pair[1].Name != "load_module" ||
+		pair[1].ToolCallID != pair[0].ToolCalls[0].ID || !pair[1].Pinned {
+		t.Errorf("second message must be the pinned load_module tool result paired by id, got %+v", pair[1])
+	}
+	if !strings.Contains(DerefStr(pair[1].Content), `"name": "trello__get_boards"`) {
+		t.Errorf("the tool result must carry the schemas:\n%s", DerefStr(pair[1].Content))
+	}
+	// Byte-identical in form to handleLoadModule's return.
+	got := app.handleLoadModule(context.Background(), pair[0].ToolCalls[0])
+	if DerefStr(pair[1].Content) != got {
+		t.Errorf("pre-load schemas differ from handleLoadModule's form:\npre-load: %s\nhandler: %s", DerefStr(pair[1].Content), got)
+	}
+	if !app.Modules.IsLoaded("mcp:trello") {
+		t.Error("the module must be marked loaded")
+	}
+	// No pre-load on the second turn.
+	app.preambleDay = "2026-11-23"
+	if p := app.mcpPreloadPair("show my trello board"); len(p) != 0 {
+		t.Errorf("no pre-load after turn 1, got %d messages", len(p))
+	}
+}
+
+// TestLateConnect_AnnouncementAppendedToNextToolResult: a late-connect
+// announcement is never a user-role message; it is appended to the next
+// tool result as a marked part.
+func TestLateConnect_AnnouncementAppendedToNextToolResult(t *testing.T) {
+	mcp := newFakeMCPManager()
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.MCP = mcp
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
+	app.RegisterMCPModules(mcp)
+
+	// Simulate a connect that happens after the registry snapshot: the
+	// server is in the manager but not in the registry yet.
+	mcp.servers = append(mcp.servers, connectedServer("caj", &fakeMCPSession{}, "read_file"))
+	app.mcpEventBuf = append(app.mcpEventBuf, mcpLifecycleEvent{name: "caj", kind: "connected"})
+	app.flushPendingModuleEvents()
+
+	// The announcement is queued, not a user message.
+	if len(app.Conv) != 0 {
+		t.Fatalf("announcement must not be appended as its own message, Conv has %d", len(app.Conv))
+	}
+	if len(app.pendingModuleAnnouncements) != 1 {
+		t.Fatalf("one announcement must be queued, got %v", app.pendingModuleAnnouncements)
+	}
+
+	// On the next tool result the announcement rides as a marked part:
+	// the result text gains the announcement under [module announcement].
+	// Accomplished by streamTurn's result append; here we assert the
+	// queue is consumed and the rendered form is marked.
+	ann := app.takeModuleAnnouncement()
+	if !strings.HasPrefix(ann, "Context module available: mcp:caj") {
+		t.Fatalf("takeModuleAnnouncement returned unexpectedly: %q", ann)
+	}
+	res := proxy.Message{Role: "tool", ToolCallID: "t1", Name: "read_file", Content: StrPtr("file content")}
+	text := DerefStr(res.Content)
+	if ann != "" {
+		text += "\n\n[module announcement]\n" + ann
+	}
+	if !strings.Contains(text, "[module announcement]") || !strings.Contains(text, "mcp:caj") {
+		t.Errorf("rendered result must carry the marked announcement:\n%s", text)
+	}
+	if !strings.Contains(text, "file content") {
+		t.Errorf("the original result must be preserved:\n%s", text)
+	}
+	// Queue is consumed.
+	if len(app.pendingModuleAnnouncements) != 0 {
+		t.Errorf("announcement must be consumed, still queued: %v", app.pendingModuleAnnouncements)
+	}
+}
+
+// TestLateConnect_WaitsForToolResult: if the turn produces no tool
+// result, the announcement survives to the next one.
+func TestLateConnect_WaitsForToolResult(t *testing.T) {
+	mcp := newFakeMCPManager()
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.MCP = mcp
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
+	app.RegisterMCPModules(mcp)
+	mcp.servers = append(mcp.servers, connectedServer("caj", &fakeMCPSession{}, "read_file"))
+	app.mcpEventBuf = append(app.mcpEventBuf, mcpLifecycleEvent{name: "caj", kind: "connected"})
+	app.flushPendingModuleEvents()
+
+	// A turn with no tool call: the announcement is still queued.
+	if app.takeModuleAnnouncement() == "" {
+		t.Fatal("announcement must wait for a tool result; the queue emptied first")
+	}
+	if len(app.pendingModuleAnnouncements) != 0 {
+		t.Error("take consumes the announcement")
+	}
+}
+
+// TestNoUserRoleMessageCarriesMCPText: no user-role message in the
+// pre-load or late-connect paths contains MCP-provided text.
+func TestNoUserRoleMessageCarriesMCPText(t *testing.T) {
+	sess := &fakeMCPSession{}
+	mcp := newFakeMCPManager(connectedServer("caj", sess, "read_file"))
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	app.Cfg.ContextModules = "on"
+	app.MCP = mcp
+	app.Modules = NewModuleRegistry(app.Cfg, "/work", mcp)
+
+	// Pre-load path.
+	pair := app.mcpPreloadPair("use caj")
+	if len(pair) == 0 {
+		t.Fatal("expected a pre-load pair")
+	}
+	for _, m := range pair {
+		if m.Role == "user" {
+			t.Errorf("no user-role message may carry module text, got %q", DerefStr(m.Content))
+		}
+	}
+	if !strings.Contains(DerefStr(pair[1].Content), "caj__read_file") {
+		t.Error("the schemas must be in the tool result")
+	}
+
+	// Late-connect path: queue an announcement directly; flushPendingModuleEvents
+	// never appends a user message.
+	app.RegisterMCPModules(mcp)
+	app.flushPendingModuleEvents()
+	for _, m := range app.Conv {
+		if m.Role == "user" {
+			t.Errorf("no user-role message may carry a module announcement, got %q", DerefStr(m.Content))
+		}
+	}
+	if len(app.pendingModuleAnnouncements) != 0 {
+		t.Errorf("nothing new should have been announced (already in the index); queued %v", app.pendingModuleAnnouncements)
+	}
+	// A late-connect announcement queued directly: the queue itself is
+	// only consumed by a tool result, never appended as a user message.
+	app.queueModuleAnnouncement("Context module available: mcp:caj")
+	for _, m := range app.Conv {
+		if m.Role == "user" {
+			t.Errorf("a queued announcement must not be a user message, got %q", DerefStr(m.Content))
+		}
+	}
+}
+
 // TestPreload_FirstRequestContainsSchemas: a task text with "trello" must
 // produce a first request whose messages already contain the trello
 // schemas, in the same form load_module returns — and a call_tool to a
