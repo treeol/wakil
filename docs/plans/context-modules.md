@@ -4060,3 +4060,364 @@ here, before implementation):**
   `load_module`; reducing its authority is the change, eliminating
   the invitation is not possible without removing the late-connect
   announcement entirely, which would hide a real capability.
+
+---
+
+# Release 0.8.10
+
+Release of the `work/context-modules` work as Wakil v0.8.10 from `master`
+after a fast-forward merge. Local only until the release commit is pushed;
+the tag is pushed only after the user answers STOP 1 with "tag". Two stops:
+STOP 1 after CI is green on the pushed release commit, STOP 2 after the tag.
+
+## 1. State check (run in this session)
+
+```
+$ git status --short
+(no output)
+$ git rev-parse HEAD
+b4383314f9b2cb235cc7f9b6e08e32a3daf3e2e4
+$ git log --format='%h %G? %s' v0.8.9..HEAD | wc -l
+46
+$ git log --format='%H %G? %s' v0.8.9..HEAD | awk '$2!="G"'
+(no output — every commit is signed G)
+$ git merge-base --is-ancestor v0.8.9 HEAD && echo ancestor-ok
+ancestor-ok
+$ git tag -l v0.8.10
+(no output)
+$ git ls-remote --tags origin v0.8.10
+(no output)
+$ git branch --show-current
+work/context-modules
+$ git rev-parse master
+c89e5a82a02144e1318d6343ceccd7eac11342c4  (== v0.8.9, so the merge can fast-forward)
+```
+
+## 2. Verified findings
+
+### 2.1 `git log v0.8.9..HEAD` read in full against `CHANGELOG.md [Unreleased]`
+
+46 commits, all signed `G`, from `9a7fece` (plan for context modules) to
+`b438331` (wire announcement to tool results, single pre-load, Turn 0 synthetic
+pair). Every user-visible change has a line; no line lacks a commit:
+
+| CHANGELOG [Unreleased] entry | Commits |
+|---|---|
+| Context modules Stage 1, off by default (`context_modules`, `load_module` + `call_tool`, result-json/CSV columns, bench flag, MCP pre-load, frozen index) | `d64d632` (switch + golden off-is-byte-identical tests), `a41b312` (registry, BuildTools split), `7bb090a` (single dispatch), `d1896d7` (MCP modules, keyword pre-load), `d9a74e7` (cache-stability test), `22c205d` (result-json/CSV columns), `7180ad9` (measurement helper), `9cfaf48` (CHANGELOG, headless, bench README) |
+| Stage 1 fixes (late MCP connect/disconnect/reconnect lifecycle, pre-load delivers schemas, single-dispatch gate incl. `ExecuteToolCall`, `--context-modules` flag, subagent byte-identity, `--no-memory`) | `35aaa8c`, `8bbe22d`, `112b8f4`, `56297bf`, `8089e48`, `1f7acb8`, `6ac5b50`, `e39c982` |
+| Round 2 fixes (loaded modules survive every collapse, synthetic pre-load pair, announcement on next tool result, server-name-only keywords with reason line) | `6b3e77b`, `72f9492`, `c915ddf`, `b438331` |
+| Trace writer never splits a record at 64 KiB; append-only tail repair; one drop warning | `9309ed7`, `42f1e48`, `9e5c391`, `7358b05` |
+| `scripts/context_usage.sh` skips and counts broken lines, prints TOOL/CALLS/SESSIONS + `--union` counts, never prints content | `4f2f00a`, `36bc070` |
+
+The remaining commits are plan/design documentation for this work
+(`9a7fece`–`b9637f1`, `ae29e7c`–`3670ef7`, `80f7129`, `702298d`, `ae629e1`)
+with no user-visible effect. No commit in the range lacks a CHANGELOG line
+if it changes behaviour, and no CHANGELOG line lacks a commit.
+
+The size claims in the [Unreleased] notes (core array ~27 800 B / ~39 300 B
+full, saving ~2 875 / ~3 243 est. tokens) come from the measurement helper
+(`7180ad9`, `TestMeasurement_TokenEstimate`) — estimates at bytes/4, labelled
+as such in the note. The off number is the per-tool-marshalled-sizes sum
+(39 304 B / 9 826 est. tokens, reproduced in this session), which differs
+from the §1.3 whole-array marshalling (39 563 B / 9 890) by the per-tool
+framing; both are estimates of the same default-config array. The
+byte-identical claim is structural, not a checked-in 0.8.9 golden:
+with the switch off `BuildTools` runs the same code path as without the
+feature (`internal/agent/modules_test.go`
+`TestContextModulesOff_ByteIdentical`).
+
+### 2.2 The v0.8.9 release commit
+
+`git log --format='%h %s' v0.8.8..v0.8.9` gives the v0.8.9 release commit as
+`4bb814a` (`chore: release 0.8.9`). `git show 4bb814a --stat` shows it touches
+exactly one file:
+
+```
+ CHANGELOG.md | 11 +++++++++++
+ 1 file changed, 11 insertions(+)
+```
+
+The release commit converts `[Unreleased]` into `[0.8.9] - 2026-11-22` with
+an "Upgrading from 0.8.8, in short" paragraph and the "No configuration key
+changed. `MinHisnVersion` stays 0.6.1." line, leaving the body entries
+unchanged. Before it, `f1ca7e1` (`docs: release 0.8.9 mashura review
+outcome`, `docs/plans/0.8.9-cleanup.md` only) is the last non-release commit
+on the branch; the release commit is the final commit on `master` for the
+release. The 0.8.10 release commit follows the same shape: `CHANGELOG.md`
+only, heading `[0.8.10] - 2026-11-23`, a fresh empty `[Unreleased]`, and an
+upgrade paragraph. No version is pinned in code — the binary version is
+injected from the tag by goreleaser (`.github/workflows/release.yml`: "The
+binary version is injected from the tag itself"), `install.sh` carries only
+`HISN_VERSION`, `README.md` pins no release version, and
+`scripts/release_notes.sh 0.8.10` must print the new section.
+
+### 2.3 Behaviour facts the release notes must state plainly
+
+Verified in the code before this note is written (paths read in this
+session):
+
+- `context_modules` is `"off"` by default (`internal/config/config.go:451`,
+  `DefaultConfig`, `validateEnums` accepts only `""|"off"|"on"`); enabled by
+  config key `"context_modules": "on"`, env `WAKIL_CONTEXT_MODULES=on`, or
+  `--context-modules on` (interactive and headless, flag > env > config).
+- With the switch off the tool array and preamble are byte-identical to
+  0.8.9 behaviour (golden tests in `internal/agent/modules_test.go`).
+- With the switch on the tool array is core-only; deferred tools and each
+  MCP server are modules loaded with `load_module(name)` and called with
+  `call_tool(name, arguments)`; approvals, grants, the shell classifier,
+  sandbox, network policy, declined-count, trace and result-json accounting
+  all run on the inner tool name.
+- Subagents keep their existing curated tier tool lists (the switch does
+  not apply to them): `internal/agent/subagent.go:1615-1641` builds a child
+  `App` with `Tools: childTools` and no `Modules`, and the `IsSubagent:
+  true` guard at `internal/agent/modules.go:831` keeps module paths off;
+  `docs/configuration.md:290` states it.
+- An MCP server is pre-loaded on the first request only when its name (or a
+  keyword configured in `mcp_module_keywords`) matches the first user
+  message, matched whole-word and case-insensitive, except that a configured
+  multi-word keyword matches as a substring (`internal/agent/modules.go`
+  `defaultMCPKeywords`, `matchMCPKeywords`, `matchedKeyword`). The built-in
+  keyword is the server name itself (lower-cased), so any server — e.g.
+  `caj` — pre-loads on its name with no configuration. A user-configured
+  keyword list replaces the built-in for that server.
+- The prompt itself is not split — Stage 2 (prompt modules) is not shipped;
+  no prompt file changes in this range (`git diff --stat v0.8.9..HEAD` shows
+  no `prompts/` file).
+- Trace files are no longer cut mid-record at 64 KiB: each record and its
+  newline are one write (`internal/trace/trace.go` `drainTo`); a resumed
+  session appends after, never onto, a pre-existing cut tail (tail
+  repair); existing cut files are left as they are — the writer never
+  rewrites history, only `scripts/context_usage.sh` skips their broken
+  lines and counts them.
+- `scripts/context_usage.sh` prints `TOOL<TAB>CALLS<TAB>SESSIONS` plus
+  `sessions=N sessions_with_tools=M turns=T` on stderr, and with `--union`
+  the distinct-session counts; its header states the privacy contract (only
+  tool names and integers, never arguments, results or content) and the
+  test `scripts/context_usage_test.sh` proves a secret marker never reaches
+  the output.
+- The bench numbers quoted in the upgrade notes are from the host run at
+  `b438331`: anthropic/claude-haiku-5.5, 5 tasks, `--runs 3`, switch off
+  15/15 pass $0.3519 (one long-read run alone $0.1482 at 693k input tokens),
+  switch on 15/15 pass $0.1477; steps input per run 152.6k off, 91.9k on.
+  Live at `b438331` with the switch on: `mcp:caj` loaded, its tools stayed
+  usable after collapses, a caj command ran through `call_tool` without a
+  second load; a fresh session whose first message was "show my trello
+  boards" pre-loaded `mcp:trello`, used its tools without `load_module`,
+  no provider error.
+- `MinHisnVersion` stays 0.6.1 (`internal/config/config.go:1393`,
+  `internal/sandbox/hisn/backend.go`); `install.sh` `HISN_VERSION` must
+  equal it (CI check). No configuration key changed for existing users
+  except the two new additive keys `context_modules` (default `"off"`) and
+  `mcp_module_keywords` (default nil).
+
+### 2.4 Host-verified numbers reused in the notes
+
+From the task statement, verified on the host (rubin) at `b438331`:
+`scripts/host_verify.sh v0.8.9` PASS 21, FAIL 0, SKIP 1 (shellcheck not
+installed); bench and live runs as in §2.3. These are the host's results; the
+sandbox in this session does not reproduce them, so they are quoted as
+host-measured, one model on five small tasks, not as this session's output.
+
+## 3. Files this session will touch
+
+| File | Change |
+|---|---|
+| `docs/plans/context-modules.md` | This section (committed first, on `work/context-modules`). |
+| `CHANGELOG.md` | Release commit on `master` only: heading `[0.8.10] - 2026-11-23`, "Upgrading from 0.8.9, in short" with the context-modules paragraph (§2.3), the trace fix, and the `context_usage.sh` note; "No configuration key changed except two new additive keys…" + "`MinHisnVersion` stays 0.6.1." + the bench CSV gains two appended columns (read by header name) and the result-json gains `context_modules`/`modules_loaded` (omitted when off); fresh empty `[Unreleased]`. Body entries below the heading are unchanged. |
+| `docs/plans/context-modules.md` (again, on `work/context-modules`) | The Mashūra outcome appendix for this release round (taken / rejected / for-later), mirroring the 0.8.9 shape — committed before the merge, so the release commit is the final commit on `master` and the tagged SHA is exactly the CI-green SHA. |
+| Any file a BLOCKING finding names | Fixed forward, one signed commit each, on `work/context-modules` (before the merge) or on `master` (after CI flags a red check on the release SHA). |
+
+No other file is touched: no version constant exists to bump (the tag
+injects it), no prompt file changes, no config default changes, no feature
+work. `MinHisnVersion` stays 0.6.1; `context_modules` stays `"off"`.
+
+## 4. Steps, with their checks
+
+1. **Gates on `work/context-modules`** (before anything moves):
+   `gofmt -l cmd internal prompts scripts` (must be empty);
+   `go vet ./...`; `golangci-lint run`; `go test -count=1 -timeout 30m ./...`;
+   `go test -race -count=1 -timeout 20m ./internal/agent/ ./internal/wiring/
+   ./internal/config/ ./internal/trace/ ./cmd/wakil/`;
+   `scripts/bench.sh --self-test`; `sh scripts/context_usage_test.sh`;
+   `scripts/check_config_docs.sh`; `shellcheck -s sh scripts/bench.sh
+   scripts/context_usage.sh bench/lib/*.sh` if available (host could not run
+   it; CI will). Any failure here stops the session until fixed forward.
+2. **Fix BLOCKING findings** from the one Mashūra round (§5), one signed
+   commit each, re-running the affected gates of step 1.
+3. **`git checkout master; git merge --ff-only work/context-modules.`**
+   Check: `git rev-parse HEAD` equals the `work/context-modules` head and
+   `git status --short` is empty. No fast-forward → stop and report
+   (the branch is at `c89e5a8` with no commits of its own, so a
+   fast-forward is expected).
+4. **Release commit on `master`** (`CHANGELOG.md` only,
+   `chore: release 0.8.10`, mirroring `4bb814a`). Checks:
+   `scripts/release_notes.sh 0.8.10` prints the section starting with
+   `## [0.8.10] - 2026-11-23` and the upgrade paragraph;
+   `scripts/release_notes.sh 0.8.9` still prints the old section unchanged;
+   the next commit after it on `master` is only the Mashūra appendix (if
+   any) — appended on `work/context-modules` since §3 — no other file
+   changed. If `scripts/host_verify.sh --fast v0.8.9`
+   runs in this sandbox, report its summary; if it cannot run here, say so.
+5. **`git push origin master.`** Check: `git rev-parse HEAD` equals
+   `git ls-remote origin refs/heads/master` (record both).
+6. **Wait for CI on that exact SHA** (poll the check-runs API, `per_page=100`,
+   every run completed). A failed check → read its log, fix forward with a
+   new signed commit on `master`, push, wait on the new SHA. At most three
+   fix rounds, then stop and report.
+7. **STOP 1.** Report the release SHA, the full check-run table for that
+   SHA, the commits added in this session, and the Mashūra findings
+   (taken / listed). Do nothing else until the user writes "tag".
+8. **After "tag":** re-confirm `origin/master` is still the STOP 1 SHA and
+   its check runs are all successful; `git tag -s -a v0.8.10 -m "Wakil
+   v0.8.10"` on that SHA; `git tag -v v0.8.10`; `git push origin v0.8.10`;
+   `git ls-remote --tags origin v0.8.10` (report both the tag object and the
+   `^{}` commit line).
+9. **Wait for the tag workflow;** the release must exist with its assets
+   (`curl …/releases/tags/v0.8.10`, `tag_name`, `draft`, asset name+size).
+   A failed workflow: do not touch the tag or the release — report the
+   failing job and its log lines and stop.
+10. **STOP 2.** Report: tag object and commit SHA, the workflow result, the
+    asset list, "For later", and what is unverified.
+
+## 5. Mashūra round for this release
+
+One round, on this section plus `git diff --stat v0.8.9..HEAD` and the
+CHANGELOG `[Unreleased]` text — never the whole design document. Open
+question: "what in this release would break or surprise a user who upgrades
+from 0.8.9, and what does the CHANGELOG not say?" Only BLOCKING findings
+(wrong behaviour, credential or policy bypass, data loss, a false CHANGELOG
+or release-notes statement) are fixed forward, one commit each; the rest go
+to "For later". No second round.
+
+## 7. Mashūra round outcome (op-1; opinions checked against code in this session)
+
+One round on this section + `git diff --stat v0.8.9..HEAD` + the CHANGELOG
+`[Unreleased]` text. Taken (BLOCKING, each verified in code before folding
+in; one signed commit — `fix: Mashūra release-review findings …` — for the
+CHANGELOG and plan wording):
+
+- **Late-connect delivery contradiction.** The Fixed entry said a late
+  module's index line "reaches the model as an appended message"; the round-2
+  entry says the announcement rides the next tool result. Verified in
+  `internal/agent/modules.go:1023-1044` (`queueModuleAnnouncement` /
+  `takeModuleAnnouncement` + `flushPendingModuleEvents` at `:965-1024`):
+  the announcement is queued for the next tool result and is never a
+  stand-alone message; the Fixed sentence was stale. The entry is rewritten
+  (`CHANGELOG.md`).
+- **"In the module table" (non-existent UI).** Round 2 (b6) proved there is
+  no user-facing module table in `internal/tui`; the pre-load reason lives
+  in the model-facing preamble index. The wording is changed to
+  "the module index (frozen in the preamble at turn 1)".
+- **Branch-internal narration as prior behaviour.** The three "Stage 1 /
+  Stage 1 fixes" bullets and the "The docs no longer claim per-repo
+  persistence" sentence narrate work on an unreleased feature; a 0.8.9 user
+  never saw them. The bullets are consolidated into two accurate `### Added`
+  entries ("Context modules (Stage 1, off by default)", "Loaded modules
+  survive collapse") and the persistence sentence is dropped.
+- **`scripts/context_usage.sh` "used to abort with exit 2".** The script is
+  new in this branch (it does not exist at `v0.8.9`); saying "used to" is
+  the same error 0.8.9 had to correct for `scripts/bench.sh`. Reworded as a
+  new script.
+- **Bench CSV / result-json change omitted.** The CSV gains two appended
+  columns regardless of the switch (`scripts/bench.sh:184`, read by header
+  name, so old 16-column CSVs still render) and `--result-json` gains
+  `context_modules`/`modules_loaded` (omitted when off,
+  `internal/wiring/resultjson.go:137-150`). The release section names both
+  in the "No configuration key changed" line; the CHANGELOG entry already
+  names the columns and is unchanged on this point.
+- **Byte-identical claim, precise now.** The golden test compares the off
+  build against the current tree's own `BuildTools` call
+  (`internal/agent/modules_test.go:28-40`), not a checked-in 0.8.9 fixture;
+  "byte-identical to today" becomes "byte-identical to 0.8.9" and the claim
+  is stated as structural (the switch-off path runs the same code path).
+  The ~39 300 B off figure is the per-tool-marshalled sum (39 304 B /
+  9 826 est. tokens, reproduced in this session by
+  `TestMeasurement_TokenEstimate`), differing from the §1.3 whole-array
+  figure (39 563 B) by the per-tool framing.
+- **Subagents wording.** "Subagents always run with the full tool list" is
+  false (they get curated tier lists). Reworded to "Subagents keep their
+  existing curated tier tool lists (the switch does not apply to them)".
+- **Pre-load over-generalisation.** Fixed: the built-in keyword is the
+  server name itself for any server (verified at `modules.go:638-643` —
+  `caj` pre-loads on "caj" with no configuration); user keywords replace
+  the built-in; multi-word configured keywords match as substrings while
+  single words match whole-word.
+- **Commit-order contradiction.** §3 permitted the Mashūra appendix on
+  `master` after green CI, which would invalidate the STOP 1 SHA. §3/§4 now
+  require the appendix on `work/context-modules` before the merge, so the
+  release commit is the final commit and the tagged SHA is CI-green.
+
+Checked and confirmed, no change needed:
+
+- **Trace absolute claim.** `internal/trace/trace.go:185-203` (`drainTo`)
+  writes record + newline as one `f.Write`, no `bufio.Writer`; the claim
+  holds for records of any size. Verified by running
+  `TestTrace_LargeSessionAllLinesParse`,
+  `TestTrace_NoPartialLineAcrossFlushSizes`,
+  `TestReadFile_SkipsBrokenTail`,
+  `TestReadFile_ValidRecordAfterBrokenLine`,
+  `TestOpen_RepairsCutTailBeforeAppending`,
+  `TestReadFile_ReadsRecordLargerThanBuffer` at HEAD — PASS.
+- **Every-collapse claim.** The pinned `load_module` message is preserved
+  (identity: role tool, name `load_module`, Pinned) through
+  `collapseFinishedTurns`, `collapseMidTurnPrefix` and `handleCollapseContext`
+  (`internal/agent/collapse.go:970-1100`, `:2059-2154`); `materializeCollapsed`
+  (`:2161-2184`) bakes the projection, so the preserved messages survive
+  into the baked Conv. The CHANGELOG phrase stands, now naming the three
+  collapse paths.
+- **Flag > env > config precedence, single-dispatch gate, no-memory with
+  switch on.** All three are covered by checked-in tests
+  (`TestConfig_ContextModulesFlagPrecedence` in
+  `internal/config/context_mode_test.go:118`,
+  `TestExecuteToolCall_UnloadedModuleToolRejected` /
+  `TestCallTool_*` per-gate tests in `internal/agent/modules_test.go`,
+  `TestBuildApp_NoMemory_LeavesNoMemoryModule` +
+  `internal/wiring/bootstrap_nomem_test.go`). No code change.
+
+For later (not taken this session):
+
+- Live provider check for the synthetic assistant/tool pair before the first
+  user message (verified on the host only, one model/provider).
+- Stage 0 cache-prefix measurement and the reliability probes
+  (`memory-note`, `git-history`); the feature stays off by default and is
+  labelled experimental in docs/configuration.md.
+- `shellcheck -s sh scripts/context_usage.sh scripts/context_usage_test.sh`
+  (not installed in this sandbox; CI `bench-harness` covers `bench/lib/*.sh`
+  and `scripts/bench.sh`).
+- Resume with the switch on: registry `loaded` state is not persisted.
+- Substitution (`run_shell mv` in place of a deferred `move_file`) shifts
+  the approval surface.
+- The bench numbers ($0.3519 off / $0.1477 on, steps 152.6k → 91.9k input
+  tokens per run, one model on five small tasks, host-measured at
+  `b438331`) carry their caveats in §2.4; the +25/+30 tool-call deltas in
+  the earlier Haiku pairs are unexplained (round 2 (b10)) and are not
+  claimed as variance in the notes.
+
+## 6. Open risks
+
+- **The feature is off by default; the notes must say so in the first
+  paragraph.** A user who reads "context modules" as a behaviour change will
+  look for a difference that does not exist with the switch off.
+- **Bench numbers are one model on five small tasks.** 15/15 pass on both
+  settings, $0.1477 vs $0.3519, steps input 91.9k vs 152.6k per run —
+  quoted as exactly that, never as a general claim, and never as this
+  session's measurement (no real model requests run here).
+- **The synthetic pre-load pair and the announcement-on-tool-result are
+  live-verified only on the host at `b438331`** (caj/trello sessions);
+  provider acceptance of an assistant/tool prefix before the first user
+  message is unverified by CI, which runs no model requests. The notes
+  state the mechanism accurately, including that a pre-loaded module's
+  schemas arrive as a pinned tool result.
+- **Pre-load is name-only.** A task about Trello that does not say "trello"
+  (or a configured keyword) no longer pre-loads `mcp:trello`; the model
+  must call `load_module`. Stated in the CHANGELOG already; the upgrade
+  paragraph repeats it in one line.
+- **Existing cut trace files stay cut.** The writer never rewrites
+  history; only new writes and the tail repair change anything, and the
+  usage script skips the broken lines. A user who diffs an old trace file
+  will see no change and must not read that as "fixed".
+- **`docs/plans/context-modules.md` is committed as part of the release
+  branch** (it is the design record of the shipped work); the DO NOT ALTER
+  untracked list (`wakil-discovery-0.8.8.md`, `docs/work-*-progress.md`,
+  `AUDIT-*.md`, `docs/mashura-*.md`, `.tmp*`, `./wakil-next`) stays
+  untracked and is never staged.
