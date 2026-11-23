@@ -3879,3 +3879,184 @@ the synthetic-load pre-load, the tool-result announcement.
    a future cause could hide inside "variance". The host bench pair in
    the final report is the only check; it is not run here (no real
    model requests in this stage).
+
+## 5. Mashūra findings (taken / rejected)
+
+Round 1 on this section (3/3 panels, first attempt failed with a
+network timeout and was retried; verdict on all three sides: the plan
+fixes the demonstrated mechanisms, but Block 1 as written can still lose
+a module and Block 4 still has holes). Each finding was checked against
+the code at `6ac5b50` before being folded in; opinions that contradicted
+the code were rejected with reasons. Rejected findings are listed with
+their reason so the record shows what was considered.
+
+**Taken (folded into the blocks above is wrong — it is folded in
+here, before implementation):**
+
+- **(b1) The presence check must run over the projected payload, not
+  Conv — 3/3 panels.** Confirmed. `a.Conv` is the stored history;
+  the request the model sees is built by `contextProjection()`
+  (`collapse.go:765` → `pruneProjection(collapseProjection(conv))`),
+  reached through `requestMessages()` (`styleguides.go:412`) and used
+  in `streamTurn` (`turn_phases.go:305`). `collapseProjection` is the
+  elision at `:934-954` (full turn) / `:876-933` (partial) / `:938-946`
+  (degraded pointer). `Conv` keeps the archived messages and only the
+  projection drops them, so a Conv scan always finds the schemas and
+  re-delivery would never fire — the host bug reproduced by the fix.
+  Block 1 now: presence is tested on the **projected payload**
+  (schema present in what would be sent), never on Conv or on raw
+  text.
+- **(b2) The schema-message identification key was unspecified — 3/3
+  panels.** All three options were challenged; the challenged text
+  scan is real (the host model `read_file`d the archive, so a content
+  match would count it as present). Decided: a schema message carries
+  an explicit identity — `Role=="tool"`, `Name=="load_module"`,
+  `Pinned==true`, and the module name in `Content`. Presence is a
+  boolean over the projected payload by that identity, not a content
+  search for rendered text and not a collapse-note match. The
+  `PreloadedSchemas` multi-module joined block is split so each
+  module's block is identifiable on its own. (This changes one
+  rendering detail: a module's schemas are matched by identity, not by
+  the joined string.)
+- **(b3) Pair integrity — 3/3 panels.** Confirmed by `Compact`'s
+  existing rule (`compact.go:427-530`, re-insertion at `:650-656`):
+  Pinned in the older span is extracted into a pinned prefix, its
+  parent `tool_calls` message and the sibling results in the same
+  assistant message are co-preserved, and the prefix is re-inserted
+  before the summary and the tail. Block 1 now adopts the same rule at
+  every collapse site: a schema message is preserved **together with**
+  its assistant tool-call message and the sibling tool results of that
+  message, re-inserted at the head of the kept span — never left
+  orphaned. `enforceHardMax` (`oldestTurnRange`, `compact.go:685-716`)
+  already skips any turn containing a Pinned message; `evictStaleToolResults`
+  (`app.go:2463-2467`) skips Pinned; `prune.go` excludes pinned rounds
+  from candidates (`roundHasPinned`, `prune.go:965`). Those four were
+  already safe and are not changed.
+- **(b4) Pin scope — 2/3 panels.** The predicate is not `Pinned`
+  alone. `finalizeToolResult` also pins subagent results
+  (`turn_phases.go:548`). Block 1 exempts exactly the
+  `load_module` schema messages by identity (`Name=="load_module" &&
+  Pinned`, plus the module name); subagent-result pins keep their
+  current behaviour (collapsed as today) and are not made
+  uncollapsible. Stated, not implied.
+- **(b5) `materializeCollapsed` is a fourth loss path — confirmed.**
+  `collapse.go:2002-2025` replaces `a.Conv` with the projection and
+  clears the records, with no Pinned check; Compact (`:397`) and
+  `enforceHardMax` (`:779`) call it. Once materialised the pinned
+  result is gone from Conv permanently. The same prefix-preservation
+  helper runs before materialisation, so the schema messages are part
+  of the baked Conv rather than archived away.
+- **(b6) The frozen-preamble vs. reason line contradiction — 3/3
+  panels, confirmed.** The module node is a live registry object
+  (`ModuleIndex` at `modules.go:517-528`, appended into the frozen
+  `messages[0]` preamble at `app.go:2025-2026`), and there is **no
+  user-facing module table** — `internal/tui` has no module table
+  rendering (verified by a search over `internal/tui`: no
+  `Modules`/`LoadedNames`/`load_module` references; the table the user
+  saw is the preamble index the model reads, and the rendered
+  "loaded / not loaded" state the user read is `[ModuleRegistry.LoadedNames]
+  / result-json`). "Loaded by you" would go into the frozen preamble
+  and therefore cannot update mid-session — that would mutate
+  `messages[0]` and break the cache rule. Block 2 now renders the
+  reason line only in the turn-1 preamble (frozen there, which is
+  exactly when a pre-load happens) and states that a module the model
+  loads later is reported through the existing result-json
+  `modules_loaded` field, not the table. The "you" is the model: the
+  line reads `pre-loaded: "trello" in your message` because the reason
+  is only ever recorded at turn 1.
+- **(b7) The preamble index audit — 2/3 panels, checked and narrow.**
+  `ModuleIndexLine` (`modules.go:512`) and `ModuleIndex` (`:517-528`)
+  render `  %-16s — %s` with `m.Desc`; an MCP module's Desc is
+  `fmt.Sprintf("MCP server %q (%d tools)", srvName, len(tools))`
+  (`modules.go:171-192`) — the server name (from the config, via
+  `mcp_manager.go:1012-1020`) and a count only; **no MCP
+  server-supplied description is interpolated anywhere**. The
+  preamble is `Role:"system"` (`app.go:1971-1982`), so the index is
+  system-role text, but its content is harness-authored: server name
+  + tool count. Server *descriptions* travel in the tool definitions
+  (`MCPToolToOpenAI`, `mcp_manager.go:777`) and in the schema blocks
+  (Block 4 moves them to `role:"tool"`). The residual "server text
+  reaches the model through tool definitions" is true and out of
+  scope: that is what a tool definition is, and the DO NOT ALTER rules
+  require those descriptions to reach the model for the tool to be
+  usable. Recorded here rather than implied closed.
+- **(b8) The re-delivery role — 2/3 panels.** Block 1's re-delivery
+  now carries the same Synthetic pair as Block 4 (assistant
+  `load_module` call + pinned `role:"tool"` result), never a collapse
+  note line carrying schemas and never `role:"user"`.
+  `TestNoUserRoleMessageCarriesMCPText` therefore covers re-delivery
+  too, and scans the projected payload, not the append paths.
+- **(b9) The synthetic pair before the first user message — 2/3 panels.**
+  Not changed in this round. The order is unchanged (the pair is
+  appended after the preamble and before the user's first message);
+  whether a provider rejects an assistant/tool prefix before the
+  first user message is **unverified** — no real model request runs in
+  this stage (DO NOT ALTER), and the live check is in the final
+  report's host commands. Recorded as an open risk, not decided.
+- **(b10) Block 3's long-read explanation does not cover pair 1 — 2/3
+  panels, confirmed, claim downgraded.** `20261122T222041` (pair 1)
+  has `modules_loaded` = `n/a` on all three long-read runs, yet
+  long-read still rose +7; `mcp:context7` appears only in
+  `20261123T110122` (pair 2, +8). So pre-load does not explain pair
+  1's +7, and the +25/+30 totals are not shown to be "variance".
+  §1.4 is restated: the long-read delta has a cause only in pair 2;
+  the remaining delta is **unexplained, not variance**. No code change
+  follows from it (no mechanism in this branch points at it), and the
+  host bench pair is the only measurement that can close it — stated
+  as a merge gate in the final report, not as an afterthought.
+- **(b11) Pin-preservation prerequisites — 2/3 panels.** The Block 1
+  tests now assert against the final projected payload (schema
+  presence, pair validity, user-role absence), not against Conv.
+  Added: orphan-pair rejection, announcement-under-`CapOrStub`, and
+  per-module exactly-once (a `PreloadedSchemas` block carrying two
+  modules re-delivers only the one that is missing).
+
+**Rejected (with reason):**
+
+- **Removing the `Pinned` exemption for subagent results
+  (`turn_phases.go:548`).** Rejected. The plan pins subagent results
+  so the parent's compaction never dissolves the breadcrumb to the
+  full structured findings; making them collapsible would remove that
+  guarantee. The pin is narrow in effect because Block 1 keys on
+  `Name=="load_module"`, not on `Pinned`.
+- **Exporting the module table to the TUI.** Rejected. The user
+  asked for the reason in "the module table"; there is no such table
+  in `internal/tui`, and building one is new UI scope. The reason
+  line goes into the existing model-facing index, which is the table
+  the user was reading.
+- **Live provider verification of the synthetic pair before merge.**
+  Rejected as a pre-merge gate: DO NOT ALTER forbids real model
+  requests in this stage, and the host check exists in the final
+  report for the user to run. Not a code decision.
+- **Preamble index as system-role injection (fable §C1).** Checked
+  and narrowed: the index interpolates only the config-derived server
+  name and a tool count for MCP modules, and static harness-authored
+  literals for built-ins. There is no server-controlled description
+  in the preamble today. If a future server description were ever
+  interpolated, (b7) would have to be reopened — recorded as the
+  condition.
+- **`rewrite`/`/clear` and resume resetting `preambleDay` (wonder §B1,
+  gemini §B4).** Checked. `preambleDay` is declared at `app.go:446`
+  and reset at `app.go:1125` (`InstallSession` — a session resume
+  rebuilds Conv[0]) and `app.go:1184` (`NewConversationTransition` —
+  `/new` / `/reset`; there is **no `/clear` command** in
+  `internal/agent/commands.go:242-255`). Set-prompt-mode also resets
+  it (`app_state.go:219`); day rollover sets it to today, never to
+  `""` (`app.go:2248`, `app.go:2316`); prune toggles use a sentinel,
+  not `""` (`prune.go:286`). So a resume or `/new` can give a session
+  a new turn 1 and a new pre-load — which is correct behaviour for a
+  fresh preamble, and is the point at which the model is told about
+  the loaded modules again. Not a hole.
+- **Negation ("don't use trello").** Not implemented. Whole-word
+  matching on a server name is a heuristic by design, and adding
+  negation parsing of user text is scope creep with its own false
+  positives. The reason line is the mitigation: a pre-load is always
+  visible in the index with its cause.
+- **Server-instigated `load_module` through the announcement
+  (wonder §B3).** Partially accepted by (b8) and Block 4: the
+  announcement is harness-authored text (server name + tool count,
+  per (b7)) appended to a tool result, never a user message and never
+  server-composed prose. It still names the server and invites
+  `load_module`; reducing its authority is the change, eliminating
+  the invitation is not possible without removing the late-connect
+  announcement entirely, which would hide a real capability.
