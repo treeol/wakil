@@ -553,6 +553,16 @@ lifetime by default. The workspace directory — positional arg, or cwd if
 omitted — bind-mounts into the container at `/mnt/<dirname>`. `--sandbox direct`
 runs on the host instead, no container.
 
+Workspace resolution (0.8.11): the start folder is resolved in one order —
+positional path, `--host-workdir`, `WAKIL_HOST_WORKDIR`, then the current
+directory — so a bare `wakil` behaves like `wakil .`. The config file keys
+`host_work_dir` / `work_dir` (and `WAKIL_WORKDIR` / `ILM_WORKDIR` in direct
+mode) no longer steer the start folder; when one is set, startup prints one
+line that it is ignored since 0.8.11 and how to work in a folder instead
+(`cd` into it, or `wakil <path>`). This is Breaking: sessions from a
+config-selected folder are still reachable with `--resume --all`, and no
+session, memory or history data is deleted or rewritten.
+
 ## Sandbox backends
 
 `sandbox.backend` selects where tool calls run: two sandbox backends exist, plus

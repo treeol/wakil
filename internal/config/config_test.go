@@ -25,17 +25,20 @@ func TestStartupBannerNamesNonCwdWorkDir(t *testing.T) {
 	if line := c.nonCwdWorkDirLine(); line != "" {
 		t.Errorf("work dir == cwd must print no line, got %q", line)
 	}
-	// Work dir != cwd, from the config file: the line names the folder
-	// and the one setting that chose it.
+	// Work dir != cwd, from --host-workdir: the line names the folder
+	// and the one setting that chose it. (The config file no longer steers
+	// since 0.8.11, so it is not a source any more.)
 	other := filepath.Join(cwd, "..", "other-project")
 	c.HostWorkDir = other
+	c.ResolvedWorkspace = other
+	c.hostWorkDirFlag = true
 	c.workDirLoaded = true
 	line := c.nonCwdWorkDirLine()
 	if !strings.Contains(line, filepath.Clean(other)) {
 		t.Errorf("line = %q, want folder %q", line, filepath.Clean(other))
 	}
-	if !strings.Contains(line, "work_dir in the config file") {
-		t.Errorf("line = %q, want the choosing setting named (config file)", line)
+	if !strings.Contains(line, "--host-workdir") {
+		t.Errorf("line = %q, want the choosing setting named (--host-workdir)", line)
 	}
 	if strings.Count(line, "WAKIL_WORKDIR") > 0 || strings.Count(line, "workspace argument") > 0 {
 		t.Errorf("line = %q, must name only ONE setting, not a list", line)
@@ -78,7 +81,10 @@ func TestStartupBannerSymlinkedCwd(t *testing.T) {
 }
 
 // TestWorkDirSourceNaming: the one-setting source for each layer,
-// in precedence order (positional > flags > env > config file).
+// in precedence order (0.8.11: positional > --host-workdir >
+// WAKIL_HOST_WORKDIR > cwd; --workdir is the in-container override). The
+// config file keys and WAKIL_WORKDIR no longer steer the workspace, so
+// they are not sources any more (the ignored-keys line covers them).
 func TestWorkDirSourceNaming(t *testing.T) {
 	cwd, _ := os.Getwd()
 	other := filepath.Join(cwd, "..", "other")
@@ -102,18 +108,20 @@ func TestWorkDirSourceNaming(t *testing.T) {
 	if got := hwd.workDirSource(); got != "--host-workdir" {
 		t.Errorf("host flag source = %q, want --host-workdir", got)
 	}
+	// WAKIL_WORKDIR / the config file no longer steer (0.8.11): with no
+	// positional arg, flag or WAKIL_HOST_WORKDIR, the source is the cwd.
 	t.Setenv("WAKIL_WORKDIR", "/somewhere")
 	env := mk(func(c *Config) { c.workDirLoaded = true })
-	if got := env.workDirSource(); got != "WAKIL_WORKDIR" {
-		t.Errorf("env source = %q, want WAKIL_WORKDIR", got)
+	if got := env.workDirSource(); got != "the current directory" {
+		t.Errorf("WAKIL_WORKDIR must not be a source (0.8.11), got %q", got)
 	}
 	file := mk(func(c *Config) { c.workDirLoaded = true })
 	t.Setenv("WAKIL_WORKDIR", "")
 	t.Setenv("ILM_WORKDIR", "")
 	t.Setenv("WAKIL_HOST_WORKDIR", "")
 	t.Setenv("ILM_HOST_WORKDIR", "")
-	if got := file.workDirSource(); got != "work_dir in the config file" {
-		t.Errorf("file source = %q, want work_dir in the config file", got)
+	if got := file.workDirSource(); got != "the current directory" {
+		t.Errorf("config file must not be a source (0.8.11), got %q", got)
 	}
 }
 

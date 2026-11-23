@@ -213,6 +213,9 @@ func main() {
 	if line := wiring.WorkspaceEnvOverrideLine(cfg); line != "" {
 		fmt.Fprintln(os.Stderr, line)
 	}
+	if line := cfg.IgnoredWorkDirKeysLine(); line != "" {
+		fmt.Fprintln(os.Stderr, line)
+	}
 	endNotice()
 
 	// Resolve --resume / --resume-id to a session id/prefix (global search —
@@ -230,6 +233,11 @@ func main() {
 			ws := cfg.WorkDir
 			if cfg.ExecMode != "direct" {
 				ws = cfg.HostWorkDir
+			}
+			// One workspace (0.8.11): LoadConfig resolved it; use it when
+			// present so the recent lookup cannot re-derive a second path.
+			if cfg.ResolvedWorkspace != "" {
+				ws = cfg.ResolvedWorkspace
 			}
 			endRecent := timeline.Begin("resolve recent session")
 			resolved, err := wiring.ResolveRecentSession(ws, cfg.AllSessions)

@@ -214,9 +214,17 @@ type Config struct {
 	// workDirLoaded marks a Config produced by LoadConfig, so an unloaded
 	// literal's WorkDir can be told apart from a file/env-derived one.
 	workDirLoaded bool
-	BaseURL       string `json:"base_url"` // full URL, e.g. "http://proxy-host:11400"
-	Host          string `json:"host"`     // alternative to base_url: just the hostname/IP
-	Port          int    `json:"port"`     // port for host (default 11400)
+	// ResolvedWorkspace is the one workspace LoadConfig resolved (0.8.11):
+	// positional > --host-workdir > WAKIL_HOST_WORKDIR > cwd, canonicalised.
+	// It is the value every workspace consumer reads instead of re-deriving
+	// the split between WorkDir (direct) and HostWorkDir (docker). The
+	// ignoredWorkDirKeys field (below, same block) names the settings that
+	// no longer steer the workspace; see IgnoredWorkDirKeysLine.
+	ResolvedWorkspace  string
+	ignoredWorkDirKeys []string
+	BaseURL            string `json:"base_url"` // full URL, e.g. "http://proxy-host:11400"
+	Host               string `json:"host"`     // alternative to base_url: just the hostname/IP
+	Port               int    `json:"port"`     // port for host (default 11400)
 
 	// Endpoints is the named-endpoint block. When present it supersedes the
 	// legacy top-level base_url/model fields: DefaultEndpoint selects the
@@ -2363,16 +2371,69 @@ func LoadConfig(argv []string) (Config, error) {
 	}
 
 	cfg.Sandbox.WorkDirExplicit = cfg.WorkDir != ""
+
+	// Resolve the workspace in one order (0.8.11): positional path,
+	// --host-workdir, WAKIL_HOST_WORKDIR, then the current folder. The
+	// config file keys host_work_dir / work_dir (and, in direct mode,
+	// WAKIL_WORKDIR / ILM_WORKDIR) no longer steer it — a bare `wakil`
+	// must behave exactly like `wakil .`. ignoredKeys records the ignored
+	// settings that were set, so one startup line can name them.
+	// Which layers set the work folder: cfg.HostWorkDir/cfg.WorkDir here
+	// hold the overlaid value (file < env < flag). --host-workdir binds to
+	// cfg.HostWorkDir, so a value with neither the flag nor the env set can
+	// only have come from the config file; the same holds for cfg.WorkDir
+	// without --workdir. The workspace below is then resolved from
+	// positional / --host-workdir / WAKIL_HOST_WORKDIR / cwd only; every
+	// other setting is recorded as ignored.
+	hostWorkDirSet := cfg.HostWorkDir != ""
+	workDirSet := cfg.WorkDir != ""
+	fileHostWorkDir := hostWorkDirSet && !cfg.hostWorkDirFlag && os.Getenv("WAKIL_HOST_WORKDIR") == "" && os.Getenv("ILM_HOST_WORKDIR") == ""
+	fileWorkDir := workDirSet && !cfg.WorkDirFlag && os.Getenv("WAKIL_WORKDIR") == "" && os.Getenv("ILM_WORKDIR") == ""
+	var ignoredKeys []string
+	if fileWorkDir {
+		ignoredKeys = append(ignoredKeys, "work_dir in the config file")
+	}
+	if fileHostWorkDir {
+		ignoredKeys = append(ignoredKeys, "host_work_dir in the config file")
+	}
+	// In direct mode the WAKIL_WORKDIR / ILM_WORKDIR values fold into
+	// cfg.WorkDir through env, so "no flag and no positional arg" is what
+	// makes them ignored rather than steering.
+	if cfg.ExecMode == "direct" && !cfg.WorkDirFlag && workspace == "" {
+		if os.Getenv("WAKIL_WORKDIR") != "" {
+			ignoredKeys = append(ignoredKeys, "WAKIL_WORKDIR")
+		}
+		if os.Getenv("ILM_WORKDIR") != "" {
+			ignoredKeys = append(ignoredKeys, "ILM_WORKDIR")
+		}
+	}
+	cfg.ignoredWorkDirKeys = ignoredKeys
+
+	// The one resolved workspace (0.8.11): positional > --host-workdir >
+	// WAKIL_HOST_WORKDIR > cwd. Canonicalised the same way everywhere
+	// (Abs + EvalSymlinks) so the resolved cwd gets the same normalization
+	// the positional path always got.
+	resolved := workspace
+	if resolved == "" && (cfg.hostWorkDirFlag || os.Getenv("WAKIL_HOST_WORKDIR") != "" || os.Getenv("ILM_HOST_WORKDIR") != "") {
+		resolved = cfg.HostWorkDir
+	}
+	if resolved == "" {
+		if wd, err := os.Getwd(); err == nil {
+			resolved = wd // default: the current directory
+		}
+	}
+	if abs, err := filepath.Abs(resolved); err == nil {
+		resolved = abs
+	}
+	if real, err := filepath.EvalSymlinks(resolved); err == nil {
+		resolved = real
+	}
+	cfg.ResolvedWorkspace = resolved
+
 	switch cfg.ExecMode {
 	case "docker":
-		if workspace != "" {
-			cfg.HostWorkDir = workspace
-		}
-		if cfg.HostWorkDir == "" {
-			if wd, err := os.Getwd(); err == nil {
-				cfg.HostWorkDir = wd // default: mount the current directory
-			}
-		}
+		// The mount is the one resolved workspace, in every source case.
+		cfg.HostWorkDir = resolved
 		if cfg.Sandbox.Backend == SandboxBackendHisn {
 			// hisn mounts the workspace at the IDENTICAL host path, so the
 			// agent root is the (symlink-resolved) host directory itself.
@@ -2397,6 +2458,14 @@ func LoadConfig(argv []string) (Config, error) {
 	case "direct":
 		if workspace != "" {
 			cfg.WorkDir = workspace
+		}
+		// The flag/env layers no longer steer the direct-mode folder
+		// (0.8.11): only the positional arg and --workdir do. A non-flag
+		// cfg.WorkDir (file, WAKIL_WORKDIR, ILM_WORKDIR) is the resolved
+		// cwd instead; an empty WorkDir falls back to the cwd inside
+		// NewDirectExecutor as before.
+		if !cfg.WorkDirFlag && workspace == "" {
+			cfg.WorkDir = ""
 		}
 		// An empty WorkDir falls back to the cwd inside NewDirectExecutor.
 	}
@@ -2470,6 +2539,17 @@ func LoadConfig(argv []string) (Config, error) {
 
 	cfg.workDirLoaded = true
 	return cfg, nil
+}
+
+// IgnoredWorkDirKeysLine is the one startup line for work-folder settings
+// that no longer steer the workspace (0.8.11): the config file keys
+// host_work_dir / work_dir (and WAKIL_WORKDIR / ILM_WORKDIR). Empty when
+// none of them is set, so a default config never sees it.
+func (c Config) IgnoredWorkDirKeysLine() string {
+	if len(c.ignoredWorkDirKeys) == 0 {
+		return ""
+	}
+	return "workspace: " + strings.Join(c.ignoredWorkDirKeys, ", ") + " ignored since 0.8.11 — start folder follows the current directory; to work in a folder, cd into it or run \"wakil <path>\""
 }
 
 // expandTilde replaces a leading "~/" (or bare "~") with the user's home
@@ -3255,16 +3335,20 @@ func (c Config) StartupBanner() string {
 // nonCwdWorkDirLine names the work folder when it is not the current
 // directory, and names the ONE setting that chose it. Empty when the
 // work folder IS the current directory (the common case: no line).
-// The work folder is HostWorkDir in docker mode and WorkDir in direct
-// mode; both paths are made absolute AND symlink-resolved for the
-// comparison, so the same directory under different path spellings
-// (e.g. ~/coding vs ~/Coding where one is a symlink to the other)
-// still counts as the cwd. The banner reports the HOST folder (where
-// the user launched wakil), not the in-container agent root.
+// Since 0.8.11 the work folder is the one ResolvedWorkspace (host folder
+// in every mode; WorkDir/HostWorkDir fall back for hand-built configs);
+// both paths are made absolute AND symlink-resolved for the comparison, so
+// the same directory under different path spellings (e.g. ~/coding vs
+// ~/Coding where one is a symlink to the other) still counts as the cwd.
+// The banner reports the HOST folder (where the user launched wakil), not
+// the in-container agent root.
 func (c Config) nonCwdWorkDirLine() string {
-	work := c.HostWorkDir
-	if c.ExecMode == "direct" {
-		work = c.WorkDir
+	work := c.ResolvedWorkspace
+	if work == "" {
+		work = c.HostWorkDir
+		if c.ExecMode == "direct" {
+			work = c.WorkDir
+		}
 	}
 	if work == "" {
 		return ""
@@ -3298,15 +3382,14 @@ func resolveWorkDirForBanner(path string) (string, error) {
 }
 
 // workDirSource names the setting that chose the displayed work
-// folder, in LoadConfig precedence order (positional workspace >
-// flags > env > config file). Exactly one name per line — not the
-// list of all possible settings.
+// folder, in LoadConfig precedence order (0.8.11: positional workspace >
+// --host-workdir > WAKIL_HOST_WORKDIR > cwd). Exactly one name per line —
+// not the list of all possible settings. --workdir names the in-container
+// override in direct mode.
 func (c Config) workDirSource() string {
 	switch {
 	case c.workDirPositional:
 		return "the workspace argument"
-	case c.WorkDirFlag:
-		return "--workdir"
 	case c.hostWorkDirFlag:
 		return "--host-workdir"
 	case os.Getenv("WAKIL_HOST_WORKDIR") != "" || os.Getenv("ILM_HOST_WORKDIR") != "":
@@ -3314,15 +3397,10 @@ func (c Config) workDirSource() string {
 			return "WAKIL_HOST_WORKDIR"
 		}
 		return "ILM_HOST_WORKDIR"
-	case os.Getenv("WAKIL_WORKDIR") != "" || os.Getenv("ILM_WORKDIR") != "":
-		if os.Getenv("WAKIL_WORKDIR") != "" {
-			return "WAKIL_WORKDIR"
-		}
-		return "ILM_WORKDIR"
-	case c.workDirLoaded:
-		return "work_dir in the config file"
+	case c.WorkDirFlag:
+		return "--workdir"
 	}
-	return "a setting"
+	return "the current directory"
 }
 
 // HisnAvailability is what a probe of the hisn binary found. Reason is empty
