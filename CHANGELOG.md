@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+- **Breaking: one workspace resolution order.** `wakil` now starts in the
+  current folder, exactly like `wakil .`. The start folder is resolved in
+  one order — positional path, `--host-workdir`, `WAKIL_HOST_WORKDIR`, then
+  the current directory — and every consumer (memory, input history,
+  session history, repo state, sandbox) sees that one resolved workspace.
+  The config file keys `host_work_dir` / `work_dir` (and
+  `WAKIL_WORKDIR` / `ILM_WORKDIR` in direct mode) no longer steer the start
+  folder; when one is set, startup prints one line that it is ignored since
+  0.8.11 and how to work in a folder instead (`cd` into it, or
+  `wakil <path>`). Existing sessions, memory and histories are untouched
+  and stay reachable with `--resume --all`; no sandbox trust is granted by
+  the program itself.
+- Status and cost lines never overlap text again: the Mashura panel cost
+  line, VOID / NOT COMPLETED lines, the registry-full fallback note, read
+  receipts, struggle and auto-counsel lines, subagent warnings, the
+  session-budget and context-pressure warnings and the sandbox bind warning
+  now all go through the notice path (their own line) instead of the
+  streamed output they used to be drawn on top of.
+- The browser launch waits for CDP readiness and retries the connect and
+  handshake within the launch bound (30 s), so a transient
+  accept-then-EOF on the first tunnelled connection (observed as
+  "cannot connect to Chromium at … EOF") no longer fails the launch; a dead
+  browser fails with the bound named instead of hanging.
+
 ## [0.8.10] - 2026-11-23
 
 Upgrading from 0.8.9, in short (details under Added and Fixed):
