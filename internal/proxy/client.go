@@ -32,6 +32,16 @@ var ErrBackendStream = errors.New("backend stream error")
 // failure, etc.). Retrying a malformed request fails identically every time.
 var ErrBackendFatal = errors.New("backend fatal error")
 
+// ErrTokenLimitPartial marks a finish_reason="length" stream that produced
+// usable output (text and/or complete tool calls) before the token budget
+// ran out. Stream returns the partial message together with this error:
+// the caller keeps the text, drops nothing that is complete, and retries
+// once with a continuation prompt. A tool call whose arguments were cut
+// never survives. It is deliberately not ErrBackendFatal (the turn is not
+// dead) and not ErrBackendStream (resending the identical request hits the
+// same budget).
+var ErrTokenLimitPartial = errors.New("model hit token limit (finish_reason=length) — partial output kept; continue from where it stopped or raise max_tokens")
+
 // PrivacyPolicyMarker is the ineligibility reason OpenRouter reports (inside a
 // 404 body) when the account's privacy settings exclude every provider of a
 // model, typically a free one whose provider may train on prompts.
@@ -1703,7 +1713,10 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	// produced no content (typical for reasoning models that exhaust the budget
 	// on thinking), surface a clear, actionable error instead of returning an
 	// empty message that triggers a generic "empty response" path downstream.
-	// NOT retryable: resending the same request hits the same budget.
+	// NOT retryable: resending the same request hits the same budget. The
+	// empty case stays fatal — there is nothing to keep — while output that
+	// did arrive (text, complete tool calls) is returned with
+	// ErrTokenLimitPartial so the caller can ask for a continuation.
 	if finishReason == "length" && content.Len() == 0 && len(order) == 0 {
 		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) — increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens); /model only changes the model name, not the token budget",
 			ErrBackendFatal)
@@ -1744,19 +1757,18 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		msg.ToolCalls = append(msg.ToolCalls, *acc[i])
 	}
 
-	// Token-budget exhaustion while tool calls were streaming: if any
-	// accumulated arguments are incomplete, the cause is the budget — surface
-	// the actionable fatal message (retrying identically hits the same limit),
-	// not the generic integrity error. Complete-valid calls fall through to
-	// the normal integrity check and post-check handling.
+	// Token-budget exhaustion while tool calls were streaming: keep the
+	// complete calls and the text, drop every call whose arguments were
+	// cut, and return the partial message with ErrTokenLimitPartial. A cut
+	// tool call never survives this filter, so it is never executed.
 	if finishReason == "length" {
-		for i := range msg.ToolCalls {
-			tc := &msg.ToolCalls[i]
-			if !argsAreValidObject(tc.Function.Arguments) {
-				return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) while streaming tool call %q — arguments are truncated; increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens)",
-					ErrBackendFatal, tc.Function.Name)
+		kept := msg.ToolCalls[:0]
+		for _, tc := range msg.ToolCalls {
+			if argsAreValidObject(tc.Function.Arguments) {
+				kept = append(kept, tc)
 			}
 		}
+		msg.ToolCalls = kept
 	}
 
 	// Final integrity check: defense in depth against any corruption path the
@@ -1780,11 +1792,12 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 		}
 	}
 
-	// Budget exhaustion AFTER complete-valid tool calls (the model finished
-	// the call, then died on trailing content): the turn is still incomplete.
-	if finishReason == "length" && len(msg.ToolCalls) > 0 {
-		return Message{}, fmt.Errorf("%w: model hit token limit (finish_reason=length) after streaming tool call %q — the turn is incomplete; increase max_tokens for this endpoint in config.json (endpoints.<name>.max_tokens)",
-			ErrBackendFatal, msg.ToolCalls[0].Function.Name)
+	// Budget exhaustion with output to keep (text and/or complete tool
+	// calls): the turn is incomplete but recoverable — return the partial
+	// message with the marker so the caller can ask the model to continue
+	// from where it stopped.
+	if finishReason == "length" {
+		return msg, ErrTokenLimitPartial
 	}
 	return msg, nil
 }

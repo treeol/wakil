@@ -81,7 +81,7 @@ func TestResultJSON_SingleTask(t *testing.T) {
 
 func TestResultJSON_NilApp(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, nil, ExitError, time.Now(), "", ""); err != nil {
+	if err := writeResultJSON(p, nil, ExitError, "", time.Now(), "", ""); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -110,9 +110,13 @@ func TestExitReasonName(t *testing.T) {
 		ExitIncomplete:     "incomplete",
 	}
 	for code, want := range cases {
-		if got := exitReasonName(code); got != want {
+		if got := exitReasonName(code, ""); got != want {
 			t.Errorf("exitReasonName(%d) = %q, want %q", code, got, want)
 		}
+	}
+	// A token-limit terminal keeps its own reason.
+	if got := exitReasonName(ExitIncomplete, "token_limit"); got != "token_limit" {
+		t.Errorf("exitReasonName(ExitIncomplete, token_limit) = %q, want %q", got, "token_limit")
 	}
 }
 
@@ -160,7 +164,7 @@ func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
 	})
 
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+	if err := writeResultJSON(p, app, ExitOK, "", time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -187,7 +191,7 @@ func TestResultJSON_CollapsesSplitAndTokensCached(t *testing.T) {
 	app2.Costs = &proxy.CostTracker{}
 	app2.Costs.Record("inference·openrouter/test", 1000, 100, 0.001, true, proxy.ConfExact)
 	p2 := filepath.Join(t.TempDir(), "r2.json")
-	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+	if err := writeResultJSON(p2, app2, ExitOK, "", time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatal(err)
 	}
 	data2, err := os.ReadFile(p2)
@@ -208,7 +212,7 @@ func TestResultJSON_DeclinedCalls(t *testing.T) {
 	app.SetDeclinedCallCount(3)
 
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+	if err := writeResultJSON(p, app, ExitOK, "", time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -228,7 +232,7 @@ func TestResultJSON_DeclinedCalls(t *testing.T) {
 	app2.Client.Model = "openrouter/test"
 	app2.Costs = &proxy.CostTracker{}
 	p2 := filepath.Join(t.TempDir(), "r2.json")
-	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+	if err := writeResultJSON(p2, app2, ExitOK, "", time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatal(err)
 	}
 	data2, err := os.ReadFile(p2)
@@ -260,7 +264,7 @@ func TestResultJSON_SandboxBackend(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := filepath.Join(t.TempDir(), "r.json")
-			if err := writeResultJSON(p, nil, ExitOK, time.Now(), "/mnt/ws", tc.backend); err != nil {
+			if err := writeResultJSON(p, nil, ExitOK, "", time.Now(), "/mnt/ws", tc.backend); err != nil {
 				t.Fatalf("writeResultJSON: %v", err)
 			}
 			data, err := os.ReadFile(p)
@@ -300,7 +304,7 @@ func TestResultJSON_ContextModules(t *testing.T) {
 	}
 
 	p := filepath.Join(t.TempDir(), "r.json")
-	if err := writeResultJSON(p, app, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+	if err := writeResultJSON(p, app, ExitOK, "", time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data, err := os.ReadFile(p)
@@ -325,7 +329,7 @@ func TestResultJSON_ContextModules(t *testing.T) {
 	app2.Cfg.ContextModules = "off"
 
 	p2 := filepath.Join(t.TempDir(), "r2.json")
-	if err := writeResultJSON(p2, app2, ExitOK, time.Now(), "/tmp/ws", "hisn"); err != nil {
+	if err := writeResultJSON(p2, app2, ExitOK, "", time.Now(), "/tmp/ws", "hisn"); err != nil {
 		t.Fatalf("writeResultJSON: %v", err)
 	}
 	data2, _ := os.ReadFile(p2)

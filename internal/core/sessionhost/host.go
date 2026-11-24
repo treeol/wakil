@@ -112,6 +112,13 @@ var (
 	// stays agent/proxy-free). A driver then maps request_error to an exit-3
 	// ("error") outcome and backend_failure to the retryable exit-4 outcome.
 	ErrBackendFatal = errors.New("sessionhost: fatal backend request error")
+	// ErrTokenLimit classifies a turn error as a turn that ran out of the
+	// model's token budget even after the agent layer's one continuation. The
+	// wiring adapter wraps the agent's TokenLimitError with this sentinel so
+	// the host emits SessionError{reason:"token_limit"} (never
+	// "backend_failure"): a headless driver maps it to its own exit code and
+	// outcome instead of treating it as a retryable backend failure.
+	ErrTokenLimit = errors.New("sessionhost: token limit")
 )
 
 // TurnFunc executes one turn for a session and returns the produced message
@@ -1198,6 +1205,11 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 	// backend outage. Same stream_error outcome; SessionError reason
 	// "request_error" vs "backend_failure" lets the driver pick the exit code.
 	fatalReq := turnErr != nil && errors.Is(turnErr, ErrBackendFatal)
+	// Token-limit classification: a turn that exhausted the model budget even
+	// after the agent layer's one continuation. Its SessionError reason is
+	// "token_limit" so a driver can name it instead of calling it a backend
+	// failure.
+	tokenLimit := turnErr != nil && errors.Is(turnErr, ErrTokenLimit)
 
 	terminal := closing
 	var abandoned []inputEnvelope
@@ -1247,6 +1259,8 @@ func (h *Host) finishTurn(s *session, turnID event.TurnID, turnCtx context.Conte
 			reason = "internal_error"
 		} else if fatalReq {
 			reason = "request_error"
+		} else if tokenLimit {
+			reason = "token_limit"
 		}
 		_ = h.emitDraft(s, event.KindSessionError, event.SessionError{Reason: reason, Err: turnErr.Error()})
 		for _, q := range abandoned {

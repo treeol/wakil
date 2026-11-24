@@ -78,7 +78,7 @@ func TestHeadlessCollapseNoticeOneLine(t *testing.T) {
 	app.Cfg.ContextCollapseMinBytes = 1
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "write two files", HeadlessOptions{Auto: true}, &out)
+	code, _ := runSingleTask(context.Background(), app, "write two files", HeadlessOptions{Auto: true}, &out)
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want 0; output: %s", code, out.String())
 	}
@@ -114,7 +114,7 @@ func TestHeadlessModelCalledCollapseNotice(t *testing.T) {
 	app := longSessionApp(t, srv.URL)
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "write two files", HeadlessOptions{Auto: true}, &out)
+	code, _ := runSingleTask(context.Background(), app, "write two files", HeadlessOptions{Auto: true}, &out)
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want 0; output: %s", code, out.String())
 	}
@@ -164,7 +164,7 @@ func TestHeadlessAsyncNoticeOneLine(t *testing.T) {
 	app.Costs = proxy.NewCostTracker()
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "wait for the job", HeadlessOptions{Auto: true}, &out)
+	code, _ := runSingleTask(context.Background(), app, "wait for the job", HeadlessOptions{Auto: true}, &out)
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want 0; output: %s", code, out.String())
 	}
@@ -196,7 +196,7 @@ func TestHeadlessAutoNoteStaysQuiet(t *testing.T) {
 	app.SetAutoApprove(true)
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "write a file", HeadlessOptions{Auto: true}, &out)
+	code, _ := runSingleTask(context.Background(), app, "write a file", HeadlessOptions{Auto: true}, &out)
 	if code != ExitOK {
 		t.Fatalf("exit = %d; output: %s", code, out.String())
 	}

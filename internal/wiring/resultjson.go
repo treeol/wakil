@@ -58,8 +58,10 @@ type ResultJSON struct {
 // exitReasonName maps a headless exit code to the bench-facing reason
 // string. The terminal JSONL records use the same outcome vocabulary
 // ("pass"/"declined"/"backend_failure"); ExitGaps and ExitError keep
-// their code names so callers can branch on them.
-func exitReasonName(code int) string {
+// their code names so callers can branch on them. A token-limit terminal
+// (ExitIncomplete with outcome "token_limit") keeps its own reason so a
+// bench harness can tell a budget stop from a bounded-run stop.
+func exitReasonName(code int, outcome string) string {
 	switch code {
 	case ExitOK:
 		return "pass"
@@ -72,6 +74,9 @@ func exitReasonName(code int) string {
 	case ExitError:
 		return "error"
 	case ExitIncomplete:
+		if outcome == "token_limit" {
+			return "token_limit"
+		}
 		return "incomplete"
 	default:
 		return fmt.Sprintf("exit_%d", code)
@@ -86,10 +91,10 @@ func exitReasonName(code int) string {
 // workdir is the resolved workspace folder the session actually ran in;
 // empty when unknown (e.g. bootstrap failure before resolution). backend is
 // the resolved sandbox backend name, empty when unknown.
-func writeResultJSON(path string, app *agent.App, code int, started time.Time, workdir, backend string) error {
+func writeResultJSON(path string, app *agent.App, code int, outcome string, started time.Time, workdir, backend string) error {
 	res := ResultJSON{
 		Version:        buildinfo.ResolvedVersion(),
-		ExitReason:     exitReasonName(code),
+		ExitReason:     exitReasonName(code, outcome),
 		Workdir:        workdir,
 		SandboxBackend: backend,
 		Seconds:        time.Since(started).Seconds(),

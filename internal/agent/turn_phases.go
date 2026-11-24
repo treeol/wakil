@@ -16,6 +16,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -23,6 +24,46 @@ import (
 	wtools "github.com/treeol/wakil/internal/tools"
 	"github.com/treeol/wakil/internal/trace"
 )
+
+// continuationPrompt asks the model to continue from where it stopped after a
+// token-limit cut. It is appended as a user message and the turn continues
+// with the kept text already in Conv.
+const continuationPrompt = "The token limit cut your previous answer short. Continue from exactly where you stopped, without repeating what you already wrote."
+
+// TokenLimitError is returned when the continuation also ends at the token
+// limit. It names the endpoint, the model, the current max_tokens value and
+// how to raise it — one line, so the user knows what to change.
+type TokenLimitError struct {
+	Endpoint  string
+	Model     string
+	MaxTokens int
+}
+
+func (e *TokenLimitError) Error() string {
+	mt := "unset"
+	if e.MaxTokens > 0 {
+		mt = fmt.Sprintf("%d", e.MaxTokens)
+	}
+	return fmt.Sprintf("model hit token limit again (endpoint %q, model %q, max_tokens %s) — raise max_tokens for this endpoint in config.json (endpoints.%s.max_tokens)",
+		e.Endpoint, e.Model, mt, e.Endpoint)
+}
+
+func (e *TokenLimitError) Unwrap() error { return proxy.ErrTokenLimitPartial }
+
+// tokenLimitError builds the second-cut error from the live config and
+// client, so the line always names the values the next request would use.
+func (a *App) tokenLimitError() *TokenLimitError {
+	tle := &TokenLimitError{
+		Endpoint: a.Cfg.EndpointName,
+	}
+	if a.Client != nil {
+		tle.Model = a.Client.Model
+		if a.Client.MaxTokens != nil {
+			tle.MaxTokens = *a.Client.MaxTokens
+		}
+	}
+	return tle
+}
 
 // prepareTurn resets per-turn state and applies model/backend selection at
 // request build time. Called at the top of Send before any request is made.
@@ -171,6 +212,10 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	// forcedFallbackOnce bounds B2's single no-tools fallback: after it fires,
 	// the forced turn ends unconditionally — never loops.
 	forcedFallbackOnce := false
+	// tokenLimitRecovered bounds the token-limit recovery to exactly one
+	// continuation per turn: after it fires, a second cut stops the turn
+	// with TokenLimitError and is never retried.
+	tokenLimitRecovered := false
 	// Path-confinement circuit breaker state (see confinementBreakerThreshold):
 	// confinementFailures counts ConfinePath rejections per distinct path across
 	// the whole turn; confinementPaths preserves first-seen order for the honest
@@ -323,6 +368,30 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		before := a.Client.UsageStamp()
 		msg, err = a.Client.Stream(ctx, msgs, tools, sink, rsink)
 		if err != nil {
+			// Token-limit recovery: the stream ended at finish_reason=length
+			// with usable output. Keep the text (and the complete tool calls),
+			// drop nothing else, and ask the model once to continue from
+			// where it stopped. A cut tool call never reaches here — the
+			// proxy dropped it. The kept text is stored below through the
+			// normal appendConv path, so the saved session holds it.
+			if errors.Is(err, proxy.ErrTokenLimitPartial) && !tokenLimitRecovered {
+				tokenLimitRecovered = true
+				a.RecordInferenceCost() // main inference for this iteration
+				// Store the partial turn first (text + surviving tool calls)
+				// so the continuation continues the same turn.
+				a.stripPrevFromMessage(&msg)
+				a.appendConv(msg)
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(continuationPrompt)})
+				continue
+			}
+			if errors.Is(err, proxy.ErrTokenLimitPartial) && tokenLimitRecovered {
+				// The continuation also hit the limit: best-effort keep the
+				// second partial text, then stop with the one clear line.
+				if DerefStr(msg.Content) != "" {
+					a.appendConv(msg)
+				}
+				return "", false, a.tokenLimitError()
+			}
 			a.RecordFailedStreamCost(before, err)
 			return "", false, err
 		}

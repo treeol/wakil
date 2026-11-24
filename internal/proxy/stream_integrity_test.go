@@ -89,21 +89,25 @@ func TestStreamBenignSSENoiseIgnored(t *testing.T) {
 	}
 }
 
-// finish_reason=length mid-tool-call leaves truncated arguments; the call
-// cannot succeed and retrying identically is pointless → fatal, not stream.
-func TestStreamLengthFinishWithToolCallIsFatal(t *testing.T) {
+// finish_reason=length mid-tool-call leaves truncated arguments: the cut
+// call is dropped (never executed), the marker rides with the kept
+// partial message, and the turn can continue.
+func TestStreamLengthFinishWithToolCallDropsCutCall(t *testing.T) {
 	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"{\\\"path\\\":\\\"a.go\\\",\\\"content\\\":\\\"package\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n" +
 		"data: [DONE]\n\n"
-	_, err := streamWith(t, body)
-	if !errors.Is(err, ErrBackendFatal) {
-		t.Fatalf("length finish with tool call: want ErrBackendFatal, got %v", err)
+	msg, err := streamWith(t, body)
+	if !errors.Is(err, ErrTokenLimitPartial) {
+		t.Fatalf("length finish with tool call: want ErrTokenLimitPartial, got %v", err)
+	}
+	if errors.Is(err, ErrBackendFatal) {
+		t.Fatalf("length truncation must not be fatal: %v", err)
 	}
 	if errors.Is(err, ErrBackendStream) {
-		t.Fatalf("length truncation must not be retried: %v", err)
+		t.Fatalf("length truncation must not be retried as a stream error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "write_file") {
-		t.Fatalf("error should name the truncated tool: %v", err)
+	if len(msg.ToolCalls) != 0 {
+		t.Fatalf("cut call survived: %v", msg.ToolCalls)
 	}
 }
 
@@ -150,18 +154,21 @@ func TestStreamIntegrityCheckRejectsNonObjectArgs(t *testing.T) {
 }
 
 // finish_reason=length with an already-complete, valid tool call: the call
-// itself is intact but the turn ended by budget exhaustion — still fatal,
-// and the error must name the tool.
-func TestStreamLengthFinishWithCompleteToolCall(t *testing.T) {
+// is intact, the turn ended by budget exhaustion — the message is kept with
+// the marker so the caller can ask for a continuation.
+func TestStreamLengthFinishWithCompleteToolCallKeepsCall(t *testing.T) {
 	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c\",\"type\":\"function\",\"function\":{\"name\":\"run_shell\",\"arguments\":\"{\\\"command\\\":\\\"ls\\\"}\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n" +
 		"data: [DONE]\n\n"
-	_, err := streamWith(t, body)
-	if !errors.Is(err, ErrBackendFatal) {
-		t.Fatalf("length after complete tool call: want ErrBackendFatal, got %v", err)
+	msg, err := streamWith(t, body)
+	if !errors.Is(err, ErrTokenLimitPartial) {
+		t.Fatalf("length after complete tool call: want ErrTokenLimitPartial, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "run_shell") {
-		t.Fatalf("error should name the tool: %v", err)
+	if errors.Is(err, ErrBackendFatal) {
+		t.Fatalf("length after complete tool call must not be fatal: %v", err)
+	}
+	if len(msg.ToolCalls) != 1 || msg.ToolCalls[0].Function.Name != "run_shell" {
+		t.Fatalf("complete call not kept: %v", msg.ToolCalls)
 	}
 }
 

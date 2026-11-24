@@ -490,6 +490,14 @@ func (ht *hostTurn) run(ctx context.Context, in sessionhost.TurnInput) (text str
 	// final text for the host's MessageCommitted.
 	out, err := agent.DriveTurnWithResilience(ctx, app, in.Text)
 	if err != nil {
+		// Token-limit: the turn ran out of budget even after the agent
+		// layer's one continuation. Classify it as its own host reason so a
+		// driver can name it (outcome "token_limit") instead of calling it
+		// a backend failure.
+		var tle *agent.TokenLimitError
+		if errors.As(err, &tle) {
+			return "", fmt.Errorf("%w: %w", sessionhost.ErrTokenLimit, tle)
+		}
 		// Classify fatal request errors (4xx) so the host distinguishes them
 		// from retryable backend failures (SessionError{request_error} vs
 		// {backend_failure}) without importing the proxy package (D12).

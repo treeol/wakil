@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -86,7 +87,7 @@ func TestHeadlessHostSimpleTask(t *testing.T) {
 	app.Costs = proxy.NewCostTracker()
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "print hello", HeadlessOptions{Auto: true}, &out)
+	code, _ := runSingleTask(context.Background(), app, "print hello", HeadlessOptions{Auto: true}, &out)
 
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d; output: %s", code, ExitOK, out.String())
@@ -115,7 +116,7 @@ func TestHeadlessHostDestructiveDeclined(t *testing.T) {
 	app := fakeApp(srv.URL)
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "clean tmp",
+	code, _ := runSingleTask(context.Background(), app, "clean tmp",
 		HeadlessOptions{Auto: true, AllowDestructive: false}, &out)
 
 	if code != ExitDeclined {
@@ -152,7 +153,7 @@ func TestHeadlessHostRecoveredTextCommitted(t *testing.T) {
 	app.IsHeadless = true // enables retry in HandleStreamError (same as production headless)
 
 	var out strings.Builder
-	code := runSingleTask(context.Background(), app, "go", HeadlessOptions{Auto: true}, &out)
+	code, _ := runSingleTask(context.Background(), app, "go", HeadlessOptions{Auto: true}, &out)
 
 	if code != ExitOK {
 		t.Fatalf("exit = %d, want %d; output: %s", code, ExitOK, out.String())
@@ -162,5 +163,68 @@ func TestHeadlessHostRecoveredTextCommitted(t *testing.T) {
 	// is the recovered chunk (not the failed first attempt).
 	if got := agent.DerefStr(app.Conv[len(app.Conv)-1].Content); got != recovered {
 		t.Errorf("committed text = %q, want %q", got, recovered)
+	}
+}
+
+// TestHeadlessTokenLimitSecondCut: cut, cut — the headless run exits
+// ExitIncomplete with a done{token_limit, message} record naming the
+// endpoint, model and max_tokens, and --result-json maps it to
+// exit_reason="token_limit". The first partial text stays in the session.
+func TestHeadlessTokenLimitSecondCut(t *testing.T) {
+	srv := sseServer(t,
+		[]string{`{"choices":[{"delta":{"content":"first half"},"finish_reason":null}]}`, `{"choices":[{"delta":{},"finish_reason":"length"}]}`},
+		[]string{`{"choices":[{"delta":{"content":"second half"},"finish_reason":null}]}`, `{"choices":[{"delta":{},"finish_reason":"length"}]}`},
+	)
+	defer srv.Close()
+
+	app := fakeApp(srv.URL)
+	mt := 4096
+	app.Client.MaxTokens = &mt
+	app.Cfg.EndpointName = "test-ep"
+
+	var out strings.Builder
+	code, outcome := runSingleTask(context.Background(), app, "hi", HeadlessOptions{Auto: true}, &out)
+
+	if code != ExitIncomplete {
+		t.Fatalf("exit = %d, want %d; output: %s", code, ExitIncomplete, out.String())
+	}
+	if outcome != "token_limit" {
+		t.Fatalf("outcome = %q, want token_limit", outcome)
+	}
+	evs := outputEvents(t, out.String())
+	done := findEvent(evs, "done")
+	if done == nil || done["outcome"] != "token_limit" {
+		t.Fatalf("want done{token_limit}; got %v", done)
+	}
+	msg, _ := done["message"].(string)
+	for _, want := range []string{"test-ep", "ilm", "4096", "endpoints.test-ep.max_tokens"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("token_limit message %q missing %q", msg, want)
+		}
+	}
+	if !strings.Contains(out.String(), "first half") {
+		t.Errorf("first partial text not streamed to output: %s", out.String())
+	}
+	// --result-json maps the code+outcome to exit_reason="token_limit".
+	p := t.TempDir() + "/result.json"
+	if err := writeResultJSON(p, app, code, outcome, time.Now(), "/tmp/ws", "direct"); err != nil {
+		t.Fatalf("writeResultJSON: %v", err)
+	}
+	res, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatalf("read result: %v", err)
+	}
+	if !strings.Contains(string(res), `"exit_reason":"token_limit"`) {
+		t.Errorf("result exit_reason not token_limit: %s", res)
+	}
+	// The first partial text is in the saved conversation.
+	found := false
+	for _, m := range app.Conv {
+		if m.Role == "assistant" && m.Content != nil && *m.Content == "first half" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("first partial text not in Conv: %v", app.Conv)
 	}
 }

@@ -3,6 +3,7 @@ package sessionhost
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"sync"
 	"testing"
@@ -325,6 +326,39 @@ func TestBackendFailureMovesToErrorThenRedrive(t *testing.T) {
 		g, _ := h.GetSession(context.Background(), p, s.ID)
 		return g.State == core.SessionIdle
 	})
+}
+
+// TestTokenLimitReason: a turn error wrapping ErrTokenLimit emits
+// SessionError{reason:"token_limit"}, not "backend_failure".
+func TestTokenLimitReason(t *testing.T) {
+	h := New(func(ctx context.Context, in TurnInput) (string, error) {
+		return "", fmt.Errorf("%w: model hit token limit again (endpoint \"test-ep\")", ErrTokenLimit)
+	})
+	p := core.Principal{TenantID: "tnt_test", UserID: "usr_test", Role: core.RoleOwner}
+	defer h.Close(context.Background())
+	s := createSession(t, h, p)
+
+	if _, err := h.SubmitInput(context.Background(), p, core.SubmitInputRequest{SessionID: s.ID, Text: "boom"}); err != nil {
+		t.Fatalf("SubmitInput: %v", err)
+	}
+	waitFor(t, func() bool {
+		g, _ := h.GetSession(context.Background(), p, s.ID)
+		return g.State == core.SessionError
+	})
+
+	events, _ := h.ListEvents(context.Background(), p, s.ID, 0, 0)
+	var sawErr bool
+	for _, e := range events {
+		if e.Kind == event.KindSessionError {
+			if e.Payload.(event.SessionError).Reason != "token_limit" {
+				t.Fatalf("SessionError reason = %q, want token_limit", e.Payload.(event.SessionError).Reason)
+			}
+			sawErr = true
+		}
+	}
+	if !sawErr {
+		t.Fatalf("no session_error event in %v", events)
+	}
 }
 
 func TestSubscribeReplayAndLiveDedup(t *testing.T) {

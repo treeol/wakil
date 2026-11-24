@@ -276,7 +276,7 @@ func RunHeadless(cfg config.Config, task string, opts HeadlessOptions) int {
 	// Bootstrap failures must still leave a result file (bench harness).
 	defer func() {
 		if opts.ResultJSON != "" && !ran {
-			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, started, opts.Workdir, opts.SandboxBackend); werr != nil {
+			if werr := writeResultJSON(opts.ResultJSON, nil, ExitError, "", started, opts.Workdir, opts.SandboxBackend); werr != nil {
 				fmt.Fprintln(os.Stderr, "result-json:", werr)
 			}
 		}
@@ -405,13 +405,13 @@ func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 	if started.IsZero() {
 		started = time.Now()
 	}
-	code, err := dispatchHeadlessMode(ctx, app, task, planMode, opts, out)
+	code, outcome, err := dispatchHeadlessMode(ctx, app, task, planMode, opts, out)
 	if opts.ResultJSON != "" {
 		resCode := code
 		if err != nil {
 			resCode = ExitError
 		}
-		if werr := writeResultJSON(opts.ResultJSON, app, resCode, started, opts.Workdir, opts.SandboxBackend); werr != nil {
+		if werr := writeResultJSON(opts.ResultJSON, app, resCode, outcome, started, opts.Workdir, opts.SandboxBackend); werr != nil {
 			fmt.Fprintln(os.Stderr, "result-json:", werr)
 		}
 	}
@@ -425,29 +425,34 @@ func RunHeadlessApp(ctx context.Context, app *agent.App, task string, planMode b
 // dispatchHeadlessMode validates the requested mode and dispatches. It is the
 // single mode-selection point shared by RunHeadless and RunHeadlessApp, so
 // continuous mode cannot be bypassed by calling the App-level entry point.
-func dispatchHeadlessMode(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) (int, error) {
+// It returns the terminal outcome string ("pass", "token_limit", …) the
+// drivers emit, so the --result-json summary can name what happened.
+func dispatchHeadlessMode(ctx context.Context, app *agent.App, task string, planMode bool, opts HeadlessOptions, out io.Writer) (int, string, error) {
 	if opts.Continuous != nil {
 		if err := opts.Continuous.Validate(); err != nil {
-			return ExitError, err
+			return ExitError, "", err
 		}
 		if planMode {
-			return ExitError, fmt.Errorf("--continue cannot be combined with --plan")
+			return ExitError, "", fmt.Errorf("--continue cannot be combined with --plan")
 		}
 		if opts.Verify {
-			return ExitError, fmt.Errorf("--continue cannot be combined with --verify; use --verify-cmd so the acceptance contract is explicit")
+			return ExitError, "", fmt.Errorf("--continue cannot be combined with --verify; use --verify-cmd so the acceptance contract is explicit")
 		}
-		return runContinuousTask(ctx, app, task, opts, *opts.Continuous, out), nil
+		return runContinuousTask(ctx, app, task, opts, *opts.Continuous, out), "", nil
 	}
 	if !planMode {
-		return runSingleTask(ctx, app, task, opts, out), nil
+		code, outcome := runSingleTask(ctx, app, task, opts, out)
+		return code, outcome, nil
 	}
-	return runPlanTask(ctx, app, task, opts, out), nil
+	code, outcome := runPlanTask(ctx, app, task, opts, out)
+	return code, outcome, nil
 }
 
 // runSingleTask drives one task through the session host (D20). Returns the
-// exit code. It is the single-task re-route: CreateSession → Subscribe → Submit
-// → project events → one terminal JSON record → tokens last.
-func runSingleTask(ctx context.Context, app *agent.App, task string, opts HeadlessOptions, out io.Writer) int {
+// exit code and the terminal outcome string. It is the single-task re-route:
+// CreateSession → Subscribe → Submit → project events → one terminal JSON
+// record → tokens last.
+func runSingleTask(ctx context.Context, app *agent.App, task string, opts HeadlessOptions, out io.Writer) (int, string) {
 	app.WorkflowStepTrace = nil
 
 	hw := NewHeadlessWriter(out)
@@ -462,7 +467,7 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 	turnFn, err := HostTurnFunc(app, WithResolver(headlessResolver(app, opts)))
 	if err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-		return ExitError
+		return ExitError, ""
 	}
 	h := sessionhost.New(turnFn, headlessStoreOpts(app.SessionWorkspace())...)
 	defer h.Close(ctx)
@@ -474,19 +479,19 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 	})
 	if err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-		return ExitError
+		return ExitError, ""
 	}
 
 	sub, err := h.Subscribe(ctx, p, sess.ID, 0)
 	if err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-		return ExitError
+		return ExitError, ""
 	}
 	defer sub.Close()
 
 	if _, err := h.SubmitInput(ctx, p, core.SubmitInputRequest{SessionID: sess.ID, Text: task}); err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
-		return ExitError
+		return ExitError, ""
 	}
 
 	// Projection state: consume events until the correlated turn terminal.
@@ -501,6 +506,13 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 		emitEvent(out, map[string]any{
 			"type":      "done",
 			"outcome":   "backend_failure",
+			"message":   msg,
+			"resume_id": agent.ShortID(app.Client.ChatID),
+		})
+	case ExitIncomplete:
+		emitEvent(out, map[string]any{
+			"type":      "done",
+			"outcome":   "token_limit",
 			"message":   msg,
 			"resume_id": agent.ShortID(app.Client.ChatID),
 		})
@@ -531,7 +543,18 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 		}
 		emitEvent(out, record)
 	}
-	return code
+	outcome := "pass"
+	switch code {
+	case ExitBackendFailure:
+		outcome = "backend_failure"
+	case ExitIncomplete:
+		outcome = "token_limit"
+	case ExitError:
+		outcome = "error"
+	case ExitDeclined:
+		outcome = "declined"
+	}
+	return code, outcome
 }
 
 // runPlanTask drives the plan workflow through the session host (7c). Pre-host
@@ -542,7 +565,7 @@ func runSingleTask(ctx context.Context, app *agent.App, task string, opts Headle
 // task text lives in .wakil/plan.md, exactly as legacy), terminal records and
 // exit codes are produced by consumeWorkflowEvents from durable events only —
 // the consumer never reads app state directly.
-func runPlanTask(ctx context.Context, app *agent.App, task string, opts HeadlessOptions, out io.Writer) int {
+func runPlanTask(ctx context.Context, app *agent.App, task string, opts HeadlessOptions, out io.Writer) (int, string) {
 	hw := NewHeadlessWriter(out)
 	if opts.TranscriptFile != "" {
 		defer app.SaveSession()
@@ -560,18 +583,20 @@ func runPlanTask(ctx context.Context, app *agent.App, task string, opts Headless
 	planPath := filepath.Join(app.Exec.Cwd(), ".wakil", "plan.md")
 	if _, err := app.Exec.RunShell(ctx, "mkdir -p .wakil"); err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": "cannot create .wakil: " + err.Error()})
-		return ExitError
+		return ExitError, ""
 	}
 	if _, err := app.Exec.WriteFile(ctx, planPath, workflow.WFInitPlanContent(task)); err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": "cannot write plan.md: " + err.Error()})
-		return ExitError
+		return ExitError, ""
 	}
 	app.SetWorkflow(&workflow.WorkflowState{
 		Task:     task,
 		Phase:    workflow.WFGather,
 		PlanPath: planPath,
 	})
-	return runPlanSession(ctx, app, opts, out, hw)
+	var outcome string
+	code := runPlanSession(ctx, app, opts, out, hw, &outcome)
+	return code, outcome
 }
 
 // RunPlanLoop drives the host-path plan loop over an ALREADY-INITIALIZED
@@ -587,12 +612,13 @@ func RunPlanLoop(ctx context.Context, app *agent.App, opts HeadlessOptions, out 
 	defer app.StopAllAsyncOps()
 
 	app.Out = hw
-	return runPlanSession(ctx, app, opts, out, hw)
+	return runPlanSession(ctx, app, opts, out, hw, nil)
 }
 
 // runPlanSession builds the host session for a plan run and consumes it to a
-// workflow terminal.
-func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, out io.Writer, hw *HeadlessWriter) int {
+// workflow terminal. outcome, when non-nil, receives the terminal outcome
+// string.
+func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, out io.Writer, hw *HeadlessWriter, outcome *string) int {
 	turnFn, err := HostTurnFunc(app, WithResolver(headlessResolver(app, opts)), WithPlanAutoAdvance(opts.NoOracle))
 	if err != nil {
 		emitEvent(out, map[string]any{"type": "error", "message": err.Error()})
@@ -636,6 +662,13 @@ func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, o
 			"message":   msg,
 			"resume_id": agent.ShortID(app.Client.ChatID),
 		})
+	case ExitIncomplete:
+		emitEvent(out, map[string]any{
+			"type":      "done",
+			"outcome":   "token_limit",
+			"message":   msg,
+			"resume_id": agent.ShortID(app.Client.ChatID),
+		})
 	case ExitError:
 		emitEvent(out, map[string]any{"type": "error", "message": msg})
 	case ExitDeclined:
@@ -647,6 +680,21 @@ func runPlanSession(ctx context.Context, app *agent.App, opts HeadlessOptions, o
 	}
 
 	// No tokens record in plan mode — legacy parity.
+	if outcome != nil {
+		*outcome = "pass"
+		switch code {
+		case ExitBackendFailure:
+			*outcome = "backend_failure"
+		case ExitIncomplete:
+			*outcome = "token_limit"
+		case ExitError:
+			*outcome = "error"
+		case ExitDeclined:
+			*outcome = "declined"
+		case ExitGaps:
+			*outcome = msg
+		}
+	}
 	return code
 }
 
@@ -706,6 +754,11 @@ func consumeWorkflowEvents(ctx context.Context, sub core.EventSubscription, hw *
 			switch se.Reason {
 			case "backend_failure":
 				return ExitBackendFailure, se.Err
+			case "token_limit":
+				// Strip the adapter's sentinel prefix so the projected
+				// message is the agent's clear line (byte-parity shape with
+				// the request_error arm below).
+				return ExitIncomplete, strings.TrimPrefix(se.Err, "sessionhost: token limit: ")
 			case "request_error":
 				return ExitError, strings.TrimPrefix(se.Err, "sessionhost: fatal backend request error: ")
 			default:
@@ -807,6 +860,11 @@ func consumeTurnEvents(ctx context.Context, sub core.EventSubscription, hw *Head
 			switch se.Reason {
 			case "backend_failure":
 				return ExitBackendFailure, se.Err
+			case "token_limit":
+				// Strip the adapter's sentinel prefix so the projected
+				// message is the agent's clear line (byte-parity shape with
+				// the request_error arm below).
+				return ExitIncomplete, strings.TrimPrefix(se.Err, "sessionhost: token limit: ")
 			case "request_error":
 				// Strip the adapter's sentinel prefix so the projected message
 				// is the raw backend error (byte-parity with the legacy 4xx
