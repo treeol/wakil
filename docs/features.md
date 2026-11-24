@@ -334,7 +334,7 @@ Every dispatch returns a harness-built result: `outcome` (`complete` / `partial`
 
 In a tainted session, `memory_put plan/current` is redirected to `plan/tainted/<chatID>/current` (quarantined, never handed off; `/plan status` says so). `wakil plan gc` lists quarantined plan entries whose session file is gone (dry run); `wakil plan gc --apply` rejects them. It never touches an active `plan/current`.
 
-**Which store?** A chat keys its per-project stores by `config.WorkspacePath()` — the launch directory (or `host_workdir` / the workspace argument), **unless `WAKIL_WORKSPACE_PATH` is set, which replaces it**. `wakil plan gc` always uses the current directory. `wakil --print-workspace-key` prints both with the source of each, and flags a divergence; when `WAKIL_WORKSPACE_PATH` is set, Wakil prints one startup line naming the path and the resulting keys, and `/sandbox` repeats it.
+**Which store?** A chat keys its per-project stores by `config.WorkspacePath()` — the launch directory (or the workspace argument, `--host-workdir` or `WAKIL_HOST_WORKDIR`; the config keys `host_work_dir` / `work_dir` no longer steer it since 0.8.11), **unless `WAKIL_WORKSPACE_PATH` is set, which replaces it**. `wakil plan gc` always uses the current directory. `wakil --print-workspace-key` prints both with the source of each, and flags a divergence; when `WAKIL_WORKSPACE_PATH` is set, Wakil prints one startup line naming the path and the resulting keys, and `/sandbox` repeats it.
 
 ## Correction capture (removed in 0.8.4)
 

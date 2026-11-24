@@ -66,7 +66,7 @@ and it has no replay protection for external side effects.
 | 2 | `--plan` only: the final review flagged unresolved gaps, or verification failed |
 | 3 | runtime error, fatal request error, or bad arguments |
 | 4 | backend error that exhausted its retries; the session is saved and resumable |
-| 5 | `--continue` only: the bounded run stopped without a verified goal |
+| 5 | `--continue`: the bounded run stopped without a verified goal; any run whose model hit the token limit again after its one continuation (outcome `token_limit`) |
 
 ## Output
 
@@ -78,6 +78,7 @@ status notes of the interactive UI, such as the auto-approval lines, are not
 printed), `warning`, `error`, `tokens` (input and
 output token counts, plus `cost_usd` and budget fields when pricing or `--budget` is set; not emitted by `--plan`), and a final
 `done` record whose `outcome` is `pass`, `declined`, `backend_failure` (with a
+`resume_id`), `token_limit` (the model hit the token limit twice; exit code 5, with a
 `resume_id`) or, for `--plan`, `gaps` or `verify_failed`. In `--continue` mode
 the `done` record carries `schema_version`, `mode`, `outcome`, `reason`,
 `turns`, `model_calls`, `elapsed_ms`, `resumable` (always false), `exit_code`

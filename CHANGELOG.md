@@ -8,17 +8,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 - **Breaking: one workspace resolution order.** `wakil` now starts in the
-  current folder, exactly like `wakil .`. The start folder is resolved in
-  one order — positional path, `--host-workdir`, `WAKIL_HOST_WORKDIR`, then
-  the current directory — and every consumer (memory, input history,
-  session history, repo state, sandbox) sees that one resolved workspace.
-  The config file keys `host_work_dir` / `work_dir` (and
-  `WAKIL_WORKDIR` / `ILM_WORKDIR` in direct mode) no longer steer the start
-  folder; when one is set, startup prints one line that it is ignored since
-  0.8.11 and how to work in a folder instead (`cd` into it, or
-  `wakil <path>`). Existing sessions, memory and histories are untouched
-  and stay reachable with `--resume --all`; no sandbox trust is granted by
-  the program itself.
+  current folder, like `wakil .`. The start folder is resolved in one
+  order — positional path, `--host-workdir`, `WAKIL_HOST_WORKDIR`, then the
+  current directory — and every consumer (memory, input history, session
+  history, repo state, sandbox) sees that one resolved workspace. The one
+  exception to "like `wakil .`" is the explicit override: a bare `wakil`
+  with `WAKIL_HOST_WORKDIR` exported still starts in that folder. The config
+  file keys `host_work_dir` / `work_dir` (and `WAKIL_WORKDIR` /
+  `ILM_WORKDIR` in direct mode) no longer steer the start folder; when one
+  is set, startup prints one line that it is ignored since 0.8.11 and how
+  to work in a folder instead (`cd` into it, or `wakil <path>`). **If a
+  script, cron or systemd job relied on those keys, it now runs in the
+  folder it is started from:** add a `cd`, pass the path, or export
+  `WAKIL_HOST_WORKDIR`. A folder you have not used before is a new sandbox
+  workspace: with the hisn backend, a `.wakil/sandbox.json` in it that you
+  have not approved stops the start with "has not been approved" until you
+  run `wakil sandbox trust` there (approvals are keyed by folder path; the
+  program never grants trust itself). `wakil sandbox trust` and `--resume` use the same order. Nothing
+  is moved, rewritten or deleted: sessions saved in the old folder stay
+  reachable with `--resume --all` (or tab / `a` in the `/resume` modal);
+  memory, input history and session history were already keyed by the
+  folder you start in, so they are unchanged.
 - Status and cost lines never overlap text again: the Mashura panel cost
   line, VOID / NOT COMPLETED lines, the registry-full fallback note, read
   receipts, struggle and auto-counsel lines, subagent warnings, the
@@ -31,19 +41,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "cannot connect to Chromium at … EOF") no longer fails the launch; a dead
   browser fails with the bound named instead of hanging.
 - A model that hits the token limit no longer ends the turn with a fatal
-  error: the text that already arrived is kept, a tool call whose arguments
-  were cut is dropped (never executed), and the model is asked once to
-  continue from where it stopped. If the continuation also hits the limit,
-  the run stops with one line naming the endpoint, the model, the current
-  `max_tokens` value and how to raise it — in headless runs the exit code is
-  5, the terminal record's outcome is `token_limit`, and `--result-json`
-  reports `exit_reason` as `token_limit` instead of `error`.
+  error: the text that already arrived is kept and the model is asked once
+  to continue from where it stopped. Tool calls that arrived complete are
+  kept and run first (through the normal approval, sandbox and statistics
+  path), and the continuation request is sent after their results, so the
+  request is well formed on OpenAI- and Anthropic-style backends; a call
+  whose arguments were cut, including one cut before its first argument
+  byte, is dropped and never run. A session saved by 0.8.10 in that state
+  resumes with a short placeholder result added in memory; the file is not
+  rewritten. If the continuation also hits the limit, the run stops with
+  one line naming the endpoint, the model, the current `max_tokens` value
+  and how to raise it. In a headless `wakil run` that is exit code 5, the
+  terminal record's outcome is `token_limit` and `--result-json` reports
+  `exit_reason` as `token_limit` instead of `error` (a script that matches
+  on `exit_reason` should accept the new value). In `--continue` mode the
+  run stops with outcome `incomplete`, reason `token_limit` and the same
+  exit code 5, and is never treated as a completed goal.
 - Loaded context modules now survive `/resume`: with `context_modules` on,
   the names of loaded modules are saved with the session, and on resume a
   module that still exists is delivered again the same way a pre-load is
-  (a synthetic `load_module` call and result, appended); a module that no
-  longer exists (for example an MCP server that is not connected any more)
-  is named in one notice. Sessions saved without the field (v0.8.10 and
+  (a synthetic `load_module` call and result, appended; when the history
+  already holds that module's current schema it is kept and not sent a
+  second time, and only a missing or changed schema is delivered again); a
+  module that no longer exists (for example an MCP server that is not
+  connected any more) is named in one notice. Sessions saved without the field (v0.8.10 and
   earlier) resume exactly as before, with nothing loaded and no notice.
 - Mashura in module mode: the Mashura tools (`mashura__review`, `__debug`,
   `__decide`, `__check`) are core tools in both modes (never a module, never
@@ -54,16 +75,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   why Mashura is not offered when it is not (level off, legacy
   `oracle_enabled` false, or no OpenRouter key). The tool array itself is
   unchanged in both modes.
-- A turn cut at the token limit that kept complete tool calls now runs
-  those calls first (through the normal approval, sandbox and statistics
-  path) and sends the continuation request after their results, so the
-  request is well formed on OpenAI- and Anthropic-style backends. Cut
-  calls, including a call cut before its first argument byte, are dropped
-  and never run. A session saved by 0.8.10 in that state resumes with a
-  short placeholder result added in memory; the file is not rewritten.
-- Resuming a session no longer sends a loaded module's schema twice: when
-  the history already holds the current schema it is kept (and pinned
-  again), and only a missing or changed schema is delivered again.
 - `/resume` opens fast on large session stores. A small index file
   (`.resume-index` in the sessions directory, rebuilt from the session
   files whenever it is missing or stale; session files are never rewritten)
@@ -72,8 +83,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   milliseconds. The first run after upgrading builds the index in the
   background and shows "indexing…". `/sessions`, `wakil --list-sessions`,
   `--resume` and `/remember` / `/recall` use the same index
-  (`/remember` on a warm index: about 300 ms to 70 ms).
-- `/resume` is now a modal with search over the conversation. Typing
+  (`/remember` on a warm index: about 300 ms to 70 ms). The first
+  `/remember` on a workspace after upgrading is slower once (about 2.5 s to
+  3.9 s for 500 sessions on a development machine), because it indexes every
+  session once.
+- `/resume` is now a modal with search over your sessions. Typing
   filters by title, label and folder (case-insensitive); arrows or
   ctrl+p / ctrl+n move, enter resumes, esc closes, `tab` (or `a` while the
   search box is empty) switches between this folder and all folders. `j`
