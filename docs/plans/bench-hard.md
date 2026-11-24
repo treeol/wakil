@@ -209,3 +209,258 @@ Build a deterministic replay of the task through a fake backend that uses **Waki
 - **Prefix-size asymmetry** (§8.2) is accepted and documented, per the brief (no per-mode compensation).
 - **Timeout rows:** a `timeout -k` kill mid-run could leave the merged config if the bench shell is also killed hard (SIGKILL). The trap covers EXIT/INT/TERM; SIGKILL of the bench shell itself is unrecoverable by design (same as every other bench temp file under run_root) — noted, not solved.
 - **bench.sh change surface:** `run_one_locked` is the hottest function in the harness; the merge must not alter behaviour for other tasks (guard: only the `collapse-long` branch changes; other tasks keep the current no-override path) and must not break the existing self-test cases (cheat, lock, timeout 137, workdir guard).
+
+## 9. Fix 2 — relative paths and result label (BASE 09d2e38, Tier 3)
+
+Host smoke (2026-11-25, `collapse-long`, modules off): the merge works
+(`merged config (ceiling=45000 min_bytes=2000)`), then wakil errors at bootstrap —
+`bootstrap error: style_guide_paths["go"]: opening /tmp/tmp.9KKjSeqpnp/styles/go.md:
+open …: no such file or directory`. The user's config uses the relative path
+`styles/go.md`; with the merged file in a private temp dir, Wakil resolves it there
+and fails. The CSV row says `result=invalid`, `exit_reason=error`, 0 s — a run that
+never started must not be `invalid`. Two fixes: make relative paths resolve exactly
+as in the user's normal setup, and label pre-model exits as `error` with a specific
+reason (and print the single `bootstrap error:` line to the terminal).
+
+### 9.1 Verified findings (read this session; file:line)
+
+**How relative paths resolve.**
+- `style_guide_paths` is the only key resolved relative to the config file's
+  directory: `baseDir = filepath.Dir(cfgPath)`, `absBase, _ := filepath.Abs(baseDir)`,
+  per value `expandTilde`, then `!IsAbs → Join(absBase, path)`, `Clean`
+  (`internal/config/config.go:2503-2520`). The comment says it plainly: "Style guide
+  paths are host-side user files. Relative paths follow the selected config file, not
+  the project workspace or launch directory." The error the user saw is categorical:
+  `style_guide_paths["%s"]: opening %s: %w` (`internal/config/config.go:2135-2142`;
+  printed as `bootstrap error: %v` by `internal/wiring/bootstrap.go:766-770`).
+  `styleguide.NewCatalog` opens the values verbatim (`internal/styleguide/styleguide.go:367-372`)
+  — "Paths must already be resolved by configuration loader" (`:54-56`); it does no
+  resolution of its own. Resolution only happens when `StyleGuidesEnabled && len>0`
+  (`config.go:2505`); disabled/empty leaves raw values.
+- `agent_prompt_path`: the DEFAULT is derived config-relative
+  (`filepath.Join(Dir(cfgPath), "agent.txt")`, `config.go:2496-2501`), but an
+  EXPLICIT value gets no tilde/abs/config-relative treatment in LoadConfig — it is
+  passed verbatim to `os.ReadFile` (`internal/wiring/bootstrap.go:659-663`), so an
+  explicit relative value is resolved against the **process cwd** at read time.
+  `trace_dir` gets `expandTilde` only (any source: file/env/--trace-dir), no abs, no
+  config-relative — a relative value stays relative (`config.go:2289-2301`, key at
+  `:826`). `expandTilde` itself only expands bare `~`/`~/…` via `os.UserHomeDir`
+  (`config.go:2566-2581`; used at `:2301` and `:2515` only).
+- Key inventory (path/dir/file keys): `work_dir` (`:278`), `host_work_dir` (`:279`),
+  `agent_prompt_path` (`:776`), `style_guide_paths` (`:782`), `trace_dir` (`:826`),
+  `browser_path` (`:846`). Only `style_guide_paths` is config-file-relative. Note the
+  defaults for the two that read files/dir at the config site: `agent.txt` default
+  sits next to the config file; `trace_dir` defaults to a data-dir path, not the
+  config dir. Any merged config at a temp path therefore changes resolution for
+  exactly `style_guide_paths` (the user's failure) and the implicit `agent.txt`
+  default — both resolved from the merged file's directory today.
+- The resolved config path: `$WAKIL_CONFIG` if set, else
+  `${XDG_CONFIG_HOME:-$HOME/.config}/wakil/config.json` (`config.go:1890-1899`).
+  LoadConfig reads exactly one file, `--config` > env > default (`:1950-1972`).
+
+**Writes into the config directory during a normal run: none.**
+- `LoadConfig` only `os.ReadFile`s ("nothing is written", "never writes file",
+  `config.go:1964,1969,1905,2053`); no `WriteFile`/`Create`/`MkdirAll` anywhere in
+  `internal/config`; `styleguide` only opens+reads (`styleguide.go:369`). So a normal
+  `wakil run` writes nothing into the config directory, and the mirror can expose
+  every entry for reading without the run modifying the user's real files.
+- Writes that exist but go elsewhere: `wakil init` writes config (explicit user
+  command, `internal/initcmd/write.go` — not a `run`); the memory store
+  (`internal/memory/store.go:181,419`, via `WAKIL_MEMORY_DB`) and session data live in
+  the data dir (`~/.local/share/wakil`), not the config dir. `trace_dir` is only
+  written if the user points it into the config dir (a pathological config; the
+  merged file then resolves `trace_dir` identically to a direct run).
+- Caveat the discovery raised and I do not bury: whether headless `BuildApp`
+  triggers repo-state/session saves on every run was not fully traced; its
+  location is the data dir, not the config dir. Mashūra round 1 flagged this as
+  the load-bearing assumption. Residual risk accepted with the byte-identity
+  self-test below as the watching proof (it cannot prove the real binary — no
+  astrix can; the sandbox run on the host will be the first real proof).
+
+**Current bench code (scripts/bench.sh).**
+- The merge sits in `run_one_locked` (`:826-857`): `_user_cfg` = `$WAKIL_CONFIG` or
+  `~/.config/wakil/config.json` (hardcoded HOME path, not XDG-aware); missing →
+  merge onto `{}`; `mktemp -d` (0700) + `(umask 077 && jq '. + {ceiling, min_bytes}')
+  2>/dev/null`; unparseable → `csv_row error/config-unreadable` + return 0
+  (`:844-851`); missing-file branch printf's the two keys without an umask guard
+  (`:853`); `WAKIL_CONFIG=$_cfg_file` is passed to the run (`:861,869`); deletion is
+  `rm -rf "$_bench_cfg_tmp"` right after `wait` (`:922-925`) with EXIT/INT/TERM
+  backstop (`st_on_exit`, normal-mode trap). The private dir is removed with
+  `rm -rf` — safe today because it contains no links; it must change when links
+  are introduced (see Block 1).
+- Result labels today: `csv_row` (`:555-581`): collapse-long `pass|fail` + 0 collapses
+  → `invalid`/`false:no_collapse` (`:558-560`); timeout → `false:timeout`; error →
+  config-unreadable maps to `false:config`, else `false:error` (`:561-569`). In
+  `run_one_locked`, a run with no workdir (e.g. a bootstrap failure, which never
+  writes a result JSON) falls to the missing-workdir guard (`:993-1000`):
+  `error/missing-workdir`, bench stops, all of `$log_file` is `cat`'d. A
+  `bootstrap error:` line lands in `$log_file.out` (`:931`, appended to the log) but
+  is never printed to the terminal.
+- Self-test already has the merged-config cases with a fake config (`:1540-1582`,
+  from Fix 1): endpoints preserved, exactly two keys, 0700/0600, deletion after
+  success/failure/timeout, fake sentinel `AKIA_FAKE_SENTINEL` absent from stdout/log/CSV,
+  bad config → `error/config-unreadable/false:config`.
+
+### 9.2 Block 1 — mirrored config dir (preferred approach, adopted)
+The key-agnostic mirror from the brief, made precise against the merge code
+(Mashūra round 1 folded BLOCKING items are marked with †):
+
+- In the same private temp dir (mode 0700, `mktemp -d`, as today), **for every entry
+  of the user's config directory except the resolved config file, create a symlink**
+  pointing to the original † (`ln -s` on path entries, not names the bench inferred).
+  Write the merged `config.json` (0600, as today) and point `WAKIL_CONFIG` at it.
+  Relative paths then resolve identically to a normal run for every key — no key
+  list to keep in sync, and the mirror covers the implicit `agent.txt` default too
+  (which the key-rewrite fallback could not, since it only rewrites explicit values).
+- † The mirror base is canonicalised first: `cfgdir=$(cd "$(dirname "$_user_cfg")" &&
+  pwd -P)` — an absolute physical path — so relative `WAKIL_CONFIG` still links
+  correctly, and symlinks in `$HOME`'s components are resolved once. The exclusion
+  is the resolved source file itself (`$_user_cfg`'s basename AND its full path),
+  not the literal name `config.json`: a custom `WAKIL_CONFIG=/x/alt.json` must not
+  have `alt.json` mirrored. If the config file is missing today (`_user_cfg=""`,
+  merge onto `{}`), there is no directory to mirror: keep the current no-mirror path.
+- † Safety guard on shared directories: if `cfgdir` is `$HOME`, `/`, or a directory
+  that is not Wakil's own config dir (i.e. the resolved user config is not
+  `~/.config/wakil/config.json` and its basename is not `config.json` under a
+  `wakil` dir), do NOT mirror the whole directory — instead skip the mirror and
+  write only the merged file (relative paths will then resolve against the temp
+  dir as today, a documented degradation, not a directory of secrets symlinked
+  into a temp dir). Concretely: mirror only when `_user_cfg` ends in
+  `/.config/wakil/config.json` (Wakil's own default) or when `WAKIL_CONFIG` points
+  into a directory whose basename is `wakil`; otherwise merged-file-only.
+- Cleanup removes only the merged file and the links themselves, then `rmdir` —
+  never `rm -rf` on a dir that may contain links. Implement as a recorded-manifest
+  helper †: at mirror creation, record the set of names created; cleanup deletes
+  `config.json` first † (secrets gone even if something below fails), then `rm -f`
+  each recorded link (guard `[ -L ]` before unlinking †, never a trailing slash),
+  then `rmdir` — if `rmdir` fails because the dir isn't empty, the helper reports
+  the leftover loudly (names only) instead of deleting recursively. Replace the
+  current `rm -rf` at `:923` (and `:847`) with this helper, used by every cleanup
+  site (post-wait, the unparseable early-return, and the EXIT/INT/TERM backstop).
+- The `../` limit: relative resolution today is `Join(absBase, path)` (`:2517`), so
+  `../x` escapes the config dir identically in both layouts **only if** the temp dir
+  sits at the same depth — it doesn't. Detection † (now narrow †): after merging,
+  if the merged JSON has any string value under `style_guide_paths` † (the only
+  config-file-relative key, §9.1) that, after `Clean`, starts with `../` or equals
+  `..` or contains a `../` segment that `Clean` collapses to an escape →
+  stop that run, `csv_row error/config-relative-escape` (mapped to
+  `valid=false:config` † — a new `csv_row` branch, mirroring `config-unreadable`),
+  return 0 (bench continues, like `config-unreadable` †), and write only the key
+  name to the run log. Implement with jq extracting `style_guide_paths` values
+  (tolerating the object shape and nulls, stderr discarded), then a shell check
+  on the cleaned value. No other key gets the detector: `agent_prompt_path` and
+  `trace_dir` are cwd-relative (§9.1), so `../` there is a valid user config the
+  mirror does not break.
+- Because a normal run writes nothing into the config dir (9.1), the mirror needs
+  **no write-redirect**: every entry is linked for reading only. If that fact ever
+  changed, entries written by a run would be modified through the link — so the
+  self-test byte-identity check below is the permanently-watching proof.
+- The config path is settled, in Wakil's favour: `defaultConfigPath` reads
+  `$WAKIL_CONFIG` else `UserHomeDir/.config/wakil/config.json`
+  (`config.go:1890-1899`) — it does NOT consult `XDG_CONFIG_HOME`. The bench's
+  hardcoded `$HOME/.config/wakil/config.json` (`:828`) matches. (Mashūra round 1
+  caught a contradiction in my §9.1 draft; the code confirms the bench.)
+
+Fallback (not taken): rewriting the known path-valued keys to absolute paths from the
+original config's directory would work for explicit `style_guide_paths` but misses the
+implicit `agent.txt` default and `agent_prompt_path`'s cwd behaviour, needs a key list
+kept in sync with `config.go`, and needs a self-test that fails when `config.go`
+gains a path key. The mirror is strictly simpler and more robust.
+
+**Tests (self-test, fake config dir only; `ln` and `sha256sum` are both in
+`harness_tools`/`selftest_tools`, `:25-27`).**
+- A fake config dir (`$tmpdir/fakeconfig/`) with `config.json` (fake endpoints),
+  `styles/go.md` (fake guide), plus other entries (a subdir with a file, a plain
+  file, a dotfile): the fake config sets `style_guide_paths` to the relative
+  `styles/go.md`. The self-test runs a stub that emulates Wakil's resolution
+  (join the relative path against the dirname of `$WAKIL_CONFIG`, assert the file
+  exists and is readable) — the only place the self-test can check resolution
+  without a real binary — and asserts the bench's merge preserved `endpoints`.
+- Byte-identity †: `sha256sum` of every file in the fake config dir before and
+  after each of {success, failure, timeout, INT † (mandatory)}; the temp dir
+  must be gone; the fake config dir byte-identical AND with identical modes and
+  link targets †; every symlink in the mirror removed. A run-created file in the
+  temp dir †: `rmdir` fails and the helper reports the leftover by name (names
+  only) instead of deleting it.
+- `../` detector †: a fake config with a `../`-escaping `style_guide_paths` value
+  → that run is `error/config-relative-escape` with `valid=false:config`, the
+  run log names `style_guide_paths`, the bench continues (return 0).
+- Fake sentinel (`AKIA_FAKE_SENTINEL`) in the fake config never appears in stdout,
+  the run log, or the CSV (the existing Fix 1 case, kept).
+
+### 9.3 Block 2 — result labels
+- A run that never reached the model gets `result=error` with a specific reason,
+  never `invalid`. `invalid` is produced only by the existing `csv_row` rule
+  (completed collapse-long pass/fail with 0 collapses, `:558-560`) — that rule
+  already cannot fire on a run without a result JSON, because it keys off
+  `pass|fail`. The labels to fix are the exit_reasons that today fall into
+  `missing-workdir` (`:993-1000`) for a bootstrap failure:
+  - On bootstrap error (grep for `^bootstrap error:` **in `$log_file.out`** † —
+    the run's own stdout capture, not the combined `$log_file` which also holds
+    the transcript — beside the sandbox-approval detection at `:967-979`):
+    `result=error`, `exit_reason=bootstrap`, valid `false:error` (the `csv_row`
+    error branch). Print the single `bootstrap error:` line to the terminal †
+    **only when it matches the known-safe `style_guide_paths` shape** (verified
+    against `config.go:2135-2142`: key name + resolved path; the line comes from
+    `internal/wiring/headless.go:302`, which prints every bootstrap error
+    verbatim, so an allow-list precedes printing) — other bootstrap lines are
+    reported by name only, because other error shapes (endpoint URLs with
+    userinfo, auth failures) could carry credentials.
+  - Config error (the existing `config-unreadable`) stays `valid=false:config` —
+    already correct (`:551-553`, `:565`) and covered by a Fix 1 self-test case.
+  - Missing workdir stays `error/missing-workdir` (`:995-997`) — already a specific
+    reason; today it is the label a bootstrap failure gets by accident, so the
+    bootstrap detection must run BEFORE the workdir guard.
+  - † Why the host row said `invalid`: a bootstrap failure writes no result JSON,
+    but the run DOES proceed to `check.sh` (`:1033-1041`), which fails on the
+    untouched fixture; `csv_row` then rewrites `fail` → `invalid`
+    (`:558-560`). That is the path the host CSV took (0 s, `exit_reason=error`
+    from the empty JSON field). The bootstrap detection therefore sits with the
+    other pre-check guards (`:967-979`, `:993-1000`) and returns before
+    `check.sh` runs — a run that never reached the model never reaches the check
+    either.
+- The bench stops on these (return 1, like the other guards) — unchanged.
+**Tests.** A stub that emits no result JSON + writes
+`bootstrap error: style_guide_paths["go"]: opening /tmp/…/styles/go.md: … no such
+file or directory` to its output → row is `error/bootstrap`, the line is printed
+to the terminal. The existing no-workdir stub (no result JSON, no bootstrap line)
+→ `error/missing-workdir` (unchanged, existing case). A completed 0-collapse
+collapse-long run → `invalid` (unchanged, existing case). Other tasks unchanged
+(their rows come from the same code paths).
+
+### 9.4 Block 3 — docs
+`bench/README.md`: the mirror (what is linked, that it is everything except
+the resolved config file itself, plus the shared-dir guard, cleanup guarantees
+(only links + merged file removed, `rmdir`, never `rm -rf` on a dir with links),
+the `../` limit + the stop rule, result labels
+(`invalid` only for a completed 0-collapse collapse-long run; `error/bootstrap`,
+`error/config-unreadable`, `error/missing-workdir` for pre-model exits), and the
+note that a normal run writes nothing into the config dir (why read-only links are
+safe). `CHANGELOG.md` [Unreleased] bench entry, extended.
+
+### 9.5 Open risks
+- A symlink in the user's config dir pointing outside it: `-L` entries are linked
+  as-is; cleanup `rm -f` on a link never follows it. A config-dir entry that is a
+  broken symlink: `ln -s` still succeeds; reading through it fails identically to a
+  direct run.
+- Concurrency: two bench runs against the same config dir create independent
+  `mktemp -d` mirrors; the links are read-only, so no interference. mktemp uniqueness
+  means no collision.
+- The `../` detector guards one key (`style_guide_paths`); if Wakil ever makes
+  another key config-dir-relative, the mirror still resolves it correctly (it is
+  key-agnostic) — only the escape check would be missing, and the mis-resolution is
+  visible as a wrong-path error, not a silent pass. Accepted and documented.
+- `SIGKILL` of the bench shell still leaves the temp dir (as in Fix 1 §8.6); the
+  mirror means that leftover contains only symlinks + a 0600 merged config. Same
+  unrecoverable-by-trap class, unchanged.
+- The XDG question is closed above (Wakil does not consult XDG).
+- Wakil's own stderr is still not covered by the sentinel test (as in Fix 1). The
+  `bootstrap error:` line is printed to the terminal only for the
+  `style_guide_paths` shape (`config.go:2135-2142`); all other bootstrap errors
+  are reported by name only because other shapes (`headless.go:302` prints every
+  bootstrap error verbatim) could carry endpoint URLs with credentials.
+
+### 9.6 Fix 1 — missing-file branch umask
+`bench.sh:853` writes the "no user config" fallback without a `(umask 077 && …)`
+guard. It holds no secrets today (two non-secret keys), but the 0600 invariant
+should be uniform — fixed alongside the mirror in Block 1.
