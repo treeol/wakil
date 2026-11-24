@@ -2024,7 +2024,7 @@ EOF
     _old_csv="$tmpdir/old-bench.csv"
     printf 'date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds\n' > "$_old_csv"
     printf '2026-11-20,wakil v0.8.8-0.20261119230229-39b3c386d69d+dirty,unknown,steps,1,error,sandbox-not-acknowledged,0,n/a,n/a,n/a,n/a,n/a,n/a\n' >> "$_old_csv"
-    printf '2026-11-20,wakil v0.8.8,unknown,steps,1,pass,pass,5,1000,200,n/a,0.010000,2,0,0\n' >> "$_old_csv"
+    printf '2026-11-20,wakil v0.8.8,unknown,steps,1,pass,pass,5,1000,200,0.010000,2,0,0\n' >> "$_old_csv"
     _old_tbl=$(print_table "$_old_csv" "unknown")
     printf '%s\n' "$_old_tbl" | grep -q 'steps' || { echo "self-test FAILED: print_table cannot read an old-format CSV" >&2; printf '%s\n' "$_old_tbl" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _old_cost=$(sum_cost "$_old_csv")
