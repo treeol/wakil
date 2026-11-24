@@ -181,7 +181,7 @@ if [ "$skip_preflight" -eq 1 ]; then
     [ "$self_test" -eq 1 ] || results_dir="$cache_home/wakil-bench/nopreflight"
 fi
 
-csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds,context_modules,modules_loaded'
+csv_header='date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,tokens_cached,cost_usd,tool_calls,collapses,collapses_turn_end,mashura_rounds,context_modules,modules_loaded,valid,provider'
 # CSV is created lazily: --setup and --self-test do not write a real-run
 # CSV (a header-only file would be picked up by find_prev_csv as the
 # "earlier run"). main() creates it before run_all only.
@@ -540,18 +540,37 @@ csv_cell() {
 }
 
 # csv_row <task> <run> <result> <exit_reason> <seconds> <result-json>
-# Appends one row to the CSV.
+# Appends one row to the CSV. The last two columns are appended (never
+# inserted): valid (true, or false:<reason>) and provider (the OpenRouter
+# provider that served the requests, when the binary reports it; empty
+# otherwise, including non-OpenRouter backends the binary does not name).
+# A completed collapse-long run with 0 collapses is not scorable: its
+# result is rewritten to "invalid" here (single computation point, so
+# every call site behaves identically) and valid is false:no_collapse.
+# Timeout and error results are never valid.
 csv_row() {
     task=$1; run=$2; result=$3; exit_reason=$4; secs=$5; rj=$6
+    _collapses=$(json_field "$rj" "collapses")
+    if [ "$task" = "collapse-long" ] && { [ "$result" = "pass" ] || [ "$result" = "fail" ]; } && { [ -z "$_collapses" ] || [ "$_collapses" = "0" ] || [ "$_collapses" = "null" ]; }; then
+        result="invalid"
+    fi
+    case "$result" in
+        invalid) _valid="false:no_collapse" ;;
+        timeout) _valid="false:timeout" ;;
+        error) _valid="false:error" ;;
+        *) _valid="true" ;;
+    esac
+    _provider=$(json_field "$rj" "provider")
     csv_line "$(date +%Y-%m-%d)" "$wakil_version" "$resolved_model" "$task" "$run" "$result" \
         "$(na "$exit_reason")" "$secs" \
         "$(na "$(json_field "$rj" "tokens_in")")" "$(na "$(json_field "$rj" "tokens_out")")" \
         "$(na "$(json_field "$rj" "tokens_cached")")" \
         "$(na "$(json_field "$rj" "cost_usd")")" "$(na "$(json_field "$rj" "tool_calls")")" \
-        "$(na "$(json_field "$rj" "collapses")")" "$(na "$(json_field "$rj" "collapses_turn_end")")" \
+        "$(na "$_collapses")" "$(na "$(json_field "$rj" "collapses_turn_end")")" \
         "$(na "$(json_field "$rj" "mashura_rounds")")" \
         "$(na "$(json_field "$rj" "context_modules")")" \
-        "$(na "$(json_field "$rj" "modules_loaded")")" >> "$csv_file"
+        "$(na "$(json_field "$rj" "modules_loaded")")" \
+        "$_valid" "$_provider" >> "$csv_file"
 }
 
 # prep_workdir <task>: empty and refill the fixed work folder from the
@@ -1281,8 +1300,13 @@ case "$1" in
     if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
+    # collapse-long is only scorable with collapses>=1; the solve stub
+    # emits 2 there so a solved collapse-long run is pass/valid, not
+    # invalid (a real binary that solved it after collapsing reports >0).
+    _collapses=0
+    case "$workdir" in */collapse-long) _collapses=2 ;; esac
     cat > "$result_json" <<JSON
-{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":0,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
+{"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":$_collapses,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
     exit 0 ;;
 esac
@@ -1341,18 +1365,27 @@ esac
 EOF
     chmod +x "$stub_wrong"
 
-    st_case "== self-test: stub that changes nothing (expect fail on every task) =="
+    st_case "== self-test: stub that changes nothing (expect fail on every task; collapse-long: invalid, no collapse) =="
     task_idx=0
     _fail_count=0
     for task in $tasks; do
         task_idx=$((task_idx + 1))
         BENCH_TASK_DIR="" run_one "$task" "self-noop" "$stub_noop"
         _row_result=$(csv_cell "$csv_file" last 6)
-        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: noop $task: expected fail, got $_row_result" >&2; _fail_count=$((_fail_count + 1)); }
+        _row_valid=$(csv_cell "$csv_file" last 19)
+        if [ "$task" = "collapse-long" ]; then
+            # The noop stub reports collapses:0, so a completed collapse-long
+            # run is not scorable: result invalid, valid false:no_collapse.
+            if [ "$_row_result" != "invalid" ] || [ "$_row_valid" != "false:no_collapse" ]; then
+                echo "self-test FAILED: noop $task: expected invalid/false:no_collapse, got $_row_result/$_row_valid" >&2; _fail_count=$((_fail_count + 1))
+            fi
+        else
+            [ "$_row_result" = "fail" ] || { echo "self-test FAILED: noop $task: expected fail, got $_row_result" >&2; _fail_count=$((_fail_count + 1)); }
+        fi
     done
     [ "$_fail_count" -eq 0 ] || { rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
 
-    st_case "== self-test: stub that applies the solution (expect pass on every task) =="
+    st_case "== self-test: stub that applies the solution (expect pass on every task; collapse-long needs collapses>=1) =="
     task_idx=0
     _pass_count=0
     for task in $tasks; do
@@ -1871,7 +1904,28 @@ EOF
     fi
     _tbl=$(print_table "$csv_file" "x")
     printf '%s\n' "$_tbl" | grep -q "$_csv_task" || { echo "self-test FAILED: print_table cannot read the quoted row" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    echo "  csv_field and a full row with comma/quote/newline read back intact (16 cells, one line)"
+    echo "  csv_field and a full row with comma/quote/newline read back intact (one line)"
+
+    st_case "== self-test: old-format CSV still readable; valid/provider columns appended =="
+    # A literal old CSV: the exact header and one row from a real historical
+    # bench results file (14 columns, before tokens_cached and the later
+    # appends). print_table, sum_cost and find_prev_csv must read it.
+    _old_csv="$tmpdir/old-bench.csv"
+    printf 'date,wakil_version,model,task,run,result,exit_reason,seconds,tokens_in,tokens_out,cost_usd,tool_calls,collapses,mashura_rounds\n' > "$_old_csv"
+    printf '2026-11-20,wakil v0.8.8-0.20261119230229-39b3c386d69d+dirty,unknown,steps,1,error,sandbox-not-acknowledged,0,n/a,n/a,n/a,n/a,n/a,n/a\n' >> "$_old_csv"
+    printf '2026-11-20,wakil v0.8.8,unknown,steps,1,pass,pass,5,1000,200,n/a,0.010000,2,0,0\n' >> "$_old_csv"
+    _old_tbl=$(print_table "$_old_csv" "unknown")
+    printf '%s\n' "$_old_tbl" | grep -q 'steps' || { echo "self-test FAILED: print_table cannot read an old-format CSV" >&2; printf '%s\n' "$_old_tbl" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _old_cost=$(sum_cost "$_old_csv")
+    [ "$_old_cost" = "0.0100" ] || { echo "self-test FAILED: sum_cost on old CSV = $_old_cost, want 0.0100" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _old_model=$(csv_cell "$_old_csv" 2 3)
+    [ "$_old_model" = "unknown" ] || { echo "self-test FAILED: old CSV model read as '$_old_model'" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # New columns: header ends with valid,provider; a fresh row carries them.
+    printf '%s\n' "$csv_header" | grep -q ',valid,provider$' || { echo "self-test FAILED: csv_header does not end with ,valid,provider: $csv_header" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _new_valid=$(csv_cell "$csv_file" last 19); _new_prov=$(csv_cell "$csv_file" last 20)
+    [ "$_new_valid" = "true" ] || { echo "self-test FAILED: last row valid='$_new_valid', want true (pass row)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ -z "$_new_prov" ] || { echo "self-test FAILED: last row provider='$_new_prov', want empty (stub reports none)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  old 14-col CSV readable (table, cost 0.0100, model); new header ends ,valid,provider; pass row valid=true provider empty"
 
     st_case "== self-test: a second bench on a task that is already being run (expect exit 75, folder untouched) =="
     # The first bench holds the task's lock (lock_task, as run_one does) and
