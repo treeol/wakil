@@ -781,13 +781,40 @@ run_one_locked() {
     # the agent runs there, not in the configured work_dir.
     export WAKIL_HOST_WORKDIR="$workdir"
     export WAKIL_CONTEXT_MODULES="$context_modules"
+    # collapse-long only: a bench-only collapse-threshold override through
+    # a per-run config file (WAKIL_CONFIG). The ceiling is low and identical
+    # for modules off and on, so every model collapses at the same projected
+    # size regardless of its probed window (a fixture big enough for a
+    # 1M-token model would time out small ones). Wakil itself is unchanged;
+    # the config carries only the two collapse keys (no secrets, no
+    # endpoint — endpoint/model resolution is untouched). The override and
+    # its values are recorded in the run log.
+    _wakil_config_env=""
+    if [ "$task" = "collapse-long" ]; then
+        _cfg_dir="$run_root/$task-config"
+        mkdir -p "$_cfg_dir" || { echo "$prog: cannot create $_cfg_dir" >&2; set -e; return 1; }
+        _cfg_file="$_cfg_dir/config.json"
+        printf '{"context_collapse_ceiling_tokens":8000,"context_collapse_min_bytes":2000}\n' > "$_cfg_file"
+        _wakil_config_env="WAKIL_CONFIG=$_cfg_file"
+        printf 'collapse-long override: WAKIL_CONFIG=%s (context_collapse_ceiling_tokens=8000, context_collapse_min_bytes=2000)\n' "$_cfg_file" >> "$log_file" 2>/dev/null || true
+    fi
 
     if [ -n "$model_name" ]; then
-        WAKIL_MODEL="$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
+        if [ -n "$_wakil_config_env" ]; then
+            env "WAKIL_CONFIG=$_cfg_file" "WAKIL_MODEL=$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+                --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
+        else
+            WAKIL_MODEL="$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+                --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
+        fi
     else
-        timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
-            --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
+        if [ -n "$_wakil_config_env" ]; then
+            env "WAKIL_CONFIG=$_cfg_file" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+                --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
+        else
+            timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+                --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
+        fi
     fi
     run_pid=$!
 

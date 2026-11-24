@@ -1,0 +1,5 @@
+In this repository, the package window takes a window of elements from a slice. One of its functions has a subtle bug: when the slice is exactly as long as the window, one element is dropped. It works for shorter slices, for longer slices, and for an empty slice — only the exact-size case is wrong.
+
+Find the bug and fix it. A test that reproduces the symptom is in the package (it calls the public function); hidden tests will also call the helper directly and will cover empty, single-element, full, over-full and negative sizes.
+
+Keep the fix minimal and inside the buggy function: change nothing outside it (imports, other functions, other files) by more than a line or two. Do not create new files at the repository root.

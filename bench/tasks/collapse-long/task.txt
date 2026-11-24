@@ -1,0 +1,7 @@
+In this repository, the directory docs/ holds about 40 files of prose, each stating one number, in words ("seven", "twenty-three", ...), in a sentence like "this record concerns the archive category". Each file names a category (one of alpha, beta, gamma, delta, epsilon, zeta).
+
+Read every file in docs/ and write a file report.json in the repository root with one key per category and the sum of the numbers in that category, as JSON:
+
+{"alpha": 42, "beta": 17, ...}
+
+Do not change any file under docs/. Do not create new files at the repository root other than report.json.

@@ -1,0 +1,5 @@
+In this repository, the shared package defines OldAdd(a, b int) int, used by eight caller packages (p01 through p08). Each caller has Total(a, b int) int which returns shared.OldAdd(a, b).
+
+Rename OldAdd to NewSum and change its signature to NewSum(a, b, c int) int, returning a + b + c. Total keeps its own signature; its body becomes shared.NewSum(a, b, K) where K is the package's constant: p01 uses 1, p02 uses 2, p03 uses 3, p04 uses 4, p05 uses 5, p06 uses 6, p07 uses 7, p08 uses 8.
+
+The visible tests in the packages assert the old behaviour (Total(2, 3) == 5); update them to the new behaviour (Total(2, 3) == 5 + K). The whole module must still build and all tests must pass. Do not change Total's behaviour beyond the stated new signature, and do not create new files at the repository root.
