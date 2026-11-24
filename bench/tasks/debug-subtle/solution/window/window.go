@@ -9,8 +9,7 @@ func Take(s []int, n int) []int {
 	return windowTake(s, n)
 }
 
-// windowTake returns the first n elements of s, or all of s when s is
-// shorter than n.
+// windowTake returns the first n elements of s.
 func windowTake(s []int, n int) []int {
 	k := n
 	if len(s) < k {

@@ -2,4 +2,4 @@ In this repository, the package window takes a window of elements from a slice. 
 
 Find the bug and fix it. A test that reproduces the symptom is in the package (it calls the public function); hidden tests will also call the helper directly and will cover empty, single-element, full, over-full and negative sizes.
 
-Keep the fix minimal and inside the buggy function: change nothing outside it (imports, other functions, other files) by more than a line or two. Do not create new files at the repository root.
+Keep the fix minimal and inside the buggy function: change at most a handful of lines in total (imports, other functions and other files included). Do not create new files at the repository root.

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Bench: three harder tasks — `collapse-long` (forced mid-turn collapse via a bench-only low `context_collapse_ceiling_tokens` override, identical for modules off and on; a completed run with 0 collapses is `invalid`, `valid=false:no_collapse`), `refactor-multi` (rename plus signature change across 8 caller packages), and `debug-subtle` (off-by-one in a helper, hidden tests call the helper directly, fix capped at 4 changed lines outside the buggy function). CSV gains appended `valid` and `provider` columns (old CSVs stay readable); no `--provider` pinning flag (no provider-pinning source in the repo).
+
 ## [0.8.11] - 2026-11-24
 
 Upgrading from 0.8.10, in short (details below):

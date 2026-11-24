@@ -1704,6 +1704,117 @@ EOF
     fi
     echo "  declined+check.sh OK (--allow-destructive passed; result from check.sh, exit_reason preserved)"
 
+    st_case "== self-test: wrong solutions fail on the three new tasks =="
+    # collapse-long: solution with one wrong sum (collapses>0 so the run is
+    # scorable) must fail the check.
+    if [ -d "$tasks_dir/collapse-long" ]; then
+        stub_wrongreport="$tmpdir/wakil-wrongreport"
+        cat > "$stub_wrongreport" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-wrongreport/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    printf '{"alpha": 999, "beta": 131, "delta": 65, "epsilon": 161, "gamma": 113, "zeta": 132}\n' > "$workdir/report.json"
+    printf '{"wakil_version":"stub-wrongreport/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":2,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_wrongreport"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/collapse-long" run_one collapse-long "self-wrongreport" "$stub_wrongreport"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: collapse-long wrong report: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    fi
+    # refactor-multi: renamed but kept the old signature (callers still
+    # pass 2 args against a 3-arg NewSum would not build; here the wrong
+    # solution keeps OldAdd behaviour under NewSum with a wrong K in one
+    # package) must fail the hidden tests.
+    if [ -d "$tasks_dir/refactor-multi" ]; then
+        stub_wrongk="$tmpdir/wakil-wrongk"
+        cat > "$stub_wrongk" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-wrongk/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    sed -i 's/shared.NewSum(a, b, 3)/shared.NewSum(a, b, 99)/' "$workdir/p03/p03.go"
+    printf '{"wakil_version":"stub-wrongk/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_wrongk"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/refactor-multi" run_one refactor-multi "self-wrongk" "$stub_wrongk"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: refactor-multi wrong K: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    fi
+    # debug-subtle: correct fix plus an extra change outside the buggy
+    # function (a 10-line helper added to the package) must fail minimal.
+    if [ -d "$tasks_dir/debug-subtle" ]; then
+        stub_bloated="$tmpdir/wakil-bloated"
+        cat > "$stub_bloated" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-bloated/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    cat >> "$workdir/window/window.go" <<'GO'
+
+// ExtraHelper is an unnecessary helper the agent added outside the fix.
+func ExtraHelper(x int) int {
+	y := x + 1
+	y = y * 2
+	y = y - 3
+	y = y + 4
+	y = y * 5
+	y = y - 6
+	y = y + 7
+	return y
+}
+GO
+    printf '{"wakil_version":"stub-bloated/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_bloated"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/debug-subtle" run_one debug-subtle "self-bloated" "$stub_bloated"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: debug-subtle bloated fix: expected fail (minimal-fix rule), got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    fi
+    echo "  wrong report (collapse-long), wrong K (refactor-multi), bloated fix (debug-subtle) all scored fail"
+
     st_case "== self-test: agent-written test code must not fake a pass (expect fail) =="
     # A fake agent that leaves the bug in place and writes code that makes
     # "go test" succeed without the hidden test running: a TestMain that

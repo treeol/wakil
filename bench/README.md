@@ -24,7 +24,7 @@ the task results were; non-zero only on harness errors.
 
 Before each run the script prints one line with the task index, task
 name, run number, and log path. After each run it prints one line with
-the result (`pass` / `fail` / `timeout` / `error`), elapsed seconds,
+the result (`pass` / `fail` / `timeout` / `error` / `invalid`), elapsed seconds,
 tokens in/out, cost, and — for non-pass results — the exit reason from
 `--result-json` when available. When stdout is a terminal, it also
 prints one short heartbeat line every 30 seconds with the elapsed time
@@ -64,7 +64,7 @@ invalid — the user must re-acknowledge with `WAKIL_HOST_WORKDIR=<path> wakil s
 
 ## Go requirement
 
-The Go tasks (`add-flag`, `fix-test`, `rename`, and `long-read`'s setup) need the
+The Go tasks (`add-flag`, `fix-test`, `rename`, `refactor-multi`, `debug-subtle`, and `long-read`'s and `collapse-long`'s setups) need the
 toolchain their `go.mod` names (the same as the repo's `go.mod`) in the
 **local cache**. `scripts/bench.sh` resolves it once at start, in the repo
 root with your environment (`GOPROXY=off go env GOVERSION`; the host's own Go
@@ -86,7 +86,7 @@ bench.sh: the Go checks cannot run: the tasks need go >= 1.26, found go1.25.1 �
 ```
 
 `--task steps` needs no Go at all (no Go is resolved and the preflight is
-skipped); `long-read` needs it for its `setup.sh`. `python3` is checked before the first run when a selected task's `check.sh` or `setup.sh` uses it. GNU userland is assumed (`tar`, `timeout -k`, `flock`, `sha256sum`, `find`).
+skipped); `long-read` and `collapse-long` need it for their `setup.sh`. `python3` is checked before the first run when a selected task's `check.sh` or `setup.sh` uses it. GNU userland is assumed (`tar`, `timeout -k`, `flock`, `sha256sum`, `find`).
 
 ## How a run works
 
@@ -119,7 +119,14 @@ For each task and run number:
    carry-over between runs (no memory tools, no `plan/current` read or
    write, no memory digest in the prompt). `WAKIL_HOST_WORKDIR` is set
    to the fixed work folder so the sandbox mounts it (not the configured
-   `work_dir`).
+   `work_dir`). For `collapse-long` only, the harness also sets
+   `WAKIL_CONFIG` to a per-run config file carrying only
+   `context_collapse_ceiling_tokens: 8000` and
+   `context_collapse_min_bytes: 2000` — a bench-only, low, identical
+   threshold for modules off and on, so every model collapses at the
+   same projected size regardless of its probed window. The override
+   and its values are recorded in the run log; Wakil itself is
+   unchanged.
 4. `check.sh` from the task folder runs in the work folder after every
    run that ended (`pass`, `declined`, or `error`); `result` is `pass`
    or `fail` from `check.sh`, and `exit_reason` keeps what the run
@@ -233,6 +240,20 @@ shows it as a `cached-%` column and prints cost with 4 decimals.
 full turn-end collapses. `context_modules` and `modules_loaded` carry the
 context-modules switch state and loaded module names from `--result-json`
 when the binary reports them (off by default).
+`valid` is `true` for a scorable run and `false:<reason>` otherwise:
+`false:no_collapse` for a completed `collapse-long` run with 0 collapses
+(its `result` is `invalid`, not `pass`/`fail`; exclude `invalid`,
+`timeout` and `error` rows from pass-rate denominators),
+`false:timeout` for a timeout, `false:error` for an error. `provider`
+carries the OpenRouter provider that served the requests when the binary
+reports it in `--result-json` (empty otherwise, including non-OpenRouter
+backends; `mixed` is reserved for a run served by more than one).
+There is no `--provider` pinning flag: the repo documents no OpenRouter
+provider-pinning mechanism (the only `provider` object in the wire code
+is the ZDR merge in `internal/proxy/policy.go`), so the flag was left
+out and the column stays empty until a binary reports it. Old CSVs
+(without the appended columns) are still readable by every reader
+(`print_table`, `sum_cost`, `find_prev_csv`), which read by header name.
 `exit_reason` column carries the reason string from `--result-json`
 (`pass`, `declined`, `backend_failure`, `gaps`, `error`) when the
 binary reports one, or `n/a` otherwise. Values a binary does not report
@@ -252,9 +273,15 @@ sandbox and no network (only the local Go toolchain, for the Go task
 checks). Output (CSV and logs) goes to
 `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/selftest/`, never into the
 repo, and the run asserts that nothing under `bench/results/` changed.
-Cases: a stub that changes nothing (every task must report `fail`); a
+Cases: a stub that changes nothing (every task must report `fail`;
+`collapse-long` reports `invalid` with `false:no_collapse`); a
 stub that copies the task's `solution/` into the work folder (every task
-must report `pass`); declined runs; agent-written test code that tries to
+must report `pass`; `collapse-long` needs `collapses >= 1`);
+wrong solutions (a wrong `report.json`, a wrong per-package constant in
+`refactor-multi`, a bloated fix outside the buggy function in
+`debug-subtle`) each scored `fail`; an old-format (14-column) CSV read
+back by `print_table`/`sum_cost`/`csv_cell`, and the appended
+`valid,provider` columns; declined runs; agent-written test code that tries to
 fake a pass; no generator, seed or check in the `long-read` folder or its
 history, and `leak_check` refusing every leak kind; a planted `solution/`
 (`leak-detected`); a model name and version with a comma, quote and newline
@@ -294,6 +321,12 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   how the agent handles a lot of text, and a script is a legitimate way to
   do it. Its generator and seed stay outside the work folder, so the
   expected answer cannot be derived from anything the agent can read.
+- `collapse-long` can likewise be solved by scripting, and an agent that
+  externalizes facts to disk as it reads never needs to retain them across
+  the collapse. No collapse then means the run is `invalid`
+  (`false:no_collapse`), not a pass or fail: report the invalid rate per
+  model next to the pass rate. The task measures retention across a forced
+  collapse for agents that read in-turn.
 - `check.sh` runs on the host, unsandboxed, and executes the agent's
   non-test code when the hidden test imports the package. The static checks
   above stop the known ways to fake a pass; code that reads the hidden test
