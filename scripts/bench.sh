@@ -1525,10 +1525,10 @@ exit $_fail
 EOF
     chmod +x "$stub_record"
     # Success path: merged config deleted, row pass, no sentinel in log/CSV/stdout.
-    BENCH_ST_RECORD="$tmpdir/st-record" run_one collapse-long "self-merged" "$stub_record" >"$tmpdir/st-merged-stdout" 2>&1 || { echo "self-test FAILED: merged success run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    BENCH_ST_RECORD="$tmpdir/st-record" BENCH_TASK_DIR="$tasks_dir/collapse-long" run_one collapse-long "self-merged" "$stub_record" >"$tmpdir/st-merged-stdout" 2>&1 || { echo "self-test FAILED: merged success run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _m_file=$(sed -n 's/^RECORD: merged=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
-    _m_mode=$(sed -n 's/.*mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
-    _m_dmode=$(sed -n 's/.*dir_mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
+    _m_mode=$(sed -n 's/^RECORD: merged=[^ ]* mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
+    _m_dmode=$(sed -n 's/^RECORD: merged=[^ ]* mode=[^ ]* dir_mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
     grep -q "merged content wrong" "$tmpdir/st-record" 2>/dev/null && { echo "self-test FAILED: merged content wrong (keeps endpoints + two keys)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ "$_m_mode" = "600" ] || { echo "self-test FAILED: merged file mode=$_m_mode, want 600" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ "$_m_dmode" = "700" ] || { echo "self-test FAILED: merged dir mode=$_m_dmode, want 700" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
@@ -1537,10 +1537,13 @@ EOF
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
     { [ "$_row_result" = "pass" ] && [ "$_row_valid" = "true" ]; } || { echo "self-test FAILED: merged success: expected pass/true, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    # Timeout and failure paths: the merged config is deleted too.
+    # Timeout path: a 1s-timeout run is cut off mid-way; its merged
+    # config is still deleted (no file remains under $TMPDIR from this run).
+    _before=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' -newer "$_fake_user_cfg" 2>/dev/null | sort)
     timeout_sec=1 BENCH_TASK_DIR="" run_one collapse-long "self-merged-timeout" "$stub_slow" >"$tmpdir/st-merged-timeout-stdout" 2>&1 || true
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-timeout-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV on timeout" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    grep -rq "context_collapse_ceiling_tokens" "$tmpdir" 2>/dev/null && { echo "self-test FAILED: merged config left somewhere under tmpdir on timeout" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _after=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' -newer "$_fake_user_cfg" 2>/dev/null | sort)
+    [ "$_before" = "$_after" ] || { echo "self-test FAILED: merged config left under TMPDIR on timeout: $_after" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     # Failure path (non-zero stub via stub_wrong is an error row): also deleted.
     BENCH_TASK_DIR="" run_one collapse-long "self-merged-wrong" "$stub_wrong" >"$tmpdir/st-merged-wrong-stdout" 2>&1 || true
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-wrong-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV on error" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
