@@ -1362,10 +1362,12 @@ case "$1" in
       cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
     fi
     # collapse-long is only scorable with collapses>=1; the solve stub
-    # emits 2 there so a solved collapse-long run is pass/valid, not
-    # invalid (a real binary that solved it after collapsing reports >0).
+    # emits 3 there — at the chosen 45,000-token ceiling the replay measured
+    # 3 mid-turn collapses in both modes (plan §8.7) — so a solved
+    # collapse-long run is pass/valid, not invalid (a real binary that
+    # solved it after collapsing reports >0).
     _collapses=0
-    case "$workdir" in */collapse-long) _collapses=2 ;; esac
+    case "$workdir" in */collapse-long) _collapses=3 ;; esac
     cat > "$result_json" <<JSON
 {"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":$_collapses,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Bench: three harder tasks — `collapse-long` (forced mid-turn collapse via a bench-only low `context_collapse_ceiling_tokens` override, identical for modules off and on; a completed run with 0 collapses is `invalid`, `valid=false:no_collapse`), `refactor-multi` (rename plus signature change across 8 caller packages), and `debug-subtle` (off-by-one in a helper, hidden tests call the helper directly, fix capped at 4 changed lines outside the buggy function). CSV gains appended `valid` and `provider` columns (old CSVs stay readable); no `--provider` pinning flag (no provider-pinning source in the repo).
+- Bench `collapse-long` run config fixed: the override now **merges** the user's own resolved config with only the two collapse keys (instead of replacing it, which left the run with no endpoints), into a private 0600 file in a 0700 temp dir that is deleted right after the run; an unparseable user config is `valid=false:config` (`error`/`config-unreadable`, bench continues), a missing one merges onto `{}`. Ceiling moved 8,000 → 45,000 tokens (180,000 chars) after a fake-backend replay measured both modes at 3 collapses; on this task off-vs-on partly measures prefix size (~53,084 vs ~53,500 bytes), stated in `bench/README.md` and not compensated with per-mode values.
 
 ## [0.8.11] - 2026-11-24
 

@@ -119,14 +119,35 @@ For each task and run number:
    carry-over between runs (no memory tools, no `plan/current` read or
    write, no memory digest in the prompt). `WAKIL_HOST_WORKDIR` is set
    to the fixed work folder so the sandbox mounts it (not the configured
-   `work_dir`). For `collapse-long` only, the harness also sets
-   `WAKIL_CONFIG` to a per-run config file carrying only
-   `context_collapse_ceiling_tokens: 8000` and
-   `context_collapse_min_bytes: 2000` — a bench-only, low, identical
-   threshold for modules off and on, so every model collapses at the
-   same projected size regardless of its probed window. The override
-   and its values are recorded in the run log; Wakil itself is
-   unchanged.
+   `work_dir`). For `collapse-long` only, the harness sets `WAKIL_CONFIG`
+   to a merged per-run config: a copy of the user's own resolved config
+   (`$WAKIL_CONFIG`, else `~/.config/wakil/config.json`, exactly the path
+   Wakil resolves) with only two keys changed —
+   `context_collapse_ceiling_tokens: 45000` and
+   `context_collapse_min_bytes: 2000`. The ceiling is low, bench-only, and
+   identical for modules off and on, so every model collapses at the same
+   projected size regardless of its probed window. Wakil reads exactly
+   one config file and the two collapse keys have no env override, so a
+   merged file is the only way to layer them on top of the user's
+   endpoints without replacing them; Wakil itself is unchanged. The
+   merged file carries the user's endpoints (with keys). Privacy: it
+   lives in a private `mktemp -d` dir (0700, never inside the repo or
+   under `bench/results/`), is created at mode 0600 (subshell
+   `umask 077`), is deleted right after `wait` on every path (success,
+   failure, timeout), and its contents, path, and key values are never
+   printed, logged, copied into the run log or the CSV. The run log says
+   only `merged config (ceiling=45000 min_bytes=2000)`. The sandbox only
+   mounts the fixed work folder, so the agent under test cannot read the
+   host temp dir; wakil's own error output is not covered (an endpoint
+   error could name a URL in the transcript). A missing user config is
+   merged onto `{}` (env-only setups still run — a missing file means
+   defaults+env apply in Wakil too); an unparseable user file is recorded
+   as `error` / `config-unreadable` / `valid=false:config` and the bench
+   continues. Only the `collapse-long` task merges a config; other tasks
+   set no `WAKIL_CONFIG` and use the user's config as-is. The user's own
+   config is read by the host-side bench at run time, never by
+   `--self-test` (which uses a fake config with a fake secret sentinel —
+   see "Self-test").
 4. `check.sh` from the task folder runs in the work folder after every
    run that ended (`pass`, `declined`, or `error`); `result` is `pass`
    or `fail` from `check.sh`, and `exit_reason` keeps what the run
@@ -273,10 +294,21 @@ sandbox and no network (only the local Go toolchain, for the Go task
 checks). Output (CSV and logs) goes to
 `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/selftest/`, never into the
 repo, and the run asserts that nothing under `bench/results/` changed.
+The self-test sets `WAKIL_CONFIG` to a **fake** user config (fake
+endpoints with a fake secret sentinel `AKIA_FAKE_SENTINEL`) before any
+`collapse-long` run, so it never reads the host's real
+`~/.config/wakil/config.json` and passes on a host with no config at
+all. It asserts the fake secret never reaches the run log, the CSV or
+stdout, that the merged config keeps the fake endpoints and sets
+exactly the two collapse keys, that the merged file/dir are 0600/0700
+and are gone after success, failure and timeout, and that a missing
+config still runs (merged onto `{}`) while an unparseable one is
+`error` / `config-unreadable` / `valid=false:config`.
 Cases: a stub that changes nothing (every task must report `fail`;
 `collapse-long` reports `invalid` with `false:no_collapse`); a
 stub that copies the task's `solution/` into the work folder (every task
-must report `pass`; `collapse-long` needs `collapses >= 1`);
+must report `pass`; `collapse-long` needs `collapses >= 1` — the solve
+stub emits 3 at the chosen ceiling);
 wrong solutions (a wrong `report.json`, a wrong per-package constant in
 `refactor-multi`, a bloated fix outside the buggy function in
 `debug-subtle`) each scored `fail`; an old-format (14-column) CSV read
@@ -327,6 +359,29 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   (`false:no_collapse`), not a pass or fail: report the invalid rate per
   model next to the pass rate. The task measures retention across a forced
   collapse for agents that read in-turn.
+- **Ceiling calibration (off vs on).** The ceiling is 45,000 tokens
+  (180,000 chars), identical for both modes, chosen from a calibration
+  replay of the task through a fake backend that drove one long-session
+  turn with 40 `read_file` calls in fixture order and the real preamble
+  each mode sends. Measured mid-turn collapses at that ceiling: 3 in
+  modules-off and 3 in modules-on (the onset of doubt: 40,000 gives off 3,
+  on 4). The measured prefix is ~53,084 bytes off vs ~53,500 bytes on —
+  the module index is appended inside the counted preamble, so modules-on
+  collapses marginally earlier and the off/on counts are not exactly
+  equal. That asymmetry is accepted, not compensated (no per-mode
+  values): on this task, off-vs-on partly measures prefix size, stated
+  plainly so the comparison stays honest. `context_collapse_min_bytes`
+  is set only to neutralise a user value: `wakil run` is one user turn,
+  so the turn-end counter does not fire. The ceiling counts
+  `sentSize(contextProjection())` = content + tool-call arguments in
+  Conv (system prompt and task message included, tool schemas excluded)
+  with a 4-chars-per-token estimate (`internal/agent/collapse.go`,
+  `internal/agent/styleguides.go`, `internal/core/format/format.go`).
+  The 1–3-collapses claim is a property of the replay (fixed order, the
+  `read_file` path, defaults — not the user's `tool_result_cap` /
+  `context_mode`, and without mid-run `load_module` traffic in on mode);
+  a real model's read order and strategy will differ, which is why the
+  `invalid` rate is a first-class metric.
 - `check.sh` runs on the host, unsandboxed, and executes the agent's
   non-test code when the hidden test imports the package. The static checks
   above stop the known ways to fake a pass; code that reads the hidden test
