@@ -559,7 +559,14 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// "/sessions" is scoped to the current workspace (with a hidden-count
 		// hint when other-workspace sessions exist).
 		all := len(fields) > 1 && fields[1] == "all"
-		return true, false, note(SessionListText(app.Client.ChatID, SessionScope{Workspace: app.SessionWorkspace(), All: all, IncludeLegacy: true}))
+		// The listing reconciles the resume index (a cold index decodes every
+		// session once), so it is computed in the Cmd goroutine, never on the
+		// UI goroutine.
+		chatID := app.Client.ChatID
+		scope := SessionScope{Workspace: app.SessionWorkspace(), All: all, IncludeLegacy: true}
+		return true, false, func() Msg {
+			return SysNoteMsg{Text: SessionListText(chatID, scope)}
+		}
 
 	case "/remember":
 		// /remember <query> searches prior session transcripts in the current
@@ -706,11 +713,11 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// An explicit id/prefix still resumes directly without the picker.
 		if arg == "" {
 			return true, false, func() Msg {
-				sessions, hidden, err := ListSessionsScoped(scope)
+				_, _, hidden, err := ListResumeEntries(scope, true)
 				if err != nil {
 					return SysNoteMsg{Text: "resume: " + err.Error() + "\nnext: run /resume again"}
 				}
-				return OpenResumePickerMsg{Sessions: sessions, Scope: scope, Hidden: hidden}
+				return OpenResumePickerMsg{Scope: scope, Hidden: hidden}
 			}
 		}
 		return true, false, func() Msg {

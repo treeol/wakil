@@ -985,15 +985,12 @@ func (m tuiModel) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A handful of keys (ctrl+c/ctrl+d) are deliberately NOT consumed so
 		// quitting the program still works with the picker open.
 		if m.resumePicker.active {
-			prevActive := m.resumePicker.active
-			prevPickerH := m.resumePickerHeight()
 			var rCmd tea.Cmd
 			var rConsumed bool
 			m, rCmd, rConsumed = m.handleResumePickerKey(msg)
 			if rConsumed {
-				if m.resumePicker.active != prevActive || m.resumePickerHeight() != prevPickerH {
-					m = m.reflow()
-				}
+				// The picker is a modal over the conversation pane (no layout
+				// rows), so opening, filtering and closing never reflow.
 				if rCmd != nil {
 					cmds = append(cmds, rCmd)
 				}
@@ -2689,7 +2686,7 @@ func (m tuiModel) sizesWithStatusHeight(statusH int) (vpW, vpH, inputOuterH int)
 	// here: on terminals shorter than the chrome itself, a taller reservation
 	// would overflow the AltScreen (sizes() and View() must always agree, and
 	// lipgloss crops over-height renders rather than shrinking them).
-	topOuterH := m.height - inputOuterH - m.completionHeight() - m.resumePickerHeight() - tabH
+	topOuterH := m.height - inputOuterH - m.completionHeight() - tabH
 	if topOuterH < 1 {
 		topOuterH = 1
 	}

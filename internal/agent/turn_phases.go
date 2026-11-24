@@ -25,6 +25,25 @@ import (
 	"github.com/treeol/wakil/internal/trace"
 )
 
+// Prefixes of the subagent budget line (subagentBudgetMessage); the resume
+// title rules skip user messages that start with them.
+const (
+	subagentBudgetPrefix    = "[budget: "
+	subagentBudgetLowPrefix = "⚠ Budget low — produce the JSON summary now"
+)
+
+// subagentBudgetMessage is the per-iteration budget line injected for
+// subagents: tool rounds left and tool-output bytes left, with a wrap-up
+// warning at <=5 rounds or <15% of the output budget remaining.
+func subagentBudgetMessage(itersRemaining, budgetLeft, totalBudget int) string {
+	msg := fmt.Sprintf(subagentBudgetPrefix+"%d tool rounds left · tool output %dk/%dk left]",
+		itersRemaining, budgetLeft/1000, totalBudget/1000)
+	if itersRemaining <= 5 || budgetLeft < totalBudget*15/100 {
+		msg = subagentBudgetLowPrefix + " with what you have.\n" + msg
+	}
+	return msg
+}
+
 // continuationPrompt asks the model to continue from where it stopped after a
 // token-limit cut. It is appended as a user message and the turn continues
 // with the kept text already in Conv.
@@ -270,12 +289,7 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			if itersRemaining < 0 {
 				itersRemaining = 0
 			}
-			budgetMsg := fmt.Sprintf("[budget: %d tool rounds left · tool output %dk/%dk left]",
-				itersRemaining, budgetLeft/1000, a.Cfg.TurnToolBudget/1000)
-			// Wrap-up warning at ≤5 iterations remaining or <15% budget remaining.
-			if itersRemaining <= 5 || budgetLeft < a.Cfg.TurnToolBudget*15/100 {
-				budgetMsg = "⚠ Budget low — produce the JSON summary now with what you have.\n" + budgetMsg
-			}
+			budgetMsg := subagentBudgetMessage(itersRemaining, budgetLeft, a.Cfg.TurnToolBudget)
 			a.appendConv(proxy.Message{Role: "user", Content: StrPtr(budgetMsg)})
 		}
 		// Hard backstop against runaway tool loops: on the final allowed iteration

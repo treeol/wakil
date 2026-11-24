@@ -670,25 +670,39 @@ func toSummary(sess agent.Session, legacy bool) sessionclient.SessionSummary {
 	}
 }
 
-func (f *wiringFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
+func (f *wiringFacade) ListSessions(scope sessionclient.SessionScope, reconcile bool) ([]sessionclient.SessionSummary, int, error) {
 	s := agent.SessionScope{Workspace: scope.Workspace, All: scope.All, IncludeLegacy: true, LegacyWorkspace: f.legacyWorkspace()}
-	sessions, hidden, err := agent.ListSessionsScoped(s)
+	matched, legacy, hidden, err := agent.ListResumeEntries(s, reconcile)
 	if err != nil {
 		return nil, 0, err
 	}
-	legacy, err := agent.ListLegacySessions(s)
-	if err != nil {
-		return nil, 0, err
-	}
-	out := make([]sessionclient.SessionSummary, 0, len(sessions)+len(legacy))
-	for _, sess := range sessions {
-		out = append(out, toSummary(sess, false))
+	out := make([]sessionclient.SessionSummary, 0, len(matched)+len(legacy))
+	for _, e := range matched {
+		out = append(out, entrySummary(e, false))
 	}
 	// 0.5.0 (C2): legacy shared-store sessions come last, flagged.
-	for _, sess := range legacy {
-		out = append(out, toSummary(sess, true))
+	for _, e := range legacy {
+		out = append(out, entrySummary(e, true))
 	}
 	return out, hidden, nil
+}
+
+// entrySummary maps a resume-index entry to the picker's summary. No transcript
+// is carried: TurnCount, Title and FirstMessage are the whole display.
+func entrySummary(e agent.ResumeEntry, legacy bool) sessionclient.SessionSummary {
+	return sessionclient.SessionSummary{
+		Legacy:       legacy,
+		ChatID:       e.ID,
+		Model:        e.Model,
+		Label:        e.Label,
+		Workspace:    e.Workspace,
+		Created:      e.Created,
+		Updated:      e.Updated,
+		TurnCount:    e.Turns,
+		Title:        e.Title,
+		FirstMessage: e.Fallback,
+		Messages:     e.Messages,
+	}
 }
 
 func (f *wiringFacade) LoadSession(idOrPrefix string) (*sessionclient.SessionSummary, error) {

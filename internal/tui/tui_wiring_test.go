@@ -76,7 +76,7 @@ func (f *fakeFacade) SetAllowDestructive(v bool)                                
 func (f *fakeFacade) RevokeAuto()                                                { f.consent.AutoApprove, f.consent.AllowDestructive = false, false }
 func (f *fakeFacade) SetInfoPanelOpen(open bool)                                 { f.info.InfoPanelOpen = open }
 func (f *fakeFacade) SaveRepoState(mutate func(*sessionclient.RepoStateMutator)) {}
-func (f *fakeFacade) ListSessions(scope sessionclient.SessionScope) ([]sessionclient.SessionSummary, int, error) {
+func (f *fakeFacade) ListSessions(scope sessionclient.SessionScope, reconcile bool) ([]sessionclient.SessionSummary, int, error) {
 	return nil, 0, nil
 }
 func (f *fakeFacade) StartSideQuestion(ctx context.Context, question string) (sessionclient.OpID, context.CancelFunc) {

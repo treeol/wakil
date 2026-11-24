@@ -271,6 +271,17 @@ func (m tuiModel) view() string {
 		}
 	}
 
+	// The resume picker is a modal over the conversation area: it replaces the
+	// pane's content for as long as it is open and takes no layout rows, so
+	// opening or closing it never reflows the screen. Not cached (it is a few
+	// rows and changes on every keystroke).
+	if m.resumePicker.active {
+		conv = styleConvBorder.
+			Width(vpW).
+			Height(vpH).
+			Render(lipgloss.Place(vpW, vpH, lipgloss.Center, lipgloss.Center, m.renderResumePicker()))
+	}
+
 	// The right sidebar was removed (WP-9.1): the conversation pane is the full
 	// top row. Its former content now lives in the on-demand info panel below.
 	top := conv
@@ -282,18 +293,16 @@ func (m tuiModel) view() string {
 	// is just the textarea + border.
 	input := m.renderInput()
 
-	// The "@"/"/" completion picker or the resume picker sits between the
-	// conversation and the input — the two are mutually exclusive (opening
-	// the resume picker closes the completion picker; see openResumePicker).
+	// The "@"/"/" completion picker sits between the conversation and the
+	// input; the resume picker is a modal over the conversation pane instead
+	// (opening it closes the completion picker; see openResumePicker).
 	// The status line (pre-computed above; its row count drives layout via
 	// sizesWithStatusHeight) sits directly above the input; the tab bar (when
 	// sub tabs exist) is below it. The former info panel is now extra segments
 	// inside the status line (F2 / ctrl+o), not a separate region.
 	var sections []string
 	sections = append(sections, top)
-	if m.resumePicker.active {
-		sections = append(sections, m.renderResumePicker())
-	} else if m.comp.active {
+	if m.comp.active {
 		sections = append(sections, m.renderCompletion())
 	}
 	// Hide the status line until the user has sent their first message

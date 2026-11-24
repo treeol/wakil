@@ -96,7 +96,13 @@ func WriteSession(s *Session) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	return atomicWriteJSON(sessionPath(s.ChatID), s)
+	if err := atomicWriteJSON(sessionPath(s.ChatID), s); err != nil {
+		return err
+	}
+	// Keep the resume index current. Best effort: the index is derived and
+	// rebuildable, so a failure here never fails the save.
+	updateResumeIndexEntry(dir, s)
+	return nil
 }
 
 // ListSessions returns all saved sessions, most-recently-updated first.
@@ -111,7 +117,7 @@ func ListSessions() ([]Session, error) {
 	}
 	var out []Session
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
+		if e.IsDir() || !isSessionFileName(e.Name()) {
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name()))
@@ -128,13 +134,23 @@ func ListSessions() ([]Session, error) {
 		}
 		out = append(out, s)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Updated.After(out[j].Updated) })
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].Updated.Equal(out[j].Updated) {
+			return out[i].Updated.After(out[j].Updated)
+		}
+		return out[i].ChatID < out[j].ChatID
+	})
 	return out, nil
 }
 
 // LoadSession returns the session matching idOrPrefix (a full chat_id or unique
 // prefix). An empty idOrPrefix returns the most recent session.
 func LoadSession(idOrPrefix string) (*Session, error) {
+	if idOrPrefix != "" {
+		if s, ok, err := loadSessionByName(idOrPrefix); ok || err != nil {
+			return s, err
+		}
+	}
 	sessions, err := ListSessions()
 	if err != nil {
 		return nil, err
@@ -160,6 +176,61 @@ func LoadSession(idOrPrefix string) (*Session, error) {
 	default:
 		return nil, fmt.Errorf("%q is ambiguous — matches %d sessions", idOrPrefix, len(matches))
 	}
+}
+
+// safeSessionID reports whether id can be used to build a session file name:
+// non-empty, no path separator, no "..", not a dot file.
+func safeSessionID(id string) bool {
+	return id != "" && !strings.ContainsAny(id, `/\`) && !strings.Contains(id, "..") && !strings.HasPrefix(id, ".")
+}
+
+// loadSessionByName resolves idOrPrefix by file name and reads ONLY the
+// matching file, instead of decoding every transcript. ok is false when the
+// fast path cannot decide (unsafe id, no name match, a name match whose inner
+// chat_id disagrees, unreadable file) and the caller must use the full scan.
+// Two or more name matches are the same "ambiguous" error the scan gives.
+// Candidates are directory names; handoff sidecars and dot files never count.
+func loadSessionByName(idOrPrefix string) (*Session, bool, error) {
+	if !safeSessionID(idOrPrefix) {
+		return nil, false, nil
+	}
+	dir := sessionsDir()
+	if dir == "" {
+		return nil, false, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, false, nil
+	}
+	var names []string
+	for _, e := range entries {
+		n := e.Name()
+		if e.IsDir() || !isSessionFileName(n) {
+			continue
+		}
+		if strings.HasPrefix(strings.TrimSuffix(n, ".json"), idOrPrefix) {
+			names = append(names, n)
+		}
+	}
+	switch len(names) {
+	case 0:
+		return nil, false, nil
+	case 1:
+	default:
+		return nil, true, fmt.Errorf("%q is ambiguous — matches %d sessions", idOrPrefix, len(names))
+	}
+	b, err := os.ReadFile(filepath.Join(dir, names[0]))
+	if err != nil {
+		return nil, false, nil
+	}
+	var s Session
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, false, nil
+	}
+	if s.ChatID == "" || !strings.HasPrefix(s.ChatID, idOrPrefix) {
+		return nil, false, nil // inner id disagrees with the file name: scan decides
+	}
+	return &s, true, nil
 }
 
 // SessionScope narrows a session listing/load to one workspace (folder), or
@@ -204,33 +275,74 @@ func ListSessionsScoped(scope SessionScope) (matched []Session, hidden int, err 
 	if err != nil {
 		return nil, 0, err
 	}
+	matched, hidden = scopeByWorkspace(all, func(s Session) string { return s.Workspace }, scope)
+	return matched, hidden, nil
+}
+
+// scopeByWorkspace applies a SessionScope to a newest-first list: workspace
+// matches first, then legacy (empty-workspace) items when IncludeLegacy is set,
+// everything else counted as hidden (except items recorded under
+// scope.LegacyWorkspace, which are listed separately by legacyByWorkspace).
+// It is shared by the full-decode and the index listings so they cannot drift.
+// Workspace keys are memoised for the call: each distinct workspace string is
+// canonicalised (Abs + EvalSymlinks + sha256) once, not once per item.
+func scopeByWorkspace[T any](all []T, workspaceOf func(T) string, scope SessionScope) (matched []T, hidden int) {
 	if scope.All || scope.Workspace == "" {
-		return all, 0, nil
+		return all, 0
 	}
-	// Collect workspace matches and legacy sessions separately, then
-	// concatenate (workspace first, legacy after) — both groups are already
-	// newest-first because ListSessions sorts by Updated descending and
-	// filtering preserves that order. This ensures LoadSessionScoped("",
-	// scope) prefers an in-scope session over a legacy one.
-	var legacy []Session
-	for _, s := range all {
-		if sameWorkspace(s.Workspace, scope.Workspace) {
-			matched = append(matched, s)
+	same := newSameWorkspace()
+	var legacy []T
+	for _, it := range all {
+		w := workspaceOf(it)
+		if same(w, scope.Workspace) {
+			matched = append(matched, it)
 			continue
 		}
-		if s.Workspace == "" && scope.IncludeLegacy {
-			legacy = append(legacy, s)
+		if w == "" && scope.IncludeLegacy {
+			legacy = append(legacy, it)
 			continue
 		}
 		// 0.5.0: sessions recorded under the legacy shared path are not hidden;
 		// they are listed as legacy (ListLegacySessions) and not counted here.
-		if scope.LegacyWorkspace != "" && sameWorkspace(s.Workspace, scope.LegacyWorkspace) {
+		if scope.LegacyWorkspace != "" && same(w, scope.LegacyWorkspace) {
 			continue
 		}
 		hidden++
 	}
-	matched = append(matched, legacy...)
-	return matched, hidden, nil
+	return append(matched, legacy...), hidden
+}
+
+// legacyByWorkspace returns the items recorded under the pre-0.5.0 shared
+// workspace path, in the input order.
+func legacyByWorkspace[T any](all []T, workspaceOf func(T) string, scope SessionScope) []T {
+	if scope.LegacyWorkspace == "" || sameWorkspace(scope.LegacyWorkspace, scope.Workspace) {
+		return nil
+	}
+	same := newSameWorkspace()
+	var out []T
+	for _, it := range all {
+		if same(workspaceOf(it), scope.LegacyWorkspace) {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
+// newSameWorkspace returns sameWorkspace with a per-call key cache.
+func newSameWorkspace() func(a, b string) bool {
+	keys := map[string]string{}
+	key := func(ws string) string {
+		if k, ok := keys[ws]; ok {
+			return k
+		}
+		k := workspaceKey(ws)
+		keys[ws] = k
+		return k
+	}
+	return func(a, b string) bool {
+		ka, kb := key(a), key(b)
+		return ka != "" && kb != "" && ka == kb
+	}
 }
 
 // ListLegacySessions returns the sessions recorded under the pre-0.5.0 shared
@@ -245,13 +357,7 @@ func ListLegacySessions(scope SessionScope) ([]Session, error) {
 	if err != nil {
 		return nil, err
 	}
-	var out []Session
-	for _, s := range all {
-		if sameWorkspace(s.Workspace, scope.LegacyWorkspace) {
-			out = append(out, s)
-		}
-	}
-	return out, nil
+	return legacyByWorkspace(all, func(s Session) string { return s.Workspace }, scope), nil
 }
 
 // LoadSessionScoped resolves idOrPrefix the same way LoadSession does, with
@@ -270,7 +376,7 @@ func LoadSessionScoped(idOrPrefix string, scope SessionScope) (*Session, error) 
 	if idOrPrefix != "" {
 		return LoadSession(idOrPrefix)
 	}
-	matched, _, err := ListSessionsScoped(scope)
+	matched, _, _, err := ListResumeEntries(scope, true)
 	if err != nil {
 		return nil, err
 	}
@@ -280,8 +386,30 @@ func LoadSessionScoped(idOrPrefix string, scope SessionScope) (*Session, error) 
 		}
 		return nil, fmt.Errorf("no saved sessions for %s — use --all / /resume all to search every folder", scope.Workspace)
 	}
-	s := matched[0]
-	return &s, nil
+	// Read just the newest session's file; fall back to the full scan if the
+	// file moved or changed shape since the reconcile.
+	if s, ok := loadSessionFile(matched[0].File, matched[0].ID); ok {
+		return s, nil
+	}
+	return LoadSession(matched[0].ID)
+}
+
+// loadSessionFile reads one session file by name and accepts it only when its
+// inner chat_id equals wantID.
+func loadSessionFile(name, wantID string) (*Session, bool) {
+	dir := sessionsDir()
+	if dir == "" || !isSessionFileName(name) || strings.ContainsAny(name, `/\`) {
+		return nil, false
+	}
+	b, err := os.ReadFile(filepath.Join(dir, name))
+	if err != nil {
+		return nil, false
+	}
+	var s Session
+	if err := json.Unmarshal(b, &s); err != nil || s.ChatID != wantID {
+		return nil, false
+	}
+	return &s, true
 }
 
 // sessionTurns counts user turns and returns the first user message (for listing).
@@ -306,7 +434,7 @@ func SessionTurns(s Session) (int, string) {
 // workspace; otherwise the list is scoped to Workspace, plus legacy (empty-
 // workspace) sessions when IncludeLegacy is set.
 func PrintSessionsWithScope(w io.Writer, scope SessionScope) {
-	sessions, hidden, err := ListSessionsScoped(scope)
+	sessions, _, hidden, err := ListResumeEntries(scope, true)
 	if err != nil {
 		fmt.Fprintln(w, "error listing sessions:", err)
 		return
@@ -326,17 +454,12 @@ func PrintSessionsWithScope(w io.Writer, scope SessionScope) {
 	// Reverse to oldest-first for display; sessions is newest-first internally.
 	for i := len(sessions) - 1; i >= 0; i-- {
 		s := sessions[i]
-		turns, first := SessionTurns(s)
-		first = strings.ReplaceAll(first, "\n", " ")
-		if len(first) > 50 {
-			first = first[:50] + "…"
-		}
-		id := ShortID(s.ChatID)
+		id := ShortID(s.ID)
 		if s.Label != "" {
 			id += " [" + s.Label + "]"
 		}
 		fmt.Fprintf(w, "  %-28s  %s  %2d turns  %s\n",
-			id, s.Updated.Format("2006-01-02 15:04"), turns, first)
+			id, s.Updated.Format("2006-01-02 15:04"), s.Turns, s.DisplayTitle())
 	}
 	if hidden > 0 {
 		fmt.Fprintf(w, "\n(%d session(s) in other folders hidden — pass --all to see them)\n", hidden)
@@ -351,7 +474,7 @@ func PrintSessionsWithScope(w io.Writer, scope SessionScope) {
 // TUI, not a scrolling terminal dump, so newest-on-top is the natural read
 // order there.
 func SessionListText(currentChatID string, scope SessionScope) string {
-	sessions, hidden, err := ListSessionsScoped(scope)
+	sessions, _, hidden, err := ListResumeEntries(scope, true)
 	if err != nil {
 		return "error listing sessions: " + err.Error()
 	}
@@ -363,21 +486,16 @@ func SessionListText(currentChatID string, scope SessionScope) string {
 	}
 	var b strings.Builder
 	for _, s := range sessions {
-		turns, first := SessionTurns(s)
-		first = strings.ReplaceAll(first, "\n", " ")
-		if len(first) > 40 {
-			first = first[:40] + "…"
-		}
 		marker := "  "
-		if s.ChatID == currentChatID {
+		if s.ID == currentChatID {
 			marker = "★ "
 		}
-		id := ShortID(s.ChatID)
+		id := ShortID(s.ID)
 		if s.Label != "" {
 			id += " [" + s.Label + "]"
 		}
 		fmt.Fprintf(&b, "%s%-22s  %s  %d turns  %s\n",
-			marker, id, s.Updated.Format("01-02 15:04"), turns, first)
+			marker, id, s.Updated.Format("01-02 15:04"), s.Turns, s.DisplayTitle())
 	}
 	if hidden > 0 {
 		fmt.Fprintf(&b, "\n(%d session(s) in other folders — /sessions all)\n", hidden)

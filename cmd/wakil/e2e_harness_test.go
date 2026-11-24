@@ -870,14 +870,19 @@ func (e *e2e) chatIDs() ([]string, error) {
 	}
 	var items []item
 	for _, entry := range entries {
-		if entry.IsDir() {
+		// Session transcripts only: <chat_id>.json. The sessions dir also holds
+		// the derived resume index (.resume-index), handoff sidecars
+		// (<id>.handoff.json) and atomic-write temp files (.tmp-*), none of
+		// which is a session.
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".json") || strings.HasPrefix(name, ".") || strings.HasSuffix(name, ".handoff.json") {
 			continue
 		}
 		info, err := entry.Info()
 		if err != nil {
 			return nil, fmt.Errorf("stat session file: %w", err)
 		}
-		items = append(items, item{id: strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())), mod: info.ModTime()})
+		items = append(items, item{id: strings.TrimSuffix(name, filepath.Ext(name)), mod: info.ModTime()})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].mod.Equal(items[j].mod) {

@@ -680,7 +680,10 @@ func listNameCandidates(leaf string, names []string) []candidate {
 // returns short IDs for all saved sessions, most-recent first. Returns nil on
 // failure.
 func (m tuiModel) fetchSessionShortIDs() []string {
-	sessions, _, err := m.facade.ListSessions(sessionclient.SessionScope{All: true})
+	// Index only: completion runs on the UI goroutine, so it never waits for
+	// a reconcile. Sessions the index does not know yet appear after the next
+	// reconcile (picker open, /sessions, resume).
+	sessions, _, err := m.facade.ListSessions(sessionclient.SessionScope{All: true}, false)
 	if err != nil || len(sessions) == 0 {
 		return nil
 	}

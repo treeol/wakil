@@ -87,15 +87,17 @@ func (m tuiModel) applyCommandResult(cr sessionclient.CommandResult, cmds []tea.
 		if snap, ok := m.snapshot(); ok {
 			scope.Workspace = snap.Workspace
 		}
-		sessions, hidden, err := m.facade.ListSessions(scope)
+		// Read the resume index (instant) and open the modal; a background
+		// reconcile then brings the list up to date without blocking input.
+		sessions, hidden, err := m.facade.ListSessions(scope, false)
 		if err != nil {
 			m.addItem(iSys, dim2("resume: "+err.Error()))
 			return m, cmds, true
 		}
-		prevH := m.resumePickerHeight()
 		m = m.openResumePicker(sessions, scope, hidden)
-		if m.resumePickerHeight() != prevH {
-			m = m.reflow()
+		m.resumePicker.loading = true
+		if rc := m.resumeReconcileCmd(m.resumePicker.gen, scope); rc != nil {
+			cmds = append(cmds, rc)
 		}
 	}
 	if cr.Submit != "" {

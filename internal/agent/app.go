@@ -1639,9 +1639,13 @@ func confinementPathQuoted(result string) string {
 // shown to the model when the breaker trips — named paths, named reason —
 // instead of the generic ToolLimitPrompt, which never explains why the model
 // is being cut off. paths is the de-duplicated list of unreachable paths hit.
+// confinementPromptPrefix opens confinementBreakerPrompt; the resume title
+// rules skip user messages that start with it.
+const confinementPromptPrefix = "The following path(s) are outside the accessible workspace"
+
 func confinementBreakerPrompt(paths []string) string {
 	var b strings.Builder
-	b.WriteString("The following path(s) are outside the accessible workspace and cannot be read, listed, or searched no matter how they are re-specified (this will not change on retry):\n")
+	b.WriteString(confinementPromptPrefix + " and cannot be read, listed, or searched no matter how they are re-specified (this will not change on retry):\n")
 	for _, p := range paths {
 		fmt.Fprintf(&b, "  - %s\n", p)
 	}

@@ -215,6 +215,10 @@ func (a *App) handleMashura(ctx context.Context, name string, tc proxy.ToolCall)
 // on this prefix so a bound header is always recognised.
 const autoCounselResultHeader = "[automatic mashura round"
 
+// autoCounselPrefix opens autoCounselHeader; the resume title rules skip user
+// messages that start with it.
+const autoCounselPrefix = "[automatic mashura round "
+
 // autoCounselHeader builds the injected header for one automatic round,
 // naming the round number, the panel size and the cap in plain words
 // ("one automatic round, two panel members"). Both counts come from the
@@ -225,7 +229,7 @@ func autoCounselHeader(round, members, cap int) string {
 	if members == 1 {
 		memberNoun = "panel member"
 	}
-	return "[automatic mashura round " + countPhrase(round) +
+	return autoCounselPrefix + countPhrase(round) +
 		" — Wakil started this round automatically; you did not call it · " +
 		countPhrase(members) + " " + memberNoun + ", cap " + fmt.Sprintf("%d", cap) + " per turn]\n\n"
 }

@@ -3,6 +3,7 @@ package sessionclient
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/treeol/wakil/internal/config"
@@ -93,6 +94,26 @@ type SessionSummary struct {
 	// When non-zero, Turns() prefers these over scanning Conv.
 	TurnCount    int
 	FirstMessage string
+	// Title is the list title derived from the user's typed text (resume
+	// index). Empty when the session has no typed text; the list then falls
+	// back to FirstMessage.
+	Title string
+	// Messages is the transcript length, for display only (index listings).
+	Messages int
+}
+
+// DisplayTitle is what a list row shows: the typed-text title, else the first
+// user message (the pre-index fallback), else "".
+func (s SessionSummary) DisplayTitle() string {
+	if s.Title != "" {
+		return s.Title
+	}
+	first := s.FirstMessage
+	if first == "" && s.Conv != nil {
+		_, first = s.Turns()
+	}
+	line, _, _ := strings.Cut(strings.TrimSpace(first), "\n")
+	return strings.TrimSpace(line)
 }
 
 // Turns counts the user turns in the session and returns the first user
@@ -428,7 +449,13 @@ type Facade interface {
 	CancelSideQuestion(id OpID)
 
 	// ---- Session listing (resume picker) ----
-	ListSessions(scope SessionScope) ([]SessionSummary, int, error)
+	// ListSessions lists saved sessions for the resume picker from the resume
+	// index (no transcript is decoded; summaries carry TurnCount and Title,
+	// Conv is nil). With reconcile false it only reads the index (instant,
+	// possibly stale or empty); with true it first brings the index up to date
+	// from the session files (stat-only when warm, decodes only new or changed
+	// files), so it can block and belongs in a Cmd goroutine.
+	ListSessions(scope SessionScope, reconcile bool) ([]SessionSummary, int, error)
 	LoadSession(idOrPrefix string) (*SessionSummary, error)
 
 	// ---- Slash-command dispatch (D23) ----

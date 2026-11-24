@@ -44,6 +44,8 @@ func (m tuiModel) handleEventMsg(msg tea.Msg, cmds []tea.Cmd) (tuiModel, []tea.C
 		return m.applyCommandResult(lm.result, cmds)
 	case rotationMsg:
 		return m.applyRotation(lm, cmds)
+	case resumePickerRefreshMsg:
+		return m.applyResumeRefresh(lm), cmds, true
 	case deferredStartupDoneMsg:
 		// The post-prompt provider probes / hisn reconcile finished. Force a
 		// repaint so the status line shows the resolved model/context info, and

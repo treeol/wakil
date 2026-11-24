@@ -235,11 +235,11 @@ type NewConvMsg struct {
 }
 
 // OpenResumePickerMsg tells the TUI to open the interactive session picker.
-// Sessions are pre-loaded (scoped per Scope) off the event loop so a large
-// session store never blocks a keystroke; Hidden is how many sessions were
-// filtered out by the scope, for the picker's "N hidden — press a" hint.
+// The TUI reads the list itself through the facade (resume index), so the
+// message carries no sessions; Hidden is how many sessions the scope filtered
+// out, for the picker's "N hidden — press a" hint.
 type OpenResumePickerMsg struct {
-	Sessions []Session
+	Sessions []Session // unused since the resume index; kept for message compatibility
 	Scope    SessionScope
 	Hidden   int
 }

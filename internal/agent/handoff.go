@@ -468,6 +468,11 @@ func splitHandoffConv(conv []proxy.Message) (older, tail []proxy.Message) {
 	return conv[:idx], conv[idx:]
 }
 
+// handoffContinueTail follows the handoff envelope in the continuation prompt
+// (the first user message of a handoff-proceed session); the resume title rules
+// skip user messages that start with it once the envelope is stripped.
+const handoffContinueTail = "Continue where the previous session left off. Start by briefly acknowledging what was done and what remains, then proceed with the next action."
+
 // BuildContinuationPrompt constructs the first-turn prompt for the new session.
 // The handoff context is delimited as an untrusted, message-LEADING envelope
 // (context-then-instruction), so the leading-anchored stripRetrievalBlock can
@@ -516,7 +521,7 @@ func BuildContinuationPrompt(payload HandoffPayload, oldChatID, workspace string
 		b.WriteString("\n")
 	}
 	b.WriteString(handoffBlockEnd)
-	b.WriteString("\n\nContinue where the previous session left off. Start by briefly acknowledging what was done and what remains, then proceed with the next action.")
+	b.WriteString("\n\n" + handoffContinueTail)
 	return b.String()
 }
 
