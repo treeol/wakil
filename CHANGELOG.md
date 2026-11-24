@@ -30,6 +30,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   accept-then-EOF on the first tunnelled connection (observed as
   "cannot connect to Chromium at … EOF") no longer fails the launch; a dead
   browser fails with the bound named instead of hanging.
+- A model that hits the token limit no longer ends the turn with a fatal
+  error: the text that already arrived is kept, a tool call whose arguments
+  were cut is dropped (never executed), and the model is asked once to
+  continue from where it stopped. If the continuation also hits the limit,
+  the run stops with one line naming the endpoint, the model, the current
+  `max_tokens` value and how to raise it — in headless runs the exit code is
+  5, the terminal record's outcome is `token_limit`, and `--result-json`
+  reports `exit_reason` as `token_limit` instead of `error`.
+- Loaded context modules now survive `/resume`: with `context_modules` on,
+  the names of loaded modules are saved with the session, and on resume a
+  module that still exists is delivered again the same way a pre-load is
+  (a synthetic `load_module` call and result, appended); a module that no
+  longer exists (for example an MCP server that is not connected any more)
+  is named in one notice. Sessions saved without the field (v0.8.10 and
+  earlier) resume exactly as before, with nothing loaded and no notice.
 
 ## [0.8.10] - 2026-11-23
 
