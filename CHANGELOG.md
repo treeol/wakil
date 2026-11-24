@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.11] - 2026-11-24
+
+Upgrading from 0.8.10, in short (details below):
+
+- **Breaking: `wakil` starts in the folder you run it from.** The config keys `host_work_dir` / `work_dir` (and `WAKIL_WORKDIR` / `ILM_WORKDIR` in direct mode) no longer choose the start folder; startup prints one line when one is set. The order is now positional path, `--host-workdir`, `WAKIL_HOST_WORKDIR`, then the current directory. A script, cron or systemd job that relied on the keys needs a `cd`, a path argument or `WAKIL_HOST_WORKDIR`. A folder you never used before may need `wakil sandbox trust` once. Nothing is moved or deleted; sessions from the old folder are reachable with `--resume --all` or tab / `a` in `/resume`.
+- **Token limit no longer ends the turn.** The model keeps its text, runs the tool calls that arrived complete, and is asked once to continue. If it hits the limit again the run stops with a line telling you how to raise `max_tokens`; headless runs exit with code 5 and `exit_reason` `token_limit` (was `error`).
+- **`/resume` is a searchable modal and opens fast.** `j` / `k` now type into the search; tab or `a` on an empty box switches between this folder and all folders. A small `.resume-index` file in the sessions directory feeds `/resume`, `/sessions`, `/recall` and `/remember`; the first `/remember` after upgrading is slower once.
+- **Smaller fixes:** status and cost lines no longer overlap output; browser launch waits for readiness and retries; loaded context modules survive `/resume`; `call_tool` on a core tool says to call it directly.
+
+No configuration key was added or removed. `context_modules` stays `"off"` by default and, with it off, the tool array and system prompt are byte-identical to 0.8.10. `MinHisnVersion` stays 0.6.1.
+
+### Changed and fixed
+
 - **Breaking: one workspace resolution order.** `wakil` now starts in the
   current folder, like `wakil .`. The start folder is resolved in one
   order — positional path, `--host-workdir`, `WAKIL_HOST_WORKDIR`, then the
@@ -64,8 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already holds that module's current schema it is kept and not sent a
   second time, and only a missing or changed schema is delivered again); a
   module that no longer exists (for example an MCP server that is not
-  connected any more) is named in one notice. Sessions saved without the field (v0.8.10 and
-  earlier) resume exactly as before, with nothing loaded and no notice.
+  connected any more) is named in one notice. Sessions saved without the
+  field (v0.8.10 and earlier) resume exactly as before, with nothing loaded
+  and no notice.
 - Mashura in module mode: the Mashura tools (`mashura__review`, `__debug`,
   `__decide`, `__check`) are core tools in both modes (never a module, never
   behind `load_module`), and tests now pin that they are in the tool array
