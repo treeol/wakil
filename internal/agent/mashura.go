@@ -1727,6 +1727,20 @@ func (a *App) counselCapIsDefault() bool {
 	return a.Cfg.CounselMaxPerSession <= 0
 }
 
+// logMashuraNotOffered writes one diag line when Mashūra is configured (a
+// mashura block, or oracle_enabled) but the tools are not offered this
+// session, naming the reason. It is silent for configs that never asked for
+// Mashūra, for subagents, and when the tools are offered. It runs on the
+// session's first turn, after the TUI has redirected the diag sink.
+func (a *App) logMashuraNotOffered() {
+	if a.IsSubagent || (a.Cfg.Mashura == nil && !a.Cfg.OracleEnabled) {
+		return
+	}
+	if reason := mashuraNotOfferedReason(a.Cfg, a.MashuraLevelOverride); reason != "" {
+		diag.Printf("mashura tools not offered this session: %s\n", reason)
+	}
+}
+
 // mashuraAvailable reports whether mashura counsel tools are available.
 // It is the same predicate BuildTools uses to offer the tools in the tool
 // list (mcp_manager.go: mashuraOffered): offered == available when called.

@@ -2290,6 +2290,7 @@ func (a *App) ensurePreamble() {
 	// turn cancellation — best-effort cleanup should complete even if the user
 	// aborts the turn.
 	if prevDay == "" {
+		a.logMashuraNotOffered()
 		pruneCtx, pruneCancel := context.WithTimeout(context.Background(), pruneWorktreesTimeout)
 		pruneStaleWorktrees(pruneCtx, a)
 		pruneCancel()
@@ -3427,7 +3428,7 @@ func (a *App) callToolGate(tc proxy.ToolCall) (proxy.ToolCall, *toolResult) {
 		return tc, &r
 	}
 	// Guard 2: core tools are already in the array.
-	if coreToolNames[ctArgs.Name] {
+	if a.isCoreTool(ctArgs.Name) {
 		r := errResult(fmt.Sprintf("ERROR: tool %q is a core tool already in the tool array — call it directly, not through call_tool", ctArgs.Name))
 		return tc, &r
 	}

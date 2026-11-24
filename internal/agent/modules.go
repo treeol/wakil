@@ -85,6 +85,25 @@ var coreToolNames = map[string]bool{
 	"call_tool":   true,
 }
 
+// isCoreTool reports whether name is a tool the model already has in its tool
+// array: a static core tool, or any tool in the live array (Mashūra, which is
+// config-gated rather than listed in coreToolNames, and tools appended at
+// startup such as the continuous-mode finalizer). call_tool refuses these with
+// the "call it directly" message instead of "not in any module".
+func (a *App) isCoreTool(name string) bool {
+	if coreToolNames[name] {
+		return true
+	}
+	a.stateMu.RLock()
+	defer a.stateMu.RUnlock()
+	for _, t := range a.Tools {
+		if t.Function.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Module is one entry in the module registry: a name, a set of tool
 // definitions, and a one-line description for the index.
 type Module struct {

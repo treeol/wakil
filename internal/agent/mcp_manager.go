@@ -1077,6 +1077,27 @@ func mashuraOffered(cfg config.Config, repoLevel string) bool {
 	return keyPresentForMashura(cfg)
 }
 
+// mashuraNotOfferedReason names why mashuraOffered is false for cfg, for the
+// session diag log, so a session that has no Mashūra tool can be explained
+// afterwards. It returns "" when the tools are offered. It reads the same
+// inputs as mashuraOffered and never includes a credential value.
+func mashuraNotOfferedReason(cfg config.Config, repoLevel string) string {
+	if mashuraOffered(cfg, repoLevel) {
+		return ""
+	}
+	if cfg.Mashura != nil {
+		if level, _, _ := cfg.ResolveEffective("review", repoLevel); level == config.MashuraLevelOff {
+			return "effective mashura level is off"
+		}
+	} else if !cfg.OracleEnabled {
+		return "no mashura block and oracle_enabled is false"
+	}
+	if _, err := cfg.ResolveOpenRouterCredential(); err != nil {
+		return "no OpenRouter credential: " + err.Error()
+	}
+	return "unknown"
+}
+
 // keyPresentForMashura reports whether the OpenRouter credential the panel
 // needs is present, via the single ResolveOpenRouterCredential resolver. Every
 // member routes through OpenRouter, so an Anthropic key alone never counts.
