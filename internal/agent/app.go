@@ -1123,7 +1123,14 @@ func (a *App) InstallSession(s *Session) {
 	a.setChatID(s.ChatID)
 
 	a.convMu.Lock()
-	a.Conv = append([]proxy.Message(nil), s.Conv...)
+	a.Conv = repairDanglingToolCalls(s.Conv)
+	// Context modules: Pinned is not persisted, so a resumed session's
+	// load_module results come back unpinned. Re-pin the latest schema per
+	// module so eviction and collapse treat it as in the live session.
+	// Switch off (Modules == nil): nothing is touched.
+	if a.Modules != nil {
+		repinLatestModuleSchemas(a.Conv)
+	}
 	a.Workflow = s.SavedWorkflow
 	a.convMu.Unlock()
 

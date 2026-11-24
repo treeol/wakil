@@ -94,6 +94,11 @@ func (a *App) isCoreTool(name string) bool {
 	if coreToolNames[name] {
 		return true
 	}
+	// A tool a module owns is never core, whatever the live array holds
+	// (tests and embedders may build an array with the full set).
+	if a.Modules != nil && a.Modules.ToolModule(name) != "" {
+		return false
+	}
 	a.stateMu.RLock()
 	defer a.stateMu.RUnlock()
 	for _, t := range a.Tools {
@@ -897,6 +902,7 @@ func (a *App) mcpPreloadPair(userText string) []proxy.Message {
 			strings.Join(missing, ", ")))
 	}
 	var pair []proxy.Message
+	held := a.latestSchemaContent()
 	for _, name := range names {
 		if a.Modules.IsDisconnected(name) {
 			continue
@@ -904,6 +910,17 @@ func (a *App) mcpPreloadPair(userText string) []proxy.Message {
 		block, ok := a.Modules.ModuleSchemasBlock(name)
 		if !ok {
 			continue
+		}
+		// A resumed history that already holds this module's current schema
+		// (byte-identical) is not given a second copy: each schema reaches
+		// the model once. The module is still marked loaded above. A changed
+		// schema falls through and is re-delivered.
+		if have, found := held[name]; found {
+			if have == block {
+				continue
+			}
+			// Changed schema: the stale copy gives way to the fresh pair.
+			a.unpinModuleSchemas(name)
 		}
 		callID := syntheticCallID(name)
 		argsJSON, _ := json.Marshal(map[string]string{"name": name})
@@ -926,6 +943,48 @@ func (a *App) mcpPreloadPair(userText string) []proxy.Message {
 		})
 	}
 	return pair
+}
+
+// latestSchemaContent maps module name → content of the LAST load_module
+// schema result in the conversation.
+func (a *App) latestSchemaContent() map[string]string {
+	a.convMu.RLock()
+	defer a.convMu.RUnlock()
+	out := map[string]string{}
+	for _, m := range a.Conv {
+		if name, ok := moduleSchemaName(m); ok {
+			out[name] = DerefStr(m.Content)
+		}
+	}
+	return out
+}
+
+// unpinModuleSchemas clears Pinned on every load_module schema result for the
+// named module, so eviction may drop a superseded copy.
+func (a *App) unpinModuleSchemas(name string) {
+	a.convMu.Lock()
+	defer a.convMu.Unlock()
+	for i := range a.Conv {
+		if got, ok := moduleSchemaName(a.Conv[i]); ok && got == name {
+			a.Conv[i].Pinned = false
+		}
+	}
+}
+
+// repinLatestModuleSchemas marks the last load_module schema result of each
+// module in conv as Pinned, in place. Earlier results for the same module stay
+// unpinned so eviction can drop them. conv must be a private copy (InstallSession
+// passes the repaired copy, never the loaded session's own slice).
+func repinLatestModuleSchemas(conv []proxy.Message) {
+	last := map[string]int{}
+	for i, m := range conv {
+		if name, ok := moduleSchemaName(m); ok {
+			last[name] = i
+		}
+	}
+	for _, i := range last {
+		conv[i].Pinned = true
+	}
 }
 
 // syntheticCallID returns a stable, provider-safe synthetic tool call id

@@ -178,3 +178,133 @@ func TestOldSessionResumesWithoutModules(t *testing.T) {
 		t.Fatalf("old session: no notice expected, got %q", note)
 	}
 }
+
+// resumedHistoryWithSchema builds the transcript a live session leaves behind
+// after the model called load_module(name): user, assistant call, the
+// (originally pinned) schema result, assistant answer.
+func resumedHistoryWithSchema(t *testing.T, reg *ModuleRegistry, name string) []proxy.Message {
+	t.Helper()
+	block, ok := reg.ModuleSchemasBlock(name)
+	if !ok {
+		t.Fatalf("no schema block for %q", name)
+	}
+	return []proxy.Message{
+		{Role: "user", Content: StrPtr("please stage this"), Turn: 1},
+		{Role: "assistant", Turn: 1, ToolCalls: []proxy.ToolCall{{ID: "call-1", Type: "function",
+			Function: proxy.FunctionCall{Name: "load_module", Arguments: `{"name":"` + name + `"}`}}}},
+		// Pinned is json:"-", so a session read back from disk has it false.
+		{Role: "tool", ToolCallID: "call-1", Name: "load_module", Content: StrPtr(block), Turn: 1},
+		{Role: "assistant", Content: StrPtr("loaded"), Turn: 1},
+	}
+}
+
+// countSchemaMessages counts load_module result messages for a module in conv.
+func countSchemaMessages(conv []proxy.Message, name string) int {
+	n := 0
+	for _, m := range conv {
+		if got, ok := moduleSchemaName(m); ok && got == name {
+			n++
+		}
+	}
+	return n
+}
+
+// A resumed session whose history already holds the original load_module
+// result must not receive the schema a second time: each schema reaches the
+// model once, and the surviving copy is pinned again.
+func TestResumeNoDuplicateModuleSchema(t *testing.T) {
+	app := newModuleApp()
+	hist := resumedHistoryWithSchema(t, app.Modules, "staging")
+	app.InstallSession(&Session{ChatID: "resume-dup-0001", Conv: hist, LoadedModules: []string{"staging"}})
+
+	pair := app.mcpPreloadPair("next question")
+	if len(pair) != 0 {
+		t.Fatalf("pair has %d messages; the history already holds the staging schema", len(pair))
+	}
+	if !app.Modules.IsLoaded("staging") {
+		t.Error("staging must still be marked loaded (call_tool gate)")
+	}
+	if n := countSchemaMessages(app.Conv, "staging"); n != 1 {
+		t.Errorf("staging schema appears %d times in Conv, want 1", n)
+	}
+	// The kept copy is pinned again (Pinned is not persisted).
+	for _, m := range app.Conv {
+		if got, ok := moduleSchemaName(m); ok && got == "staging" && !m.Pinned {
+			t.Error("restored staging schema is not re-pinned; eviction could drop it")
+		}
+	}
+}
+
+// A module saved as loaded but with NO schema in the history (the history was
+// compacted away, or a v0.8.11-only fresh pre-load) still gets its pair.
+func TestResumeDeliversMissingModuleSchema(t *testing.T) {
+	app := newModuleApp()
+	app.InstallSession(&Session{ChatID: "resume-dup-0002",
+		Conv:          []proxy.Message{{Role: "user", Content: StrPtr("hi"), Turn: 1}},
+		LoadedModules: []string{"staging"}})
+	pair := app.mcpPreloadPair("hi")
+	if len(pair) != 2 {
+		t.Fatalf("pair has %d messages, want assistant call + tool result", len(pair))
+	}
+}
+
+// A schema that changed since the session was saved is re-delivered; the stale
+// copy is unpinned so eviction may drop it, leaving one pinned schema.
+func TestResumeChangedModuleSchemaRedelivered(t *testing.T) {
+	app := newModuleApp()
+	hist := resumedHistoryWithSchema(t, app.Modules, "staging")
+	stale := *hist[2].Content + "\n(old version of the schema)"
+	hist[2].Content = &stale
+	app.InstallSession(&Session{ChatID: "resume-dup-0003", Conv: hist, LoadedModules: []string{"staging"}})
+
+	pair := app.mcpPreloadPair("hi")
+	if len(pair) != 2 {
+		t.Fatalf("changed schema: pair has %d messages, want 2 (re-delivered)", len(pair))
+	}
+	for _, m := range app.Conv {
+		if got, ok := moduleSchemaName(m); ok && got == "staging" && m.Pinned {
+			t.Error("the stale schema copy must stay unpinned")
+		}
+	}
+}
+
+// With the switch off nothing is re-pinned and nothing is skipped: behaviour
+// is exactly v0.8.10's.
+func TestResumeModulesOffUnchanged(t *testing.T) {
+	reg := newModuleApp().Modules
+	hist := resumedHistoryWithSchema(t, reg, "staging")
+	app := newTestApp("http://unused", newFakeExecutor(), func(_, _, _ string, _ bool) bool { return true })
+	if app.Modules != nil {
+		t.Fatal("test app must have the switch off")
+	}
+	app.InstallSession(&Session{ChatID: "resume-dup-0004", Conv: hist, LoadedModules: []string{"staging"}})
+	for i, m := range app.Conv {
+		if m.Pinned {
+			t.Errorf("message %d pinned with modules off", i)
+		}
+	}
+	if pair := app.mcpPreloadPair("hi"); len(pair) != 0 {
+		t.Errorf("modules off: pair has %d messages, want none", len(pair))
+	}
+}
+
+// Only the LAST schema result per module is re-pinned; an earlier duplicate
+// stays unpinned so eviction can drop it.
+func TestResumeRepinsOnlyLatestSchemaPerModule(t *testing.T) {
+	app := newModuleApp()
+	hist := resumedHistoryWithSchema(t, app.Modules, "staging")
+	second := append([]proxy.Message(nil), hist...)
+	second[1].ToolCalls = []proxy.ToolCall{{ID: "call-2", Type: "function", Function: proxy.FunctionCall{Name: "load_module", Arguments: `{"name":"staging"}`}}}
+	second[2].ToolCallID = "call-2"
+	conv := append(append([]proxy.Message(nil), hist...), second...)
+	app.InstallSession(&Session{ChatID: "resume-dup-0005", Conv: conv, LoadedModules: []string{"staging"}})
+	pinned := 0
+	for _, m := range app.Conv {
+		if got, ok := moduleSchemaName(m); ok && got == "staging" && m.Pinned {
+			pinned++
+		}
+	}
+	if pinned != 1 {
+		t.Errorf("%d pinned staging schemas, want exactly 1 (the latest)", pinned)
+	}
+}
