@@ -657,19 +657,6 @@ func (f *wiringFacade) legacyWorkspace() string {
 	return agent.LegacyWorkspacePath(f.app.Cfg)
 }
 
-func toSummary(sess agent.Session, legacy bool) sessionclient.SessionSummary {
-	return sessionclient.SessionSummary{
-		Legacy:    legacy,
-		ChatID:    sess.ChatID,
-		Model:     sess.Model,
-		Label:     sess.Label,
-		Workspace: sess.Workspace,
-		Created:   sess.Created,
-		Updated:   sess.Updated,
-		Conv:      sess.Conv,
-	}
-}
-
 func (f *wiringFacade) ListSessions(scope sessionclient.SessionScope, reconcile bool) ([]sessionclient.SessionSummary, int, error) {
 	s := agent.SessionScope{Workspace: scope.Workspace, All: scope.All, IncludeLegacy: true, LegacyWorkspace: f.legacyWorkspace()}
 	matched, legacy, hidden, err := agent.ListResumeEntries(s, reconcile)

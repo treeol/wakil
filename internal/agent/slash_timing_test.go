@@ -20,8 +20,9 @@ import (
 // Nothing here reaches the network: the only endpoint is a local httptest
 // server, and /model and /mcp are exercised in their read-only forms.
 //
-// It is a measurement, not a gate: it logs a table, and only fails a command
-// that takes over a generous 5 s. Run with -v to see the table:
+// It is a measurement, not a gate: it logs a table and asserts only that each
+// command is handled (wall-clock bounds are meaningless under -race). Run with
+// -v to see the table:
 //
 //	go test -run TestSlashCommandTiming -v ./internal/agent/
 func TestSlashCommandTiming(t *testing.T) {
@@ -72,9 +73,6 @@ func TestSlashCommandTiming(t *testing.T) {
 		rows = append(rows, row{name: name + " [UI goroutine]", dur: sync, note: note})
 		if cmd != nil {
 			rows = append(rows, row{name: name + " [Cmd goroutine]", dur: cmdDur, note: note})
-		}
-		if sync > 5*time.Second || cmdDur > 5*time.Second {
-			t.Errorf("%s took %v/%v", line, sync, cmdDur)
 		}
 	}
 

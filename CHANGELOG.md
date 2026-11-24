@@ -45,6 +45,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer exists (for example an MCP server that is not connected any more)
   is named in one notice. Sessions saved without the field (v0.8.10 and
   earlier) resume exactly as before, with nothing loaded and no notice.
+- Mashura is a core tool in module mode again. With `context_modules` on,
+  the Mashura tools (`mashura__review`, `__debug`, `__decide`, `__check`)
+  are in the tool array from the first request, byte-identical to the
+  switch-off definitions, and never need `load_module`. `call_tool` on a
+  core tool now says "call it directly" instead of claiming the module is
+  not loaded, and the session diag log says why Mashura is not offered when
+  it is not. With the switch off nothing changes.
+- A turn cut at the token limit that kept complete tool calls now runs
+  those calls first (through the normal approval, sandbox and statistics
+  path) and sends the continuation request after their results, so the
+  request is well formed on OpenAI- and Anthropic-style backends. Cut
+  calls, including a call cut before its first argument byte, are dropped
+  and never run. A session saved by 0.8.10 in that state resumes with a
+  short placeholder result added in memory; the file is not rewritten.
+- Resuming a session no longer sends a loaded module's schema twice: when
+  the history already holds the current schema it is kept (and pinned
+  again), and only a missing or changed schema is delivered again.
+- `/resume` opens fast on large session stores. A small index file
+  (`.resume-index` in the sessions directory, rebuilt from the session
+  files whenever it is missing or stale; session files are never rewritten)
+  feeds the list, so the first screen no longer reads every transcript:
+  500 sessions of realistic size went from about 1.4 s to a few
+  milliseconds. The first run after upgrading builds the index in the
+  background and shows "indexing…". `/sessions`, `wakil --list-sessions`,
+  `--resume` and `/remember` / `/recall` use the same index
+  (`/remember` on a warm index: about 300 ms to 70 ms).
+- `/resume` is now a modal with search over the conversation. Typing
+  filters by title, label and folder (case-insensitive); arrows or
+  ctrl+p / ctrl+n move, enter resumes, esc closes, `tab` (or `a` while the
+  search box is empty) switches between this folder and all folders. `j`
+  and `k` no longer navigate; they type into the search. `wakil --resume
+  --all` is unchanged.
+- Session titles in `/resume`, `/sessions` and `--list-sessions` come from
+  what you typed: the first line of your first typed message, at most 60
+  characters. Handoff, memory and session-recall blocks, continuation and
+  budget prompts, automatic counsel rounds and workflow directives are
+  never used. A session with no typed text keeps the old first-message
+  title.
 
 ## [0.8.10] - 2026-11-23
 
