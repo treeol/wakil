@@ -334,6 +334,14 @@ func (s *continuousState) loop(h *sessionhost.Host, sub core.EventSubscription, 
 			s.term.RequiredAction = msg
 			return ExitDeclined
 		}
+		if code == ExitIncomplete {
+			// A token-limit terminal is never a completion candidate: the run
+			// stops incomplete with the agent's clear line as the required
+			// action (what happened and how to raise max_tokens).
+			s.stop("incomplete", "token_limit")
+			s.term.RequiredAction = msg
+			return ExitIncomplete
+		}
 
 		// The turn returned cleanly. Only a clean final may be considered; an
 		// abnormal outcome must never be promoted to a completion candidate.

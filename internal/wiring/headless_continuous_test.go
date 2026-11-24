@@ -113,6 +113,43 @@ func TestContinuousExperimentalWarningFirst(t *testing.T) {
 	}
 }
 
+// TestContinuousTokenLimitStopsIncomplete: a turn that ends at the token
+// limit (even after the agent's one continuation) is never a completion
+// candidate — the run stops incomplete with the clear line.
+func TestContinuousTokenLimitStopsIncomplete(t *testing.T) {
+	srv := sseServer(t,
+		[]string{`{"choices":[{"delta":{"content":"first half"},"finish_reason":null}]}`, `{"choices":[{"delta":{},"finish_reason":"length"}]}`},
+		[]string{`{"choices":[{"delta":{"content":"second half"},"finish_reason":null}]}`, `{"choices":[{"delta":{},"finish_reason":"length"}]}`},
+	)
+	defer srv.Close()
+
+	app := fakeApp(srv.URL)
+	mt := 4096
+	app.Client.MaxTokens = &mt
+	app.Cfg.EndpointName = "test-ep"
+
+	var out strings.Builder
+	code := runContinuousTask(context.Background(), app, "go", HeadlessOptions{Auto: true}, contOpts(3), &out)
+
+	if code != ExitIncomplete {
+		t.Fatalf("exit = %d, want %d; out: %s", code, ExitIncomplete, out.String())
+	}
+	done := findEvent(outputEvents(t, out.String()), "done")
+	if done == nil {
+		t.Fatalf("no terminal record; out: %s", out.String())
+	}
+	if done["outcome"] == "complete_verified" || done["outcome"] == "complete_unverified" {
+		t.Fatalf("token-limit stop must never be a completion: %v", done)
+	}
+	if done["outcome"] != "incomplete" || done["reason"] != "token_limit" {
+		t.Fatalf("want done{incomplete, token_limit}; got %v", done)
+	}
+	action, _ := done["required_user_action"].(string)
+	if !strings.Contains(action, "endpoints.test-ep.max_tokens") {
+		t.Errorf("required_user_action should name how to raise max_tokens, got %q", action)
+	}
+}
+
 // TestContinuousBlockedRequiresUser: a blocked proposal terminates the run and
 // surfaces the required user action.
 func TestContinuousBlockedRequiresUser(t *testing.T) {
