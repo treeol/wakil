@@ -285,23 +285,28 @@ func (a *App) reconcileHistory(ctx context.Context, ws string) error {
 		indexedByID[m.ChatID] = m
 	}
 
-	// Current on-disk sessions (scoped to workspace).
-	onDisk, _, err := ListSessionsScoped(SessionScope{Workspace: ws, All: false})
+	// Current on-disk sessions (scoped to workspace), from the resume index:
+	// a warm index costs one stat per file, and only sessions whose indexed
+	// source hash differs are decoded and re-ingested.
+	onDisk, _, _, err := ListResumeEntries(SessionScope{Workspace: ws, All: false}, true)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
 	}
 
 	seen := make(map[string]bool, len(onDisk))
-	for _, s := range onDisk {
-		seen[s.ChatID] = true
-		meta, exists := indexedByID[s.ChatID]
-		h := sourceHash(s)
-		if exists && meta.SourceHash == h {
+	for _, e := range onDisk {
+		seen[e.ID] = true
+		meta, exists := indexedByID[e.ID]
+		if exists && e.SourceHash != "" && meta.SourceHash == e.SourceHash {
 			continue // unchanged — skip re-parse/rewrite
 		}
-		if err := a.indexSession(ctx, s, meta.SummaryGenerated); err != nil {
+		s, ok := loadSessionFile(e.File, e.ID)
+		if !ok {
+			continue // moved or changed shape since the reconcile: next time
+		}
+		if err := a.indexSession(ctx, *s, meta.SummaryGenerated); err != nil {
 			// Non-fatal: log and continue; a later reconcile will retry.
-			fmt.Fprintf(a.Out, "session history: index %s: %v\n", ShortID(s.ChatID), err)
+			fmt.Fprintf(a.Out, "session history: index %s: %v\n", ShortID(e.ID), err)
 		}
 	}
 

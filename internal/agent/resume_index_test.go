@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -486,5 +487,104 @@ func TestResumeFirstScreenPerf(t *testing.T) {
 	t.Logf("500 sessions: index-only first paint %v, warm reconcile %v, cold rebuild %v", idxDur, warmDur, coldDur)
 	if idxDur > time.Second || warmDur > time.Second {
 		t.Errorf("first screen too slow: index-only %v, warm reconcile %v (bound 1s)", idxDur, warmDur)
+	}
+}
+
+// The index carries the session-history source hash, so /remember and /recall
+// can tell which sessions changed without decoding all of them.
+func TestResumeIndexCarriesSourceHash(t *testing.T) {
+	fx := genResumeFixture(t, 3, 20)
+	s, err := LoadSession("chat-0001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ReadResumeIndex() {
+		if e.ID == s.ChatID && e.SourceHash != sourceHash(*s) {
+			t.Errorf("entry hash %q != sourceHash %q", e.SourceHash, sourceHash(*s))
+		}
+		if e.SourceHash == "" {
+			t.Errorf("%s: empty source hash", e.ID)
+		}
+	}
+	_ = fx
+}
+
+// reconcileHistory must not decode a session whose indexed hash is current: an
+// unreadable file the index vouches for is skipped, and a changed one is
+// re-indexed.
+func TestReconcileHistorySkipsUnchangedWithoutDecoding(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores file modes")
+	}
+	fx := genResumeFixture(t, 6, 20)
+	app := newSessionHistoryApp(t, fx.Workspace)
+	ctx := context.Background()
+	if err := app.reconcileHistory(ctx, fx.Workspace); err != nil { // cold: indexes all 6
+		t.Fatal(err)
+	}
+	meta, _ := app.SessionHistory.ListMeta(ctx, fx.Workspace)
+	if len(meta) != 6 {
+		t.Fatalf("indexed %d sessions, want 6", len(meta))
+	}
+	// Warm: make every session file unreadable; the index still vouches for
+	// them, so a warm reconcile must succeed without opening any of them.
+	ents, _ := os.ReadDir(fx.Dir)
+	for _, e := range ents {
+		if isSessionFileName(e.Name()) {
+			_ = os.Chmod(filepath.Join(fx.Dir, e.Name()), 0o000)
+		}
+	}
+	defer func() {
+		for _, e := range ents {
+			_ = os.Chmod(filepath.Join(fx.Dir, e.Name()), 0o644)
+		}
+	}()
+	var out strings.Builder
+	app.Out = &out
+	if err := app.reconcileHistory(ctx, fx.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() != 0 {
+		t.Errorf("warm reconcile touched session files: %s", out.String())
+	}
+	if again, _ := app.SessionHistory.ListMeta(ctx, fx.Workspace); len(again) != 6 {
+		t.Errorf("warm reconcile changed the index: %d sessions", len(again))
+	}
+}
+
+// A session changed behind the index is re-indexed by the next reconcile.
+func TestReconcileHistoryReindexesChanged(t *testing.T) {
+	fx := genResumeFixture(t, 3, 20)
+	app := newSessionHistoryApp(t, fx.Workspace)
+	ctx := context.Background()
+	if err := app.reconcileHistory(ctx, fx.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := app.SessionHistory.ListMeta(ctx, fx.Workspace)
+	old := map[string]string{}
+	for _, m := range before {
+		old[m.ChatID] = m.SourceHash
+	}
+	s, _ := LoadSession("chat-0001")
+	s.Conv = append(s.Conv, userMsg("a brand new question"))
+	s.Updated = s.Updated.Add(time.Minute)
+	if err := WriteSession(s); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.reconcileHistory(ctx, fx.Workspace); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := app.SessionHistory.ListMeta(ctx, fx.Workspace)
+	changed := 0
+	for _, m := range after {
+		if m.SourceHash != old[m.ChatID] {
+			changed++
+			if m.ChatID != s.ChatID {
+				t.Errorf("unexpected re-index of %s", m.ChatID)
+			}
+		}
+	}
+	if changed != 1 {
+		t.Errorf("%d sessions re-indexed, want 1", changed)
 	}
 }

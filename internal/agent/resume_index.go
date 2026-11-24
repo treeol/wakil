@@ -35,7 +35,7 @@ const (
 	// resumeIndexVersion must be bumped whenever the title rules or the entry
 	// shape change: an index with another version is treated as empty and
 	// rebuilt from the session files.
-	resumeIndexVersion = 1
+	resumeIndexVersion = 2
 	// sessionTitleRunes bounds a derived title.
 	sessionTitleRunes = 60
 )
@@ -56,6 +56,10 @@ type ResumeEntry struct {
 	Updated   time.Time `json:"updated"`
 	Messages  int       `json:"messages"`
 	Turns     int       `json:"turns"`
+	// SourceHash is the session-history change-detection hash (sourceHash) of
+	// the transcript, so reconcileHistory can tell which sessions changed
+	// without decoding every file.
+	SourceHash string `json:"source_hash,omitempty"`
 	// Size and ModNS are the session file's stat when the entry was derived:
 	// the entry is fresh only while the file still has both.
 	Size  int64 `json:"size"`
@@ -126,19 +130,20 @@ func sortResumeEntries(e []ResumeEntry) {
 func entryFromSession(s Session, file string, size, modNS int64) ResumeEntry {
 	turns, _ := SessionTurns(s)
 	return ResumeEntry{
-		ID:        s.ChatID,
-		File:      file,
-		Title:     SessionTitle(s.Conv),
-		Fallback:  sessionFallbackTitle(s),
-		Label:     s.Label,
-		Model:     s.Model,
-		Workspace: s.Workspace,
-		Created:   s.Created,
-		Updated:   s.Updated,
-		Messages:  len(s.Conv),
-		Turns:     turns,
-		Size:      size,
-		ModNS:     modNS,
+		ID:         s.ChatID,
+		File:       file,
+		Title:      SessionTitle(s.Conv),
+		Fallback:   sessionFallbackTitle(s),
+		Label:      s.Label,
+		Model:      s.Model,
+		Workspace:  s.Workspace,
+		Created:    s.Created,
+		Updated:    s.Updated,
+		Messages:   len(s.Conv),
+		SourceHash: sourceHash(s),
+		Turns:      turns,
+		Size:       size,
+		ModNS:      modNS,
 	}
 }
 
