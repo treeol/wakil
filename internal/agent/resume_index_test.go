@@ -371,6 +371,13 @@ func TestLoadSessionByNameDefensive(t *testing.T) {
 	if _, err := LoadSession("abc"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Errorf("two matches: err = %v, want ambiguous", err)
 	}
+	// A corrupt file that matches the prefix by name must not make a unique
+	// decodable match ambiguous (the scan skips it).
+	w("pre-1.json", "pre-1")
+	_ = os.WriteFile(filepath.Join(dir, "pre-2.json"), []byte("{broken"), 0o644)
+	if s, err := LoadSession("pre"); err != nil || s.ChatID != "pre-1" {
+		t.Errorf("corrupt sibling made a unique match fail: %v %v", s, err)
+	}
 	w("zzz-1.json", "zzz-1")
 	_ = os.WriteFile(filepath.Join(dir, "zzz-1.handoff.json"), []byte(`{"old_chat_id":"zzz-1"}`), 0o600)
 	if s, err := LoadSession("zzz"); err != nil || s.ChatID != "zzz-1" {
@@ -457,6 +464,9 @@ func TestSyntheticPrefixListCoversProducers(t *testing.T) {
 // BenchmarkResume* (see docs/plans/0.8.11.md). The fixture is small per
 // session (scale 20) so the test stays light.
 func TestResumeFirstScreenPerf(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a 500-session fixture")
+	}
 	fx := genResumeFixture(t, 500, 20)
 	scope := SessionScope{Workspace: fx.Workspace, IncludeLegacy: true, LegacyWorkspace: "/nonexistent-legacy"}
 
@@ -586,5 +596,29 @@ func TestReconcileHistoryReindexesChanged(t *testing.T) {
 	}
 	if changed != 1 {
 		t.Errorf("%d sessions re-indexed, want 1", changed)
+	}
+}
+
+// A session file with an empty chat_id is a session to the full scan; the
+// index keeps it too, instead of dropping it on every read and re-decoding it
+// at every reconcile.
+func TestResumeIndexKeepsEmptyChatID(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("WAKIL_SESSIONS_DIR", dir)
+	_ = os.WriteFile(filepath.Join(dir, "legacy.json"), []byte(`{"workspace":"/w","updated":"2026-11-20T10:00:00Z","conv":[{"role":"user","content":"old one"}]}`), 0o644)
+	full, _ := ListSessions()
+	got, err := ReconcileResumeIndex()
+	if err != nil || len(got) != len(full) || len(full) != 1 {
+		t.Fatalf("full scan %d, reconcile %d, err %v", len(full), len(got), err)
+	}
+	if again := ReadResumeIndex(); len(again) != 1 {
+		t.Errorf("index read after reconcile: %d entries, want 1", len(again))
+	}
+	before := snapshotDir(t, dir)[resumeIndexFile]
+	if _, err := ReconcileResumeIndex(); err != nil {
+		t.Fatal(err)
+	}
+	if snapshotDir(t, dir)[resumeIndexFile] != before {
+		t.Error("a warm reconcile rewrote the index for an empty-chat_id session")
 	}
 }

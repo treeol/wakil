@@ -188,7 +188,8 @@ func safeSessionID(id string) bool {
 // matching file, instead of decoding every transcript. ok is false when the
 // fast path cannot decide (unsafe id, no name match, a name match whose inner
 // chat_id disagrees, unreadable file) and the caller must use the full scan.
-// Two or more name matches are the same "ambiguous" error the scan gives.
+// Anything but exactly one name match defers to the scan, which also owns the
+// "ambiguous" error.
 // Candidates are directory names; handoff sidecars and dot files never count.
 func loadSessionByName(idOrPrefix string) (*Session, bool, error) {
 	if !safeSessionID(idOrPrefix) {
@@ -212,12 +213,12 @@ func loadSessionByName(idOrPrefix string) (*Session, bool, error) {
 			names = append(names, n)
 		}
 	}
-	switch len(names) {
-	case 0:
+	// Exactly one file-name candidate is the fast path. Zero or several fall
+	// back to the full scan, which counts decodable sessions by inner chat_id:
+	// a corrupt or mismatched file must not turn a unique match into
+	// "ambiguous".
+	if len(names) != 1 {
 		return nil, false, nil
-	case 1:
-	default:
-		return nil, true, fmt.Errorf("%q is ambiguous — matches %d sessions", idOrPrefix, len(names))
 	}
 	b, err := os.ReadFile(filepath.Join(dir, names[0]))
 	if err != nil {

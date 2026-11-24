@@ -45,13 +45,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   longer exists (for example an MCP server that is not connected any more)
   is named in one notice. Sessions saved without the field (v0.8.10 and
   earlier) resume exactly as before, with nothing loaded and no notice.
-- Mashura is a core tool in module mode again. With `context_modules` on,
-  the Mashura tools (`mashura__review`, `__debug`, `__decide`, `__check`)
-  are in the tool array from the first request, byte-identical to the
-  switch-off definitions, and never need `load_module`. `call_tool` on a
-  core tool now says "call it directly" instead of claiming the module is
-  not loaded, and the session diag log says why Mashura is not offered when
-  it is not. With the switch off nothing changes.
+- Mashura in module mode: the Mashura tools (`mashura__review`, `__debug`,
+  `__decide`, `__check`) are core tools in both modes (never a module, never
+  behind `load_module`), and tests now pin that they are in the tool array
+  at the first request with `context_modules` on, byte-identical to the
+  switch-off definitions. `call_tool` on a core tool now says "call it
+  directly" instead of "not in any module", and the session diag log says
+  why Mashura is not offered when it is not (level off, legacy
+  `oracle_enabled` false, or no OpenRouter key). The tool array itself is
+  unchanged in both modes.
 - A turn cut at the token limit that kept complete tool calls now runs
   those calls first (through the normal approval, sandbox and statistics
   path) and sends the continuation request after their results, so the

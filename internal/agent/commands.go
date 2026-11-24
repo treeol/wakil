@@ -713,7 +713,9 @@ func HandleTUICommand(line string, app *App) (handled, quit bool, cmd Cmd) {
 		// An explicit id/prefix still resumes directly without the picker.
 		if arg == "" {
 			return true, false, func() Msg {
-				_, _, hidden, err := ListResumeEntries(scope, true)
+				// Index only: the TUI reconciles in the background, so this Cmd never
+				// waits for a cold index.
+				_, _, hidden, err := ListResumeEntries(scope, false)
 				if err != nil {
 					return SysNoteMsg{Text: "resume: " + err.Error() + "\nnext: run /resume again"}
 				}

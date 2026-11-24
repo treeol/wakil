@@ -1,11 +1,9 @@
 package agent
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -26,6 +24,9 @@ import (
 //
 //	go test -run TestSlashCommandTiming -v ./internal/agent/
 func TestSlashCommandTiming(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds a 500-session fixture")
+	}
 	fx := genResumeFixture(t, 500, 20)
 
 	srv := sseServer(t, []string{contentChunk("ok")})
@@ -78,7 +79,7 @@ func TestSlashCommandTiming(t *testing.T) {
 
 	// Cold index first (the first-run-after-upgrade case), then warm.
 	_ = os.Remove(filepath.Join(fx.Dir, resumeIndexFile))
-	timeCmd("/resume (cold index)", "/resume", "reconcile decodes every session once")
+	timeCmd("/resume (cold index)", "/resume", "index only: the cold reconcile runs in the TUI refresh Cmd")
 	timeCmd("/resume (warm index)", "/resume", "stat only")
 	timeCmd("/resume all", "/resume all", "")
 	timeCmd("/sessions", "/sessions", "")
@@ -104,7 +105,6 @@ func TestSlashCommandTiming(t *testing.T) {
 	ents := ReadResumeIndex()
 	rows = append(rows, row{name: "/resume <tab> completion (index read)", dur: time.Since(start), note: fmt.Sprintf("%d entries", len(ents))})
 
-	sort.SliceStable(rows, func(i, j int) bool { return false })
 	var b strings.Builder
 	fmt.Fprintf(&b, "\n%-48s %12s  %s\n", "command", "time", "note")
 	for _, r := range rows {
@@ -126,5 +126,3 @@ func mustOpenHistory(t *testing.T) *sessionhistory.Store {
 	t.Cleanup(func() { st.Close() })
 	return st
 }
-
-var _ = context.Background

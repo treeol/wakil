@@ -286,3 +286,37 @@ func TestResumeRepairsDanglingToolCalls(t *testing.T) {
 		t.Errorf("the loaded session slice was modified (len %d)", len(dangling))
 	}
 }
+
+// A reused id answered earlier must not hide a dangling call; an empty id is
+// never repaired; nil stays nil.
+func TestRepairDanglingEdgeCases(t *testing.T) {
+	call := func(id string) proxy.ToolCall {
+		return proxy.ToolCall{ID: id, Type: "function", Function: proxy.FunctionCall{Name: "read_file", Arguments: `{}`}}
+	}
+	res := func(id string) proxy.Message {
+		return proxy.Message{Role: "tool", ToolCallID: id, Content: StrPtr("r")}
+	}
+	conv := []proxy.Message{
+		{Role: "user", Content: StrPtr("go")},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{call("dup")}},
+		res("dup"),
+		{Role: "assistant", Content: StrPtr("mid")},
+		{Role: "user", Content: StrPtr("again")},
+		{Role: "assistant", ToolCalls: []proxy.ToolCall{call("dup"), call("")}}, // dangling reuse + empty id
+	}
+	got := repairDanglingToolCalls(conv)
+	if len(conv) != 6 {
+		t.Fatal("input modified")
+	}
+	if len(got) != 7 || got[6].Role != "tool" || got[6].ToolCallID != "dup" {
+		t.Fatalf("want one synthetic result for the reused id at the end, got %d messages: %+v", len(got), got[len(got)-1])
+	}
+	for _, m := range got {
+		if m.Role == "tool" && m.ToolCallID == "" {
+			t.Error("a result was added for an empty-id call")
+		}
+	}
+	if repairDanglingToolCalls(nil) != nil || repairDanglingToolCalls([]proxy.Message{}) != nil {
+		t.Error("nil/empty conv must stay nil")
+	}
+}

@@ -139,6 +139,9 @@ func filterSessions(all []sessionclient.SessionSummary, query string) []sessionc
 // toggleResumeScope flips workspace ↔ all repos. The index is read at once (a
 // cheap file read) and a fresh reconcile is started for the new scope.
 func (m tuiModel) toggleResumeScope() (tuiModel, tea.Cmd) {
+	if m.facade == nil {
+		return m, nil
+	}
 	scope := m.resumePicker.scope
 	scope.All = !scope.All
 	sessions, hidden, err := m.facade.ListSessions(scope, false)

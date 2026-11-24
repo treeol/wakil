@@ -99,7 +99,9 @@ func readResumeIndexFile(dir string) map[string]ResumeEntry {
 		return out
 	}
 	for _, e := range doc.Entries {
-		if e.File != "" && e.ID != "" {
+		// Keyed by file: a session file whose chat_id is empty is still a
+		// session (the full scan lists it), so it stays in the index too.
+		if e.File != "" {
 			out[e.File] = e
 		}
 	}

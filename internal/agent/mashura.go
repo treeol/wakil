@@ -1740,7 +1740,9 @@ func (a *App) logMashuraNotOffered() {
 	if a.IsSubagent || (a.Cfg.Mashura == nil && !a.Cfg.OracleEnabled) {
 		return
 	}
-	if reason := mashuraNotOfferedReason(a.Cfg, a.MashuraLevelOverride); reason != "" {
+	// The tool array is built with an empty repo level (BuildApp), so the
+	// reason is computed for the same level.
+	if reason := mashuraNotOfferedReason(a.Cfg, ""); reason != "" {
 		diag.Printf("mashura tools not offered this session: %s\n", reason)
 	}
 }
