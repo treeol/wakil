@@ -823,6 +823,12 @@ func (r *ModuleRegistry) PreloadedSchemas(names []string) (string, bool) {
 // handleLoadModule returns for the same module. It returns nil when
 // there is nothing to pre-load.
 //
+// Two sources are served, in order: the modules restored at /resume
+// (resumedModules, set by InstallSession) and the MCP keyword pre-loads
+// for this message. On a resumed session's first turn the restored set is
+// served exactly like a session-start pre-load, so a resumed session keeps
+// its loaded modules without a load_module round trip.
+//
 // The schemas are MCP-server-controlled text, so they must never reach
 // the model in the user role (Block 4, Stage 1 fixes round 2). The pair
 // is appended after the preamble and before the user's first message,
@@ -833,17 +839,46 @@ func (a *App) mcpPreloadPair(userText string) []proxy.Message {
 	}
 	a.stateMu.RLock()
 	firstTurn := a.preambleDay == ""
+	resumed := append([]string(nil), a.resumedModules...)
 	a.stateMu.RUnlock()
 	if !firstTurn {
 		return nil
 	}
 	preload, reasons := a.Modules.MCPModulePreload(userText, a.Cfg.MCPModuleKeywords)
-	if len(preload) == 0 {
+	// Merge the resume set (first, so its order is preserved) with the
+	// keyword pre-loads, deduplicated.
+	seen := make(map[string]bool, len(resumed))
+	var names []string
+	for _, n := range resumed {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, n := range preload {
+		if !seen[n] {
+			seen[n] = true
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
 		return nil
 	}
-	a.Modules.PreloadModules(preload, reasons)
+	a.Modules.PreloadModules(names, reasons)
+	// Saved names that no longer exist (an MCP server that is not connected
+	// any more) are named in one notice, delivered with the next tool result.
+	var missing []string
+	for _, n := range resumed {
+		if !a.Modules.HasModule(n) || a.Modules.IsDisconnected(n) {
+			missing = append(missing, n)
+		}
+	}
+	if len(missing) > 0 {
+		a.queueModuleAnnouncement(fmt.Sprintf("Modules loaded in this session but unavailable now: %s.",
+			strings.Join(missing, ", ")))
+	}
 	var pair []proxy.Message
-	for _, name := range preload {
+	for _, name := range names {
 		if a.Modules.IsDisconnected(name) {
 			continue
 		}

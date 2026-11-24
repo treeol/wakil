@@ -70,7 +70,14 @@ type App struct {
 	// appended to the next tool result. Guarded by stateMu. Never delivered
 	// as a user-role message.
 	pendingModuleAnnouncements []string
-	Conv                       []proxy.Message
+	// resumedModules holds the loaded-module names restored from a saved
+	// session at /resume time. mcpPreloadPair serves them on the first turn
+	// exactly like a session-start pre-load; names that no longer exist or
+	// are disconnected are named in one notice instead. Nil for fresh
+	// sessions and for v0.8.10 sessions (no saved field). Guarded by
+	// stateMu.
+	resumedModules []string
+	Conv           []proxy.Message
 	// convMu guards Conv for concurrent reads from side-question goroutines.
 	// The main goroutine writes Conv inside Send/streamTurn; side-question
 	// goroutines take a read-lock snapshot. All Conv access must go through
@@ -1037,6 +1044,13 @@ func (a *App) SaveSession() {
 	if rows := a.Costs.ExportRows(); len(rows) > 0 {
 		snap.CostRows = rows
 	}
+	// Persist the loaded context-module names (registry is mutex-guarded;
+	// nil when the switch is off or no modules were loaded).
+	if a.Modules != nil {
+		if names := a.Modules.LoadedNames(); len(names) > 0 {
+			snap.LoadedModules = names
+		}
+	}
 
 	a.convMu.RUnlock()
 	a.stateMu.RUnlock()
@@ -1124,6 +1138,12 @@ func (a *App) InstallSession(s *Session) {
 	// and safe outside any tracker lock.
 	if a.Costs != nil {
 		a.Costs.ReplaceRows(s.CostRows)
+	}
+	// Stage the loaded-module names for first-turn re-delivery (only
+	// meaningful with the switch on; the registry checks are nil-safe).
+	a.resumedModules = nil
+	if a.Modules != nil && len(s.LoadedModules) > 0 {
+		a.resumedModules = append([]string(nil), s.LoadedModules...)
 	}
 	a.resetStyleGuides()
 	a.resetBackendConsent()

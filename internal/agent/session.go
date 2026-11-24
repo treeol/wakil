@@ -51,6 +51,12 @@ type Session struct {
 	// CostRows persists the session cost totals so they survive save/restore
 	// (/resume). Empty on old sessions (resume with no prior cost history).
 	CostRows []proxy.CostRow `json:"cost_rows,omitempty"`
+
+	// LoadedModules persists the context-module names loaded in this session
+	// (context_modules on) so they survive /resume. Empty on old sessions
+	// (saved by v0.8.10, which did not persist them) and when the switch is
+	// off; a resumed session with the switch on then behaves as before.
+	LoadedModules []string `json:"loaded_modules,omitempty"`
 }
 
 // sessionsDir is where transcripts live: $WAKIL_SESSIONS_DIR, else
