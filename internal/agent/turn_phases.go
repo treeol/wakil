@@ -216,6 +216,10 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 	// continuation per turn: after it fires, a second cut stops the turn
 	// with TokenLimitError and is never retried.
 	tokenLimitRecovered := false
+	// pendingContinuation is set when the first cut kept complete tool calls:
+	// they run through the normal tool path first, and the continuation prompt
+	// is appended at the top of the next iteration, after their results.
+	pendingContinuation := false
 	// Path-confinement circuit breaker state (see confinementBreakerThreshold):
 	// confinementFailures counts ConfinePath rejections per distinct path across
 	// the whole turn; confinementPaths preserves first-seen order for the honest
@@ -344,6 +348,15 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 		// round that built it, before the next request is built — so a
 		// long turn never needs to wait for a new user message to shrink.
 		// Rating pass: once per model request (reset before each request build).
+		if pendingContinuation {
+			pendingContinuation = false
+			// The kept calls have run and their results are in Conv; now ask
+			// the model to continue. A forced finish already carries its own
+			// final-answer prompt, so no continuation is added then.
+			if !forceFinish {
+				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(continuationPrompt)})
+			}
+		}
 		a.raterPassResetForRequest(len(a.Conv))
 		a.pruneCheck()
 		a.collapseMidTurnPrefix()
@@ -376,24 +389,46 @@ func (a *App) streamTurn(ctx context.Context, userText string, rsink proxy.Sink,
 			// normal appendConv path, so the saved session holds it.
 			if errors.Is(err, proxy.ErrTokenLimitPartial) && !tokenLimitRecovered {
 				tokenLimitRecovered = true
-				a.RecordInferenceCost() // main inference for this iteration
-				// Store the partial turn first (text + surviving tool calls)
-				// so the continuation continues the same turn.
-				a.stripPrevFromMessage(&msg)
-				a.appendConv(msg)
-				a.appendConv(proxy.Message{Role: "user", Content: StrPtr(continuationPrompt)})
-				continue
-			}
-			if errors.Is(err, proxy.ErrTokenLimitPartial) && tokenLimitRecovered {
+				if len(msg.ToolCalls) > 0 && !forceFinish {
+					// Complete calls survived the cut. Treat the partial
+					// message as a normal tool-calling answer: the code below
+					// stores it, runs every kept call through handleToolCall
+					// (gates, statistics, sandbox) and appends their results;
+					// the continuation prompt follows at the next iteration.
+					// Without this the next request would carry tool_calls
+					// with no results, which real backends reject.
+					pendingContinuation = true
+					err = nil
+				} else {
+					a.RecordInferenceCost() // main inference for this iteration
+					// A forced finish never executes calls: drop them so the
+					// stored message has no dangling tool_calls.
+					msg.ToolCalls = nil
+					// Store the partial turn first so the continuation
+					// continues the same turn. An all-cut message with no text
+					// has nothing to keep: no empty assistant message.
+					if DerefStr(msg.Content) != "" {
+						a.stripPrevFromMessage(&msg)
+						a.appendConv(msg)
+					}
+					a.appendConv(proxy.Message{Role: "user", Content: StrPtr(continuationPrompt)})
+					continue
+				}
+			} else if errors.Is(err, proxy.ErrTokenLimitPartial) && tokenLimitRecovered {
 				// The continuation also hit the limit: best-effort keep the
 				// second partial text, then stop with the one clear line.
+				// Kept calls are NOT executed on the second cut and are
+				// stripped so the stored message has no dangling tool_calls.
+				msg.ToolCalls = nil
 				if DerefStr(msg.Content) != "" {
 					a.appendConv(msg)
 				}
 				return "", false, a.tokenLimitError()
 			}
-			a.RecordFailedStreamCost(before, err)
-			return "", false, err
+			if err != nil {
+				a.RecordFailedStreamCost(before, err)
+				return "", false, err
+			}
 		}
 		a.RecordInferenceCost() // main inference for this iteration
 		// B2: forced turn answered with tool calls despite the injected

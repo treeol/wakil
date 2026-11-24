@@ -74,3 +74,34 @@ func TestStreamLengthOnlyCutCall(t *testing.T) {
 		t.Fatalf("cut call survived: %v", msg.ToolCalls)
 	}
 }
+
+// A call whose arguments never started (header chunk only, empty argument
+// string) is cut, not a zero-argument call: under finish_reason=length it must
+// be dropped, never kept and executed.
+func TestStreamLengthDropsEmptyArgumentCall(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"write_file\",\"arguments\":\"\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	msg, err := streamWith(t, body)
+	if !errors.Is(err, ErrTokenLimitPartial) && !errors.Is(err, ErrBackendFatal) {
+		t.Fatalf("want the token-limit marker or the empty-output fatal, got %v", err)
+	}
+	if len(msg.ToolCalls) != 0 {
+		t.Fatalf("empty-argument call kept under length: %+v", msg.ToolCalls)
+	}
+}
+
+// Outside a length cut an empty argument string is still a valid zero-argument
+// call (some models emit it that way).
+func TestStreamEmptyArgumentCallKeptWhenNotCut(t *testing.T) {
+	body := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"check_pending\",\"arguments\":\"\"}}]}}]}\n\n" +
+		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
+		"data: [DONE]\n\n"
+	msg, err := streamWith(t, body)
+	if err != nil {
+		t.Fatalf("zero-argument call: %v", err)
+	}
+	if len(msg.ToolCalls) != 1 {
+		t.Fatalf("kept %d calls, want 1", len(msg.ToolCalls))
+	}
+}

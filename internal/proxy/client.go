@@ -1764,7 +1764,10 @@ func (c *Client) Stream(ctx context.Context, messages []Message, tools []Tool, s
 	if finishReason == "length" {
 		kept := msg.ToolCalls[:0]
 		for _, tc := range msg.ToolCalls {
-			if argsAreValidObject(tc.Function.Arguments) {
+			// An empty argument string is tolerated for zero-argument calls
+			// in a normal finish, but under a length cut it cannot be told
+			// apart from a call whose arguments never started: drop it.
+			if strings.TrimSpace(tc.Function.Arguments) != "" && argsAreValidObject(tc.Function.Arguments) {
 				kept = append(kept, tc)
 			}
 		}
