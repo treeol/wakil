@@ -547,6 +547,10 @@ csv_cell() {
 # A completed collapse-long run with 0 collapses is not scorable: its
 # result is rewritten to "invalid" here (single computation point, so
 # every call site behaves identically) and valid is false:no_collapse.
+# A collapse-long run whose user's config is unparseable never launched:
+# the bench writes result=error, exit_reason=config-unreadable, and
+# valid=false:config (the config-unreadable reason is more specific than
+# a generic error and is checked before the generic error branch).
 # Timeout and error results are never valid.
 csv_row() {
     task=$1; run=$2; result=$3; exit_reason=$4; secs=$5; rj=$6
@@ -557,7 +561,10 @@ csv_row() {
     case "$result" in
         invalid) _valid="false:no_collapse" ;;
         timeout) _valid="false:timeout" ;;
-        error) _valid="false:error" ;;
+        error) case "$exit_reason" in
+                config-unreadable) _valid="false:config" ;;
+                *) _valid="false:error" ;;
+            esac ;;
         *) _valid="true" ;;
     esac
     _provider=$(json_field "$rj" "provider")
@@ -801,21 +808,52 @@ run_one_locked() {
     export WAKIL_HOST_WORKDIR="$workdir"
     export WAKIL_CONTEXT_MODULES="$context_modules"
     # collapse-long only: a bench-only collapse-threshold override through
-    # a per-run config file (WAKIL_CONFIG). The ceiling is low and identical
-    # for modules off and on, so every model collapses at the same projected
-    # size regardless of its probed window (a fixture big enough for a
-    # 1M-token model would time out small ones). Wakil itself is unchanged;
-    # the config carries only the two collapse keys (no secrets, no
-    # endpoint — endpoint/model resolution is untouched). The override and
-    # its values are recorded in the run log.
+    # a merged per-run config file (WAKIL_CONFIG). Wakil reads exactly one
+    # config file (defaults <- file <- env <- flags, internal/config
+    # LoadConfig) and the two collapse keys are file-only, so the harness
+    # merges the user's own resolved config with only those two keys and
+    # points the run at the merged file. The ceiling (45,000 tokens) and
+    # min_bytes (2,000) are identical for modules off and on, so every model
+    # collapses at the same projected size regardless of its probed window
+    # (a fixture big enough for a 1M-token model would time out small ones).
+    # Wakil itself is unchanged. The merged file carries the user's
+    # endpoints (with keys) — it lives in a private 0700 temp dir at mode
+    # 0600, is deleted right after the run on every path, and its contents,
+    # path, and key values are never printed or logged. The run log records
+    # only the two non-secret override numbers.
+    # Resolving the user's config mirrors Wakil's defaultConfigPath:
+    # $WAKIL_CONFIG if set, else ~/.config/wakil/config.json.
     _wakil_config_env=""
     if [ "$task" = "collapse-long" ]; then
-        _cfg_dir="$run_root/$task-config"
-        mkdir -p "$_cfg_dir" || { echo "$prog: cannot create $_cfg_dir" >&2; set -e; return 1; }
-        _cfg_file="$_cfg_dir/config.json"
-        printf '{"context_collapse_ceiling_tokens":8000,"context_collapse_min_bytes":2000}\n' > "$_cfg_file"
+        _user_cfg="${WAKIL_CONFIG:-$HOME/.config/wakil/config.json}"
+        if [ ! -f "$_user_cfg" ]; then
+            # Wakil tolerates a missing file (defaults + env apply); merge
+            # onto an empty object so env-only setups still run.
+            _user_cfg=""
+        fi
+        _bench_cfg_tmp=$(mktemp -d 2>/dev/null) || { echo "$prog: cannot create private config dir for $task" >&2; set -e; return 1; }
+        _cfg_file="$_bench_cfg_tmp/config.json"
+        if [ -n "$_user_cfg" ]; then
+            # Merge the user's file with only the two collapse keys. jq
+            # stderr is discarded (a malformed user file would print
+            # surrounding context); the exit code decides validity of the
+            # user file. An unparseable user file means wakil itself would
+            # fail on it — that is recorded via the config-unreadable
+            # exit_reason below, not by a bench abort.
+            ( umask 077 && jq '. + {context_collapse_ceiling_tokens: 45000, context_collapse_min_bytes: 2000}' "$_user_cfg" > "$_cfg_file" ) 2>/dev/null
+            if [ $? -ne 0 ] || [ ! -s "$_cfg_file" ]; then
+                rm -f "$_cfg_file"
+                printf 'collapse-long override: user config unparseable (bench did not launch; valid=false:config)\n' >> "$log_file" 2>/dev/null || true
+                rm -rf "$_bench_cfg_tmp"
+                _bench_cfg_tmp=""
+                csv_row "$task" "$run" "error" "config-unreadable" 0 ""
+                return 0
+            fi
+        else
+            printf '%s\n' '{"context_collapse_ceiling_tokens":45000,"context_collapse_min_bytes":2000}' > "$_cfg_file"
+        fi
         _wakil_config_env="WAKIL_CONFIG=$_cfg_file"
-        printf 'collapse-long override: WAKIL_CONFIG=%s (context_collapse_ceiling_tokens=8000, context_collapse_min_bytes=2000)\n' "$_cfg_file" >> "$log_file" 2>/dev/null || true
+        printf 'collapse-long override: merged config (ceiling=45000 min_bytes=2000)\n' >> "$log_file" 2>/dev/null || true
     fi
 
     if [ -n "$model_name" ]; then
@@ -876,6 +914,14 @@ run_one_locked() {
     if [ -n "${hb_pid:-}" ]; then
         kill "$hb_pid" 2>/dev/null || true
         wait "$hb_pid" 2>/dev/null || true
+    fi
+    # The merged carry-secrets config is deleted on every run path, before
+    # any guard return below can skip it. The EXIT/INT/TERM backstop (the
+    # composed st_on_exit for self-test, or the normal-mode trap) removes
+    # any orphan if the bench shell itself exits with an error.
+    if [ -n "${_bench_cfg_tmp:-}" ]; then
+        rm -rf "$_bench_cfg_tmp"
+        _bench_cfg_tmp=""
     fi
     end_epoch=$(date +%s)
     secs=$((end_epoch - start_epoch))
@@ -1212,7 +1258,8 @@ st_failure_report() {
 
 # st_on_exit: EXIT trap of --self-test. A non-zero status prints the failure
 # report; the private Go cache directory (go build leaves read-only files) is
-# removed on every way out.
+# removed on every way out, as is any merged collapse-long config dir left
+# by an interrupted run.
 st_on_exit() {
     _se_rc=$?
     trap - EXIT
@@ -1220,6 +1267,9 @@ st_on_exit() {
     if [ -n "${st_go_private:-}" ]; then
         chmod -R u+w "$st_go_private" 2>/dev/null || true
         rm -rf "$st_go_private"
+    fi
+    if [ -n "${_bench_cfg_tmp:-}" ]; then
+        rm -rf "$_bench_cfg_tmp"
     fi
     exit "$_se_rc"
 }
@@ -1252,6 +1302,17 @@ self_test() {
     lock_root="$tmpdir/locks"
     _saved_run_root="$run_root"
     run_root="$tmpdir/run"
+
+    # Fake user config for collapse-long: merge tests must never read the
+    # host's real ~/.config/wakil/config.json (that carries live API keys).
+    # The file has fake endpoints so the merge has something to keep, and
+    # the bench places its merged copy in a private 0700 dir at 0600.
+    # Every run_one against collapse-long in this self-test inherits this
+    # WAKIL_CONFIG; other tasks ignore it.
+    _fake_user_cfg="$tmpdir/fake-user-config.json"
+    printf '%s\n' '{"endpoints":{"fake":{"base_url":"https://example.invalid/v1","model":"fake-model","api_key":"AKIA_FAKE_SENTINEL"}},"context_collapse_ceiling_tokens":200000,"context_collapse_min_bytes":2000}' > "$_fake_user_cfg"
+    _saved_wakil_config="${WAKIL_CONFIG:-}"
+    export WAKIL_CONFIG="$_fake_user_cfg"
 
     # Stub that changes nothing (writes a result-json with the correct
     # workdir so the guard passes, but no solution — check.sh fails).
@@ -1421,6 +1482,81 @@ EOF
     else
         echo "  skipped (no resolved Go toolchain or no fix-test task)"
     fi
+
+    st_case "== self-test: collapse-long merged config (keeps endpoints, two keys, private, deleted, no secret in logs) =="
+    # The recording stub asserts what the merged config contains and its
+    # modes, and records the merged path so the harness case can assert
+    # deletion afterwards. It writes a valid result-json (solve) so the
+    # run completes normally.
+    stub_record="$tmpdir/wakil-record"
+    cat > "$stub_record" <<'EOF'
+#!/bin/sh
+# Recording stub for the merged-config cases. Asserts the merged config
+# keeps the fake endpoints block and sets exactly the two collapse keys,
+# that the file is 0600 and the dir 0700, and records the merged path.
+_fail=0
+_cfg="$WAKIL_CONFIG"
+[ -n "$_cfg" ] || { echo "RECORD: WAKIL_CONFIG unset" >> "$BENCH_ST_RECORD"; exit 97; }
+echo "RECORD: merged=$_cfg mode=$(stat -c %a "$_cfg" 2>/dev/null || echo nope) dir_mode=$(stat -c %a "$(dirname "$_cfg")" 2>/dev/null || echo nope)" >> "$BENCH_ST_RECORD"
+jq -e '.endpoints.fake and (.context_collapse_ceiling_tokens == 45000) and (.context_collapse_min_bytes == 2000)' "$_cfg" >/dev/null 2>&1 \
+  || { echo "RECORD: merged content wrong" >> "$BENCH_ST_RECORD"; _fail=1; }
+# Delegate to the solve behaviour (copy solution, write result-json).
+workdir=$WAKIL_HOST_WORKDIR
+result_json=""
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --result-json) result_json=$2; shift 2 ;;
+    --transcript) shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
+  cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+fi
+_collapses=2
+case "$workdir" in */collapse-long) _collapses=2 ;; esac
+cat > "$result_json" <<JSON
+{"wakil_version":"stub-record/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":$_collapses,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
+JSON
+exit $_fail
+EOF
+    chmod +x "$stub_record"
+    # Success path: merged config deleted, row pass, no sentinel in log/CSV/stdout.
+    BENCH_ST_RECORD="$tmpdir/st-record" run_one collapse-long "self-merged" "$stub_record" >"$tmpdir/st-merged-stdout" 2>&1 || { echo "self-test FAILED: merged success run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _m_file=$(sed -n 's/^RECORD: merged=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
+    _m_mode=$(sed -n 's/.*mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
+    _m_dmode=$(sed -n 's/.*dir_mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
+    grep -q "merged content wrong" "$tmpdir/st-record" 2>/dev/null && { echo "self-test FAILED: merged content wrong (keeps endpoints + two keys)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ "$_m_mode" = "600" ] || { echo "self-test FAILED: merged file mode=$_m_mode, want 600" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ "$_m_dmode" = "700" ] || { echo "self-test FAILED: merged dir mode=$_m_dmode, want 700" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ -n "$_m_file" ] && [ ! -e "$_m_file" ] || { echo "self-test FAILED: merged config still exists: $_m_file" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ -n "$_m_file" ] && [ ! -e "$(dirname "$_m_file")" ] || { echo "self-test FAILED: merged config dir still exists" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
+    { [ "$_row_result" = "pass" ] && [ "$_row_valid" = "true" ]; } || { echo "self-test FAILED: merged success: expected pass/true, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Timeout and failure paths: the merged config is deleted too.
+    timeout_sec=1 BENCH_TASK_DIR="" run_one collapse-long "self-merged-timeout" "$stub_slow" >"$tmpdir/st-merged-timeout-stdout" 2>&1 || true
+    grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-timeout-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV on timeout" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -rq "context_collapse_ceiling_tokens" "$tmpdir" 2>/dev/null && { echo "self-test FAILED: merged config left somewhere under tmpdir on timeout" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Failure path (non-zero stub via stub_wrong is an error row): also deleted.
+    BENCH_TASK_DIR="" run_one collapse-long "self-merged-wrong" "$stub_wrong" >"$tmpdir/st-merged-wrong-stdout" 2>&1 || true
+    grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-wrong-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV on error" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Missing config: merge onto {} (env-only setup still runs).
+    _missing_cfg="$tmpdir/definitely-missing.json"
+    WAKIL_CONFIG="$_missing_cfg" BENCH_TASK_DIR="" run_one collapse-long "self-merged-missing" "$stub_noop" >"$tmpdir/st-merged-missing-stdout" 2>&1 || true
+    _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
+    { [ "$_row_result" = "invalid" ] && [ "$_row_valid" = "false:no_collapse" ]; } || { echo "self-test FAILED: missing config: expected invalid/false:no_collapse, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Unparseable config: row is error/config-unreadable with valid=false:config.
+    _bad_cfg="$tmpdir/bad.json"
+    printf '%s\n' 'not json at all {' > "$_bad_cfg"
+    WAKIL_CONFIG="$_bad_cfg" BENCH_TASK_DIR="" run_one collapse-long "self-merged-bad" "$stub_noop" >"$tmpdir/st-merged-bad-stdout" 2>&1 || true
+    _row_result=$(csv_cell "$csv_file" last 6); _row_reason=$(csv_cell "$csv_file" last 7); _row_valid=$(csv_cell "$csv_file" last 19)
+    { [ "$_row_result" = "error" ] && [ "$_row_reason" = "config-unreadable" ] && [ "$_row_valid" = "false:config" ]; } || { echo "self-test FAILED: bad config: expected error/config-unreadable/false:config, got $_row_result/$_row_reason/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Non-collapse-long runs never set WAKIL_CONFIG (no merge branch).
+    BENCH_TASK_DIR="" run_one fix-test "self-merged-noncl" "$stub_noop" >"$tmpdir/st-merged-noncl-stdout" 2>&1 || true
+    grep -q "collapse-long override" "$log_file" 2>/dev/null && { echo "self-test FAILED: non-collapse-long run logged an override" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  merged config: endpoints kept + two keys, 0600/0700, deleted on success/failure/timeout, no sentinel in logs, missing→run, bad→false:config"
 
     st_case "== self-test: toolchain-pinned (every go call of a check or setup runs with the resolved GOTOOLCHAIN and GOPROXY=off) =="
     # A recording go in front of PATH, forwarding to the real one. It logs the
@@ -2865,6 +3001,11 @@ EOF
     lock_root="$_saved_lock_root"
     run_root="$_saved_run_root"
     csv_file="$_saved_csv_file"
+    if [ -n "${_saved_wakil_config:-}" ]; then
+        export WAKIL_CONFIG="$_saved_wakil_config"
+    else
+        unset WAKIL_CONFIG
+    fi
 }
 
 # check_task_tools: tools a task's check needs beyond the required ones above
