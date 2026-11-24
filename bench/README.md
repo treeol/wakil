@@ -24,7 +24,11 @@ the task results were; non-zero only on harness errors.
 
 Before each run the script prints one line with the task index, task
 name, run number, and log path. After each run it prints one line with
-the result (`pass` / `fail` / `timeout` / `error` / `invalid`), elapsed seconds,
+the result (`pass` / `fail` / `timeout` / `error` / `invalid` — `invalid`
+is only a completed `collapse-long` run with 0 collapses; a run that never
+reached the model is `error` with a specific reason such as `bootstrap`,
+`config-unreadable`, `config-relative-escape`, or `missing-workdir`),
+elapsed seconds,
 tokens in/out, cost, and — for non-pass results — the exit reason from
 `--result-json` when available. When stdout is a terminal, it also
 prints one short heartbeat line every 30 seconds with the elapsed time
@@ -139,21 +143,45 @@ For each task and run number:
    only `merged config (ceiling=45000 min_bytes=2000)`. The sandbox only
    mounts the fixed work folder, so the agent under test cannot read the
    host temp dir; wakil's own error output is not covered (an endpoint
-   error could name a URL in the transcript). A missing user config is
-   merged onto `{}` (env-only setups still run — a missing file means
+   error could name a URL in the transcript). The temp dir also
+   **mirrors** the user's config directory: every entry of
+   `~/.config/wakil/` except the config file itself is symlinked into it,
+   so relative paths resolve exactly as in the user's normal setup
+   (`style_guide_paths: "styles/go.md"` and the implicit `agent.txt` next
+   to the config file — Wakil resolves both from the config file's
+   directory). A normal `wakil run` writes nothing into the config dir
+   (only `wakil init` and the data-dir memory store write, and neither is
+   a bench run), so the links are read-only in practice; the mirror is
+   never made of a shared directory (a `WAKIL_CONFIG` in `$HOME` or `/`
+   gets a merged file only, no mirror). Cleanup deletes `config.json`
+   first, then the recorded symlinks, then `rmdir` — never `rm -rf` on a
+   dir holding links, and a leftover is reported by name, not deleted. A
+   `style_guide_paths` value that `Clean`s to an escape from the config
+   dir (e.g. `../x`) is stopped as `error` / `config-relative-escape` /
+   `valid=false:config` (the temp dir sits at a different depth, so such a
+   path would mis-resolve), and the bench continues. A missing user config
+   is merged onto `{}` (env-only setups still run — a missing file means
    defaults+env apply in Wakil too); an unparseable user file is recorded
    as `error` / `config-unreadable` / `valid=false:config` and the bench
    continues. Only the `collapse-long` task merges a config; other tasks
    set no `WAKIL_CONFIG` and use the user's config as-is. The user's own
    config is read by the host-side bench at run time, never by
    `--self-test` (which uses a fake config with a fake secret sentinel —
-   see "Self-test").
+   see "Self-test"). A run that fails during bootstrap (before any model
+   request, no result JSON — its `bootstrap error:` line is in the run
+   log) is `error` / `bootstrap` and the bench stops; only the known-safe
+   `style_guide_paths` shape of that line (key name + resolved path, no
+   secrets) is printed to the terminal, other bootstrap errors are
+   reported by name only.
 4. `check.sh` from the task folder runs in the work folder after every
    run that ended (`pass`, `declined`, or `error`); `result` is `pass`
    or `fail` from `check.sh`, and `exit_reason` keeps what the run
    reported. `timeout`, `wrong-workdir` / `missing-workdir` /
    `workdir-not-verifiable`, `leak-detected` and
-   `sandbox-not-acknowledged` skip `check.sh`.
+   `sandbox-not-acknowledged` skip `check.sh`. A bootstrap failure skips
+   `check.sh` too: a run that never reached the model never reaches the
+   check, and is `error` / `bootstrap`, never `invalid` (the `invalid`
+   rule fires only on a completed `pass`/`fail` with 0 collapses).
 5. **Workdir guard.** After each run, the harness reads `workdir` and
    `sandbox_backend` from the result JSON (a file under
    `${XDG_CACHE_HOME:-$HOME/.cache}/wakil-bench/run/<task>.json`, outside

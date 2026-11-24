@@ -539,6 +539,29 @@ csv_cell() {
         }' "$1"
 }
 
+# bench_cfg_cleanup: remove the collapse-long merged-config temp dir — the
+# merged config.json (carries secrets) and the recorded mirror symlinks — then
+# rmdir it. Never rm -rf a dir with symlinks to directories: after a run the
+# only things that may be inside are the merged file, the links created at
+# mirror build, and (if a future binary writes something) an unknown file; the
+# latter is reported by name and left in place rather than deleted. Idempotent.
+bench_cfg_cleanup() {
+    [ -n "${_bench_cfg_tmp:-}" ] || return 0
+    # Merged config first: secrets gone even if anything below fails.
+    rm -f "$_bench_cfg_tmp/config.json" 2>/dev/null || true
+    for _ln in ${_bench_cfg_link_names:-}; do
+        if [ -L "$_bench_cfg_tmp/$_ln" ]; then
+            rm -f "$_bench_cfg_tmp/$_ln" 2>/dev/null || true
+        fi
+    done
+    if ! rmdir "$_bench_cfg_tmp" 2>/dev/null; then
+        echo "$prog: warning: private config dir $_bench_cfg_tmp not empty after cleanup (left in place):" >&2
+        find "$_bench_cfg_tmp" -mindepth 1 -maxdepth 1 -print 2>/dev/null | head -n 5 >&2 || true
+    fi
+    _bench_cfg_tmp=""
+    _bench_cfg_link_names=""
+}
+
 # csv_row <task> <run> <result> <exit_reason> <seconds> <result-json>
 # Appends one row to the CSV. The last two columns are appended (never
 # inserted): valid (true, or false:<reason>) and provider (the OpenRouter
@@ -562,7 +585,7 @@ csv_row() {
         invalid) _valid="false:no_collapse" ;;
         timeout) _valid="false:timeout" ;;
         error) case "$exit_reason" in
-                config-unreadable) _valid="false:config" ;;
+                config-unreadable|config-relative-escape) _valid="false:config" ;;
                 *) _valid="false:error" ;;
             esac ;;
         *) _valid="true" ;;
@@ -824,6 +847,7 @@ run_one_locked() {
     # Resolving the user's config mirrors Wakil's defaultConfigPath:
     # $WAKIL_CONFIG if set, else ~/.config/wakil/config.json.
     _wakil_config_env=""
+    _bench_cfg_link_names=""
     if [ "$task" = "collapse-long" ]; then
         _user_cfg="${WAKIL_CONFIG:-$HOME/.config/wakil/config.json}"
         if [ ! -f "$_user_cfg" ]; then
@@ -842,15 +866,46 @@ run_one_locked() {
             # exit_reason below, not by a bench abort.
             ( umask 077 && jq '. + {context_collapse_ceiling_tokens: 45000, context_collapse_min_bytes: 2000}' "$_user_cfg" > "$_cfg_file" ) 2>/dev/null
             if [ $? -ne 0 ] || [ ! -s "$_cfg_file" ]; then
-                rm -f "$_cfg_file"
                 printf 'collapse-long override: user config unparseable (bench did not launch; valid=false:config)\n' >> "$log_file" 2>/dev/null || true
-                rm -rf "$_bench_cfg_tmp"
-                _bench_cfg_tmp=""
+                bench_cfg_cleanup
                 csv_row "$task" "$run" "error" "config-unreadable" 0 ""
                 return 0
             fi
+            # ../ escape check on style_guide_paths (the only config-file-relative
+            # key; the cleaned value must not escape the user config dir because
+            # the temp dir sits at a different depth).
+            _esc=$(jq -r '[(.style_guide_paths // {} | .[] // empty | select(type=="string"))] | .[] | select(test("^((\\.\\./)+|\\.\\.|.*\\.\\./)"))' "$_cfg_file" 2>/dev/null || true)
+            if [ -n "$_esc" ]; then
+                printf 'collapse-long override: style_guide_paths escapes the config dir (bench did not launch; valid=false:config)\n' >> "$log_file" 2>/dev/null || true
+                bench_cfg_cleanup
+                csv_row "$task" "$run" "error" "config-relative-escape" 0 ""
+                return 0
+            fi
+            # Mirror the user config dir so relative paths (style_guide_paths
+            # "styles/go.md", the implicit agent.txt next to config.json) resolve
+            # exactly as in the user's normal setup, for every key — no key list
+            # to keep in sync. Exclusion is the resolved source file itself, not
+            # a guessed name; cfgdir is canonicalised to absolute physical path so
+            # relative WAKIL_CONFIG links correctly. Never mirror a shared dir.
+            _cfgdir=$(cd "$(dirname "$_user_cfg")" 2>/dev/null && pwd -P) || _cfgdir=""
+            _src_base=$(basename "$_user_cfg")
+            if [ -n "$_cfgdir" ] && [ "$_cfgdir" != "/" ] && [ "$_cfgdir" != "$HOME" ]; then
+                # Mirror only when the config lives in Wakil's own config dir
+                # (~/.config/wakil/ or WAKIL_CONFIG in a dir named "wakil").
+                _cfgdir_base=$(basename "$_cfgdir")
+                if [ "$_cfgdir_base" = "wakil" ]; then
+                    for _e in "$_cfgdir"/* "$_cfgdir"/.[!.]* "$_cfgdir"/..?*; do
+                        [ -e "$_e" ] || [ -L "$_e" ] || continue
+                        _e_base=$(basename "$_e")
+                        if [ "$_e_base" = "$_src_base" ]; then
+                            continue
+                        fi
+                        ln -s "$_e" "$_bench_cfg_tmp/$_e_base" 2>/dev/null && _bench_cfg_link_names="$_bench_cfg_link_names $_e_base" || true
+                    done
+                fi
+            fi
         else
-            printf '%s\n' '{"context_collapse_ceiling_tokens":45000,"context_collapse_min_bytes":2000}' > "$_cfg_file"
+            ( umask 077 && printf '%s\n' '{"context_collapse_ceiling_tokens":45000,"context_collapse_min_bytes":2000}' > "$_cfg_file" )
         fi
         _wakil_config_env="WAKIL_CONFIG=$_cfg_file"
         printf 'collapse-long override: merged config (ceiling=45000 min_bytes=2000)\n' >> "$log_file" 2>/dev/null || true
@@ -919,10 +974,7 @@ run_one_locked() {
     # any guard return below can skip it. The EXIT/INT/TERM backstop (the
     # composed st_on_exit for self-test, or the normal-mode trap) removes
     # any orphan if the bench shell itself exits with an error.
-    if [ -n "${_bench_cfg_tmp:-}" ]; then
-        rm -rf "$_bench_cfg_tmp"
-        _bench_cfg_tmp=""
-    fi
+    bench_cfg_cleanup
     end_epoch=$(date +%s)
     secs=$((end_epoch - start_epoch))
     if [ "$(wakil_digest "$workdir")" != "$wakil_before" ]; then
@@ -975,6 +1027,32 @@ run_one_locked() {
                     echo "  run: WAKIL_HOST_WORKDIR=$workdir wakil sandbox trust" >&2
                     return 1
                 fi
+            fi
+        fi
+
+        # Bootstrap-failure detection: wakil failed during BuildApp (before any
+        # model request) and wrote no result JSON. A "bootstrap error:" line in
+        # the run's own output capture (not the transcript) means the run never
+        # started: result=error, exit_reason=bootstrap, bench stops. This check
+        # runs before the workdir guard so a bootstrap failure is not dressed as
+        # missing-workdir. Only the known-safe style_guide_paths shape (key name
+        # + resolved path, no secrets) is printed verbatim to the terminal; other
+        # bootstrap errors are reported by name only (endpoint URLs with
+        # userinfo or auth failures could carry credentials).
+        if [ "$wak_rc" -ne 0 ] && [ ! -s "$result_json" ]; then
+            _boot_line=$(grep '^bootstrap error:' "$log_file" 2>/dev/null | head -n 1)
+            if [ -n "$_boot_line" ]; then
+                result="error"
+                exit_reason="bootstrap"
+                csv_row "$task" "$run" "$result" "$exit_reason" "$secs" "$result_json"
+                echo "$prog: bench stopped — task $task run $run: bootstrap error" >&2
+                case "$_boot_line" in
+                    'bootstrap error: style_guide_paths['*)
+                        echo "  $_boot_line" >&2 ;;
+                    *)
+                        echo "  (bootstrap error; see $log_file)" >&2 ;;
+                esac
+                return 1
             fi
         fi
 
@@ -1269,7 +1347,7 @@ st_on_exit() {
         rm -rf "$st_go_private"
     fi
     if [ -n "${_bench_cfg_tmp:-}" ]; then
-        rm -rf "$_bench_cfg_tmp"
+        bench_cfg_cleanup
     fi
     exit "$_se_rc"
 }
@@ -1562,6 +1640,96 @@ EOF
     BENCH_TASK_DIR="" run_one fix-test "self-merged-noncl" "$stub_noop" >"$tmpdir/st-merged-noncl-stdout" 2>&1 || true
     grep -q "collapse-long override" "$log_file" 2>/dev/null && { echo "self-test FAILED: non-collapse-long run logged an override" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     echo "  merged config: endpoints kept + two keys, 0600/0700, deleted on success/failure/timeout, no sentinel in logs, missing→run, bad→false:config"
+
+    st_case "== self-test: collapse-long mirrored config dir (relative paths resolve, fake dir byte-identical) =="
+    # Fake config dir: it must live in a dir NAMED "wakil" (the bench mirrors
+    # only a wakil config dir) and hold a relative style_guide_paths entry plus
+    # several other entries. The stub emulates Wakil's resolution (join the
+    # relative path against dirname($WAKIL_CONFIG)) and asserts the file exists.
+    _mirr_root="$tmpdir/mirror"
+    _fake_cfg_dir="$_mirr_root/wakil"
+    _fake_user_cfg="$_fake_cfg_dir/config.json"
+    mkdir -p "$_fake_cfg_dir/styles" "$_fake_cfg_dir/data"
+    printf 'guide\n' > "$_fake_cfg_dir/styles/go.md"
+    printf 'data\n' > "$_fake_cfg_dir/data/x.txt"
+    printf 'plain\n' > "$_fake_cfg_dir/plain.txt"
+    printf 'hidden\n' > "$_fake_cfg_dir/.hidden"
+    cat > "$_fake_user_cfg" <<'JSON'
+{"endpoints":{"fake":{"api_key":"AKIA_FAKE_SENTINEL","base_url":"https://fake.example.invalid"}},"style_guide_paths":{"go":"styles/go.md"}}
+JSON
+    # Byte-identity hash BEFORE (files' contents; modes and link targets are
+    # recorded by the stub's view of the mirror below).
+    _before_sum=$(find "$_fake_cfg_dir" -type f -exec sha256sum {} + 2>/dev/null | sort)
+    stub_record2="$tmpdir/wakil-record2"
+    cat > "$stub_record2" <<'EOF'
+#!/bin/sh
+# Emulates Wakil's style_guide_paths resolution against the merged config:
+# join the relative value against dirname($WAKIL_CONFIG) and require it to exist.
+_cfg="$WAKIL_CONFIG"
+[ -n "$_cfg" ] || { echo "MIRROR: WAKIL_CONFIG unset" >> "$BENCH_ST_RECORD"; exit 97; }
+_base=$(dirname "$_cfg")
+_resolved="$_base/$(jq -r '.style_guide_paths.go' "$_cfg" 2>/dev/null)"
+[ -f "$_resolved" ] || { echo "MIRROR: relative guide not resolvable: $_resolved" >> "$BENCH_ST_RECORD"; exit 98; }
+# The mirror must carry every fake-dir entry except the source config.
+for _e in styles data plain.txt .hidden; do
+  [ -e "$_base/$_e" ] || [ -L "$_base/$_e" ] || { echo "MIRROR: missing $_e in mirror" >> "$BENCH_ST_RECORD"; exit 99; }
+done
+[ "$(readlink "$_base/styles")" = "$FAKE_CFG_DIR/styles" ] || { echo "MIRROR: styles not a link to fake" >> "$BENCH_ST_RECORD"; exit 99; }
+echo "MIRROR: resolution ok" >> "$BENCH_ST_RECORD"
+# Delegate to solve behaviour (copy solution, write result-json).
+workdir=$WAKIL_HOST_WORKDIR
+result_json=""
+shift
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --result-json) result_json=$2; shift 2 ;;
+    --transcript) shift 2 ;;
+    *) shift ;;
+  esac
+done
+if [ -n "$BENCH_TASK_DIR" ] && [ -d "$BENCH_TASK_DIR/solution" ]; then
+  cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+fi
+cat > "$result_json" <<JSON
+{"wakil_version":"stub-record2/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":2,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
+JSON
+exit 0
+EOF
+    chmod +x "$stub_record2"
+    FAKE_CFG_DIR="$_fake_cfg_dir" BENCH_ST_RECORD="$tmpdir/st-record2" BENCH_TASK_DIR="$tasks_dir/collapse-long" WAKIL_CONFIG="$_fake_user_cfg" run_one collapse-long "self-mirrored" "$stub_record2" >"$tmpdir/st-mirrored-stdout" 2>&1 || { echo "self-test FAILED: mirrored run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "MIRROR: resolution ok" "$tmpdir/st-record2" 2>/dev/null || { echo "self-test FAILED: mirror resolution failed: $(cat "$tmpdir/st-record2" 2>/dev/null)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _after_sum=$(find "$_fake_cfg_dir" -type f -exec sha256sum {} + 2>/dev/null | sort)
+    [ "$_before_sum" = "$_after_sum" ] || { echo "self-test FAILED: fake config dir changed by mirrored run" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-mirrored-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV (mirrored)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # ../ escape: a style guide path that escapes the config dir aborts the run
+    # with valid=false:config and the bench continues.
+    _esc_cfg_dir="$tmpdir/escape/wakil"
+    mkdir -p "$_esc_cfg_dir"
+    cat > "$_esc_cfg_dir/config.json" <<'JSON'
+{"endpoints":{"fake":{"api_key":"AKIA_FAKE_SENTINEL","base_url":"https://fake.example.invalid"}},"style_guide_paths":{"go":"../secret.md"}}
+JSON
+    WAKIL_CONFIG="$_esc_cfg_dir/config.json" BENCH_TASK_DIR="" run_one collapse-long "self-esc" "$stub_noop" >"$tmpdir/st-esc-stdout" 2>&1 || true
+    _row_result=$(csv_cell "$csv_file" last 6); _row_reason=$(csv_cell "$csv_file" last 7); _row_valid=$(csv_cell "$csv_file" last 19)
+    { [ "$_row_result" = "error" ] && [ "$_row_reason" = "config-relative-escape" ] && [ "$_row_valid" = "false:config" ]; } || { echo "self-test FAILED: ../ escape: expected error/config-relative-escape/false:config, got $_row_result/$_row_reason/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "style_guide_paths escapes" "$log_file" 2>/dev/null || { echo "self-test FAILED: ../ escape: log did not name style_guide_paths" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Bootstrap failure: a stub with no result JSON and a bootstrap error line is
+    # reported as error/bootstrap, never invalid, and the safe line is printed.
+    stub_record3="$tmpdir/wakil-record3"
+    cat > "$stub_record3" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-record3/0.0.0" ;;
+  run)
+    echo 'bootstrap error: style_guide_paths["go"]: opening /tmp/nowhere/styles/go.md: open /tmp/nowhere/styles/go.md: no such file or directory' >&2
+    exit 1 ;;
+esac
+EOF
+    chmod +x "$stub_record3"
+    BENCH_TASK_DIR="" run_one collapse-long "self-bootstrap" "$stub_record3" >"$tmpdir/st-bootstrap-stdout" 2>&1 || true
+    _row_result=$(csv_cell "$csv_file" last 6); _row_reason=$(csv_cell "$csv_file" last 7)
+    { [ "$_row_result" = "error" ] && [ "$_row_reason" = "bootstrap" ]; } || { echo "self-test FAILED: bootstrap: expected error/bootstrap, got $_row_result/$_row_reason" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q 'bootstrap error: style_guide_paths\["go"\]' "$tmpdir/st-bootstrap-stdout" 2>/dev/null || { echo "self-test FAILED: bootstrap line not printed to terminal" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  mirrored config: relative guide resolves through mirror, fake dir byte-identical, ../→false:config, bootstrap→error/bootstrap"
 
     st_case "== self-test: toolchain-pinned (every go call of a check or setup runs with the resolved GOTOOLCHAIN and GOPROXY=off) =="
     # A recording go in front of PATH, forwarding to the real one. It logs the
