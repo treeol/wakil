@@ -542,15 +542,18 @@ csv_cell() {
 # bench_cfg_cleanup: remove the merged-config temp dir — the merged
 # config.json (carries secrets), the recorded mirror symlinks, the private
 # skill store (Block 2: the run's WAKIL_SKILLS_DB slot plus its SQLite
-# sidecars) and the private sessions dir (Block 3: WAKIL_SESSIONS_DIR plus
-# the toolcache sibling, which is a child of the sessions parent) — then
-# rmdir it. Never rm -rf the dir itself: the skill DB is one enumerated
-# file (a fresh, empty store the run created), sessions/ and toolcache/
-# contain only this run's own session JSON and spill files (chat-ID dirs,
-# MkdirAll'd by the agent under a 0700 root — sandbox-adjacent staging
-# sockets are never written there, and the sandbox runs read-only against
-# this host dir). Unknown content is reported by name and left in place
-# rather than deleted. Idempotent.
+# sidecars), the private sessions dir (Block 3: WAKIL_SESSIONS_DIR plus the
+# toolcache sibling, which is a child of the sessions parent), and the
+# data-root subtrees that land under the parent of WAKIL_REPO_STATE_DIR
+# when the run redirects it (Block 1: sessionhost/ and sessionhistory/
+# under stagingDataRoot() = $WAKIL_REPO_STATE_DIR/.., plus memory/ and
+# staging/ when the run can reach those writers — memory with --no-memory off,
+# staging when KVR is on; bench's --no-memory skips the first) — then rmdir
+# it. Removal is strictly inside the private dir, only on real directories
+# (never through a symlink), never by rm -rf on the dir itself. Unknown
+# content at the top level is reported by name and left in place rather
+# than deleted; the merged config.json is always removed first so secrets
+# never survive even if later steps fail. Idempotent.
 bench_cfg_cleanup() {
     [ -n "${_bench_cfg_tmp:-}" ] || return 0
     # Merged config first: secrets gone even if anything below fails.
@@ -575,19 +578,46 @@ bench_cfg_cleanup() {
     rmdir "$_bench_cfg_tmp/sessions" 2>/dev/null || true
     rmdir "$_bench_cfg_tmp/toolcache" 2>/dev/null || true
     # Private repo-state (Block 3, pre-created by this script): the run's
-    # sessionhistory/sessionhost DBs land under repo-state/ (their data
-    # root is the parent of WAKIL_REPO_STATE_DIR). Empty files + dirs, then
-    # rmdir — the dir itself is harness-created, so it must go or the
-    # private dir can never be removed.
+    # repo-state JSONs live under repo-state/ (its data root is the parent
+    # of WAKIL_REPO_STATE_DIR). Empty files + dirs, then rmdir — the dir
+    # itself is harness-created, so it must go or the private dir can never
+    # be removed.
     [ -d "$_bench_cfg_tmp/repo-state" ] && find "$_bench_cfg_tmp/repo-state" -mindepth 1 -type f -delete 2>/dev/null || true
     [ -d "$_bench_cfg_tmp/repo-state" ] && find "$_bench_cfg_tmp/repo-state" -mindepth 1 -type d -empty -delete 2>/dev/null || true
     rmdir "$_bench_cfg_tmp/repo-state" 2>/dev/null || true
+    # Data-root subtrees that land under the parent of WAKIL_REPO_STATE_DIR
+    # (Block 1): sessionhost/ and sessionhistory/ (workspace-keyed SQLite
+    # DBs under stagingDataRoot()) plus memory/ and staging/ (same root)
+    # when the run can reach those writers. Removal only on real
+    # directories (never through a symlink) strictly inside the private dir;
+    # anything else at the top level is unknown and reported by name below,
+    # never deleted here.
+    for _sd in sessionhost sessionhistory memory staging; do
+        [ -d "$_bench_cfg_tmp/$_sd" ] && find "$_bench_cfg_tmp/$_sd" -mindepth 1 -type f -delete 2>/dev/null || true
+        [ -d "$_bench_cfg_tmp/$_sd" ] && find "$_bench_cfg_tmp/$_sd" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+        rmdir "$_bench_cfg_tmp/$_sd" 2>/dev/null || true
+    done
+    # A top-level symlink inside the private dir (mirror link or a stray
+    # from the run) is removed as a link only — never followed. The
+    # target stays untouched. Recorded names are removed above; anything
+    # else at the top level is unknown and reported by name below.
+    for _sd in sessionhost sessionhistory memory staging sessions toolcache repo-state; do
+        [ -L "$_bench_cfg_tmp/$_sd" ] && rm -f "$_bench_cfg_tmp/$_sd" 2>/dev/null || true
+    done
+    # Any other top-level symlink inside the private dir is also removed
+    # as a link only — never followed, target untouched (same rule as the
+    # enumerated names above). Unknown real files/directories are never
+    # deleted here; the rmdir below reports them by name.
+    for _e in "$_bench_cfg_tmp"/* "$_bench_cfg_tmp"/.[!.]* "$_bench_cfg_tmp"/..?*; do
+        [ -L "$_e" ] && rm -f "$_e" 2>/dev/null || true
+    done
     if ! rmdir "$_bench_cfg_tmp" 2>/dev/null; then
         echo "$prog: warning: private config dir $_bench_cfg_tmp not empty after cleanup (left in place):" >&2
         find "$_bench_cfg_tmp" -mindepth 1 -maxdepth 1 -print 2>/dev/null | head -n 5 >&2 || true
     fi
     _bench_cfg_tmp=""
     _bench_cfg_link_names=""
+    _bench_private_dir_used=""
 }
 
 # csv_row <task> <run> <result> <exit_reason> <seconds> <result-json>
@@ -922,6 +952,7 @@ run_one_locked() {
             _user_cfg=""
         fi
         _bench_cfg_tmp=$(mktemp -d 2>/dev/null) || { echo "$prog: cannot create private config dir for $task" >&2; set -e; return 1; }
+        [ -d "$_bench_cfg_tmp" ] && [ ! -L "$_bench_cfg_tmp" ] && [ "${TMPDIR:-}" != "$_bench_cfg_tmp" ] || { echo "$prog: private config dir must be a real directory (got '$_bench_cfg_tmp')" >&2; set -e; return 1; }
         _cfg_file="$_bench_cfg_tmp/config.json"
         # Data-isolation env (Block 2+3): the run's skill store, sessions
         # dir and repo-state dir all live in this private temp dir, so a
@@ -1009,6 +1040,20 @@ run_one_locked() {
                         if [ "$_e_base" = "$_src_base" ]; then
                             continue
                         fi
+                        # Mirror-collision guard (Block 1): never link a
+                        # colliding name — the run's own data-root and
+                        # sessions/toolcache subtrees live under those names
+                        # in the private dir, so a colliding link would let
+                        # the run write into the user's real data (and
+                        # cleanup would then meet a symlink where a harness
+                        # directory is expected). Real entries there are
+                        # reported, not replaced.
+                        case "$_e_base" in
+                            config.json|sessions|toolcache|repo-state|sessionhost|sessionhistory|memory|staging|skills.db|skills.db-wal|skills.db-shm|skills.db-journal)
+                                echo "$prog: mirror: config dir entry '$_e_base' collides with the bench private dir layout; not linked" >&2
+                                continue
+                                ;;
+                        esac
                         ln -s "$_e" "$_bench_cfg_tmp/$_e_base" 2>/dev/null && _bench_cfg_link_names="$_bench_cfg_link_names $_e_base" || true
                     done
                 fi
@@ -1735,6 +1780,29 @@ _cfgdir=$(dirname "$_cfg")
 mkdir -p "$_sdir" "$_cfgdir/toolcache/fake-chat" "$_rsd" 2>/dev/null || true
 printf 'fake-session\n' > "$_sdir/fake-chat.json" 2>/dev/null || true
 printf 'fake-spill\n' > "$_cfgdir/toolcache/fake-chat/spill.txt" 2>/dev/null || echo "RECORD: toolcache spill write failed" >> "$BENCH_ST_RECORD"
+# Block 1 data-root subtrees: plant workspace-keyed SQLite homes under the
+# parent of WAKIL_REPO_STATE_DIR (which IS the private dir) plus memory/
+# and staging/, so the harness proves cleanup removes them (never through
+# a symlink, never rm -rf the private dir itself). The symlink points at
+# a target OUTSIDE the private dir; cleanup must unlink the link only.
+mkdir -p "$_cfgdir/sessionhost/ab" "$_cfgdir/sessionhistory/ab" "$_cfgdir/memory/ab" "$_cfgdir/staging/ab" 2>/dev/null || true
+printf 'fake-sessionhost\n' > "$_cfgdir/sessionhost/ab/sessionhost.db" 2>/dev/null || echo "RECORD: sessionhost write failed" >> "$BENCH_ST_RECORD"
+printf 'fake-sessionhistory\n' > "$_cfgdir/sessionhistory/ab/sessions.db" 2>/dev/null || echo "RECORD: sessionhistory write failed" >> "$BENCH_ST_RECORD"
+printf 'fake-memory\n' > "$_cfgdir/memory/ab/memory.db" 2>/dev/null || echo "RECORD: memory write failed" >> "$BENCH_ST_RECORD"
+printf 'fake-staging-sock\n' > "$_cfgdir/staging/ab/kvr.sock" 2>/dev/null || echo "RECORD: staging write failed" >> "$BENCH_ST_RECORD"
+# The outside target must live OUTSIDE the private dir but inside the
+# self-test's own tmpdir (removed at the end): derive it from the record
+# file's directory, which run_one exports to this stub.
+_outside="$(dirname "$BENCH_ST_RECORD")/block1-outside/staging"
+mkdir -p "$_outside" 2>/dev/null || true
+printf 'OUTSIDE_TARGET\n' > "$_outside/keep.txt" 2>/dev/null || echo "RECORD: outside write failed" >> "$BENCH_ST_RECORD"
+# Plant a symlink inside the private dir pointing outside: cleanup must
+# remove the link only; the outside target stays byte-identical.
+ln -s "$_outside" "$_cfgdir/unknown-link" 2>/dev/null || echo "RECORD: outside symlink failed" >> "$BENCH_ST_RECORD"
+# Unknown content is planted only when BENCH_PLANT_UNKNOWN=1 (a later
+# harness run uses that to prove the report-and-leave path; the main runs
+# below leave it unset so the private dir must be removable).
+[ "${BENCH_PLANT_UNKNOWN:-}" = "1" ] && printf 'UNKNOWN_KEEP\n' > "$_cfgdir/unknown-private-file" 2>/dev/null || true
 jq -e '(.endpoints.fake) and (.mcp_servers == null) and (.subagent_mcp_servers == null) and (.mcp_module_keywords == null) and (.searxng_url == null) and (.oracle_enabled == false) and (.wf_final_review == false) and (.mashura.level == "off") and (.auto_counsel == null) and (.counsel_max_per_session == null) and (.mashura_panels == null) and (.mashura_mode == null) and (.wf_oracle_mode == null) and (.context_collapse_ceiling_tokens == 45000) and (.context_collapse_min_bytes == 2000)' "$_cfg" >/dev/null 2>&1 \
   || { echo "RECORD: merged content wrong" >> "$BENCH_ST_RECORD"; _fail=1; }
 # Delegate to the solve behaviour (copy solution, write result-json).
@@ -1783,14 +1851,39 @@ EOF
     [ -n "$_m_mode" ] && [ "$_m_mode" = "600" ] || { echo "self-test FAILED: merged file mode=$_m_mode, want 600" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ "$_m_dmode" = "700" ] || { echo "self-test FAILED: merged dir mode=$_m_dmode, want 700" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ -n "$_m_file" ] && [ ! -e "$_m_file" ] || { echo "self-test FAILED: merged config still exists: $_m_file" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    [ -n "$_m_file" ] && [ ! -e "$(dirname "$_m_file")" ] || { echo "self-test FAILED: merged config dir still exists" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ -n "$_m_file" ] && [ ! -e "$(dirname "$_m_file")" ] || { echo "self-test FAILED: merged config dir still exists (leftover: $(find "$(dirname "$_m_file")" -mindepth 1 -maxdepth 2 -print 2>/dev/null | tr "\n" " "))" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
     { [ "$_row_result" = "pass" ] && [ "$_row_valid" = "true" ]; } || { echo "self-test FAILED: merged success: expected pass/true, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    # Data isolation (Block 2+3): the private dir held the run's skill
-    # store, sessions, toolcache spill and repo-state entries — all gone.
+    # Data isolation (Block 2+3, Block 1): the private dir held the run's
+    # skill store, sessions, toolcache spill, repo-state entries and the
+    # data-root subtrees (sessionhost/sessionhistory/memory/staging) — all
+    # gone. The planted unknown top-level file is reported by name (in the
+    # run's stdout) and left in place; the planted symlink is unlinked
+    # without touching its outside target; the dir itself is gone.
     _priv_dir=$(dirname "$_m_file")
     { [ ! -e "$_priv_dir" ]; } || { echo "self-test FAILED: private isolation dir still exists: $_priv_dir" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # The planted symlink (unknown-link -> outside) was unlinked without
+    # touching its target: keep.txt is byte-identical.
+    [ -f "$tmpdir/block1-outside/staging/keep.txt" ] || { echo "self-test FAILED: outside symlink target was touched (keep.txt gone)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "OUTSIDE_TARGET" "$tmpdir/block1-outside/staging/keep.txt" 2>/dev/null || { echo "self-test FAILED: outside symlink target changed" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Unknown-content path: plant one unknown file, run, and the dir must
+    # stay with the file named on stderr (never deleted, never rm -rf).
+    _priv_unknown="$tmpdir/block1-unknown"
+    mkdir -p "$_priv_unknown" 2>/dev/null || true
+    _priv_before=$(find "$_priv_unknown" -mindepth 1 -maxdepth 1 -print 2>/dev/null | sort)
+    _fakepath="$tmpdir/fake-unknown-cfg.json"
+    printf '%s\n' '{"endpoints":{"fake":{"base_url":"https://example.invalid/v1","model":"fake-model"}},"context_collapse_ceiling_tokens":45000,"context_collapse_min_bytes":2000}' > "$_fakepath"
+    BENCH_PLANT_UNKNOWN=1 BENCH_ST_RECORD="$tmpdir/st-record-unknown" WAKIL_CONFIG="$_fakepath" BENCH_TASK_DIR="$tasks_dir/collapse-long" run_one collapse-long "self-merged-unknown" "$stub_record" >"$tmpdir/st-merged-unknown-stdout" 2>&1 || { echo "self-test FAILED: merged unknown run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "unknown-private-file" "$tmpdir/st-merged-unknown-stdout" 2>/dev/null || { echo "self-test FAILED: unknown private file not reported by name (stdout: $(cat "$tmpdir/st-merged-unknown-stdout" 2>/dev/null | tail -3))" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _rec_unknown=$(sed -n 's/^RECORD: merged=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
+    # the stub record above is for the previous run; re-read the unknown run's record
+    _rec_unknown=$(sed -n 's/^RECORD: merged=\([^ ]*\).*/\1/p' "$tmpdir/st-record-unknown" 2>/dev/null | head -1)
+    _priv_after_record=$(tail -5 "$tmpdir/st-merged-unknown-stdout" 2>/dev/null)
+    # Require the dir to still exist with unknown-private-file inside it.
+    _unk_dir=$(dirname "$_rec_unknown")
+    [ -n "$_unk_dir" ] && [ -f "$_unk_dir/unknown-private-file" ] || { echo "self-test FAILED: unknown private file was deleted or dir removed (rec: $_rec_unknown; stdout tail: $_priv_after_record)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "OUTSIDE_TARGET" "$tmpdir/block1-outside/staging/keep.txt" 2>/dev/null || { echo "self-test FAILED: outside symlink target changed in unknown run" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _iso=$(sed -n 's/^RECORD: skills_db=\([^ ]*\) sessions_dir=\([^ ]*\) repo_state_dir=\([^ ]*\).*/\1|\2|\3/p' "$tmpdir/st-record" | head -1)
     [ -n "$_iso" ] || { echo "self-test FAILED: stub did not record the isolation env" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     case "|$_iso|" in *"$_priv_dir"*|*"$_priv_dir/sessions"*|*"$_priv_dir/repo-state"*) ;; *) echo "self-test FAILED: isolation env not inside the private dir: $_iso" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1 ;; esac
@@ -1815,9 +1908,14 @@ EOF
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-timeout-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV on timeout" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _after=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' -newer "$_fake_user_cfg" 2>/dev/null | sort)
     [ "$_before" = "$_after" ] || { echo "self-test FAILED: merged config left under TMPDIR on timeout: $_after" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    # Failure path (non-zero stub via stub_wrong is an error row): also deleted.
+    # Failure path (non-zero stub via stub_wrong is an error row): also
+    # deleted — the private dir (incl. planted subtrees) must be gone, and
+    # the outside symlink target must be untouched here too.
+    _wrong_before=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' -newer "$_fake_user_cfg" 2>/dev/null | sort)
     BENCH_TASK_DIR="" run_one collapse-long "self-merged-wrong" "$stub_wrong" >"$tmpdir/st-merged-wrong-stdout" 2>&1 || true
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-wrong-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV on error" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _wrong_after=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' -newer "$_fake_user_cfg" 2>/dev/null | sort)
+    [ "$_wrong_before" = "$_wrong_after" ] || { echo "self-test FAILED: private dir left on failure path: $_wrong_after" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     # Missing config: merge onto {} (env-only setup still runs).
     _missing_cfg="$tmpdir/definitely-missing.json"
     WAKIL_CONFIG="$_missing_cfg" BENCH_TASK_DIR="" run_one collapse-long "self-merged-missing" "$stub_noop" >"$tmpdir/st-merged-missing-stdout" 2>&1 || true
