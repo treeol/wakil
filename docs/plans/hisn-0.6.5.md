@@ -207,6 +207,20 @@ zero-skip acceptance) → Block 4 (docs/CHANGELOG).
    kernel 6.7 for open). Update every literal listed in §1 (fake default,
    fake versions, `integration_test.go` version gates 0.6.1→0.6.5, install.sh,
    Dockerfile + SHA256 from §3, CI smoke, AGENTS/CONTRIBUTING/README/docs).
+2. Add `--json` ONLY where Wakil already parses stdout on success (ls --json,
+   inspect --json, profile explain): those calls already request JSON, so an
+   error object today (if hisn ever emits one) reaches the same parse path.
+   Do NOT add `--json` to run/stop/grant/revoke/exec (changes stdout
+   contract: run prints "<id> <name|-> ready" on stdout; exec streams program
+   output). For the plain-argv sites, a whole-string `hisn-error/v1` parse of
+   the combined error output is the FALLBACK for unmapped codes ONLY
+   (existing E_RISK_ACK_/E_NOT_GRANTABLE/network-open substring matchers keep
+   first claim; multi-line -v output won't parse and falls through).
+   E_TOO_LARGE (code from an error object, ctl reply, or `hisn exec`): clear
+   tool error naming the limit from hisn's message where present, via
+   BackendError on the exec paths (not plaintext fmt.Errorf).
+   `stop`/`killSession` keep discard-and-verify (waitEnded decides; parsed
+   stop error only logged, never returned early).
 3. Version.go Preflight message names found + required + reason (already
    does; verify wording covers "hisn 0.6.4 is too old, need >= 0.6.5").
 4. Error-object parsing: new `hisnError` parse helper in `cmd.go`/`diag.go`
