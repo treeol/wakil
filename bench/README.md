@@ -387,6 +387,54 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   (`false:no_collapse`), not a pass or fail: report the invalid rate per
   model next to the pass rate. The task measures retention across a forced
   collapse for agents that read in-turn.
+- **`collapse-long-v2`** is the additive answer to v1's three real runs
+  (2026-11-25, Haiku): all passed the check with **0 collapses** (6–7 tool
+  calls, 16–22 KB of conversation growth — one orientation read of
+  `note-01.txt`, one grep, then a Python script that parses all 40 files in
+  the shell). Each `read_file_full` returned 8.3 KB ≈ the 8,000-char
+  `ToolResultCap` (`internal/config/config.go:493`, applied `app.go:2464`),
+  so per-call growth is capped at ~8 KB. v2 counters that: 40 files × ~60 KB,
+  each with a ~12-fact ledger block past the 8 KB cut at 20–45 KB in
+  (whole-file reads truncate before it), dense number-laden filler decoys
+  so a candidate-line script outputs > 180K chars, and corrections that
+  supersede earlier figures. Must-read text ≈ 800 KB ≈ **4× the 45,000-token
+  ceiling** (180,000 chars — same value, same `ToolResultCap` and
+  `long-session` pins as v1, settings identical for modules off/on; the
+  merged config now also pins `tool_result_cap: 8000` and
+  `context_mode: "long-session"` so user values cannot change the task).
+  A ranged-read strategy needs ~100 calls; the recommended timeout is
+  `--timeout 1800`. v1 is **unchanged** (its CSV rows stay comparable as
+  "0-collapse invalids"); v2 is a new task name. Validity is **≥1 collapse** —
+  a completed v2 run with 0 collapses is `invalid`/`false:no_collapse` like
+  v1. The pre-commit gate for the fixture: a best-effort script-only solver
+  (dedupe + number-word filter + last-wins) must produce a wrong report
+  (verified: it reported 1,472–1,704 per category vs the true
+  1,074–1,350 — every category wrong). Determinism: two generations are
+  byte-identical (`diff -r` verified). The generator writes its answer key
+  beside `gen/` (outside the workdir) and the self-test asserts it equals
+  the `check.sh` constants, so a generator bug cannot leave a green
+  self-test over an unsolvable task. Known limits (stated, not hidden):
+  a per-file process-and-forget loop defeats retention structurally and
+  scores `invalid`; an "explore then script" run can pass validity without
+  retaining anything — the task measures "crossed the ceiling with a
+  correct report", and `check.sh` cannot inspect scratch-file writes.
+- **`debug-subtle` minimality rule** (rows before the commit that
+  introduced this rule are **not comparable** with rows after it — the new
+  rule is not compatible with the old "all changed lines ≤ 6"): changed
+  lines (gofmt-normalized, hidden tests removed first) are counted **only
+  outside the `windowTake` window** (function + its contiguous comment
+  block above); inside the window any size is allowed. Outside: at most
+  **2 changed lines** (covers one one-line edit, e.g. a `Take` doc fix;
+  an import addition alone is 1 line). In total: at most **30 changed
+  lines** (stops a whole-file rewrite). Removed lines classify by
+  old-file position, added lines by new-file position; a hunk spanning
+  the boundary is split per-line. Agent-written `*_test.go` edits are
+  excluded from the diff entirely. The 6 host runs that all failed the
+  old rule with "8 changed lines" (reference fix is 5) now pass: the
+  extra 3 lines were inside the function (loop rewrite plus a `k<0`
+  clamp), 0 outside. Self-test cases: 5-line reference passes, 11-line
+  rewritten loop passes, correct fix + unrelated helper outside fails,
+  whole-file rewrite fails, existing bloated-helper case still fails.
 - **Ceiling calibration (off vs on).** The ceiling is 45,000 tokens
   (180,000 chars), identical for both modes, chosen from a calibration
   replay of the task through a fake backend that drove one long-session
