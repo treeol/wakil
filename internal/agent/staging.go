@@ -107,11 +107,13 @@ func MemoryDBPath(ws string) string {
 // WAKIL_REPO_STATE_DIR / ~/.local/share default), NOT a hardcoded home path.
 //
 // WAKIL_SKILLS_DB, when set, replaces this entirely (bench data isolation);
-// it must be absolute with an existing parent directory and must not be a
-// symlink. An invalid value is an error — never a silent fallback to the
-// real store. When unset, behaviour is byte-for-byte the default resolution.
-// Returns "" with a nil error if the data directory cannot be determined.
-// The directory is NOT created here — memory.Open creates it.
+// it must be an absolute, clean path with an existing parent directory
+// that is not a symlink, and the file itself (if it exists) a regular
+// file and not a symlink. An invalid value is an error — never a silent
+// fallback to the real store. When unset, behaviour is byte-for-byte the
+// default resolution. Returns "" with a nil error if the data directory
+// cannot be determined. The directory is NOT created here — memory.Open
+// creates it.
 func SkillDBPath() (string, error) {
 	if v := os.Getenv("WAKIL_SKILLS_DB"); v != "" {
 		if err := validateSkillsDBOverride(v); err != nil {
@@ -142,14 +144,14 @@ func validateSkillsDBOverride(v string) error {
 	parent := filepath.Dir(v)
 	pinfo, err := os.Stat(parent)
 	if err != nil {
-		return fmt.Errorf("WAKIL_SKILLS_DB parent directory does not exist: %q (%v)", parent, err)
+		return fmt.Errorf("WAKIL_SKILLS_DB parent directory does not exist: %q: %w", parent, err)
 	}
 	if !pinfo.IsDir() {
 		return fmt.Errorf("WAKIL_SKILLS_DB parent is not a directory: %q", parent)
 	}
 	lpinfo, err := os.Lstat(parent)
 	if err != nil {
-		return fmt.Errorf("WAKIL_SKILLS_DB parent: %v", err)
+		return fmt.Errorf("WAKIL_SKILLS_DB parent: %w", err)
 	}
 	if lpinfo.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("WAKIL_SKILLS_DB parent is a symlink: %q", parent)
@@ -159,7 +161,7 @@ func validateSkillsDBOverride(v string) error {
 		if os.IsNotExist(err) {
 			return nil
 		}
-		return fmt.Errorf("WAKIL_SKILLS_DB: %v", err)
+		return fmt.Errorf("WAKIL_SKILLS_DB: %w", err)
 	}
 	if linfo.Mode()&os.ModeSymlink != 0 {
 		return fmt.Errorf("WAKIL_SKILLS_DB is a symlink: %q", v)
