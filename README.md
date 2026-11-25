@@ -33,7 +33,7 @@ Manual install: take a `.tar.gz`, `.deb`, `.rpm` or `.apk` from the [releases pa
 go install github.com/treeol/wakil/cmd/wakil@latest
 ```
 
-Then install [hisn](https://github.com/treeol/hisn) 0.6.1 or newer (`hisn check` must pass), or have Docker available. Wakil uses hisn when it is usable, otherwise Docker; `--sandbox direct` runs with no sandbox.
+Then install [hisn](https://github.com/treeol/hisn) 0.6.5 or newer (`hisn check` must pass), or have Docker available. Wakil uses hisn when it is usable, otherwise Docker; `--sandbox direct` runs with no sandbox.
 
 ## First run
 

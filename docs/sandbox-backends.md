@@ -4,7 +4,7 @@ Wakil runs every tool call inside a sandbox. Backends:
 
 | backend | selected by | notes |
 |---|---|---|
-| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.6.1 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the `run --detach` contract, `network = "open"` described [below](#supervisor-and-the-detach-contract)) |
+| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.6.5 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the `run --detach` contract, `network = "open"` described [below](#supervisor-and-the-detach-contract)) |
 | `docker` | `sandbox.backend: "docker"`, or the fallback when hisn is not usable | behaviour unchanged |
 | `direct` | `sandbox.backend: "direct"` (or the deprecated `exec_mode: "direct"`) | no sandbox at all: explicit opt-out |
 
@@ -17,13 +17,13 @@ Since v0.4.0 hisn is the default **only when all three hold**:
 1. nothing chose a backend — no `sandbox.backend` in the config file, no
    `WAKIL_SANDBOX_BACKEND`, no `--sandbox`/`--exec`, no `exec_mode`;
 2. `hisn check` passes;
-3. hisn >= 0.6.1 is in `PATH`.
+3. hisn >= 0.6.5 is in `PATH`.
 
 Otherwise the backend is docker, and the startup banner says why:
 
 ```
-sandbox: backend=docker · browser tools: on · default: docker (hisn 0.3.3 is older than 0.6.1 (security fix for network = "open"))
-sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.6.1 (hisn check ok)
+sandbox: backend=docker · browser tools: on · default: docker (hisn 0.6.4 is older than 0.6.5 (open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7)))
+sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.6.5 (hisn check ok)
 ```
 
 A host without hisn therefore sees no behaviour change. Further reasons that
@@ -219,7 +219,10 @@ be safe for concurrent `Exec` calls.
 ### Preflight
 
 `Open` calls `Preflight`: `hisn --version` parses and is >= `MinVersion`
-("0.6.1"), and `hisn check` exits 0. Otherwise `Open` returns an error and
+("0.6.5"), and `hisn check` exits 0; when the session selects
+`network = "open"`, the host kernel release is also checked against the
+6.7 / Landlock ABI v4 floor at preflight (host mode is never gated).
+Otherwise `Open` returns an error and
 Wakil exits. No fallback for an explicit hisn. Unknown `sandbox.backend` values
 are a config error. Then `Open` plans the session
 once, before any session or UI exists: the kvr service decision, then the risk
@@ -246,10 +249,14 @@ One session per chat, `session-id = chatID` (UUID, valid for hisn's
 ### Supervisor and the detach contract
 
 This section is the one description of the contract; other documents link
-here. Wakil requires **hisn >= 0.6.1** (`MinVersion`). An older hisn is refused
-at preflight with a message naming 0.6.1 and the reason (a security fix for
-`network = "open"`: 0.6.0 did not fully enforce the network policy for a socket
-handed to a program before a connect that then failed), and there is no
+here. Wakil requires **hisn >= 0.6.5** (`MinVersion`). An older hisn is refused
+at preflight with a message naming the found and required versions and the
+reason (0.6.5 is the first release whose open-mode enforcement is sound
+end-to-end: 0.6.1 fixed a policy bypass where `network = "open"` did not fully
+enforce the network policy for a socket handed to a program before a connect
+that then failed, and 0.6.2 closed the remaining open-mode timing gap — the
+supervisor now executes every INET listen/connect/bind itself; hisn 0.6.2+
+needs Landlock ABI v4, i.e. kernel 6.7+, for `network = "open"`), and there is no
 compatibility path for it ([ADR 0014](adr/0014-hisn-minimum-0.4.1.md)).
 
 `hisn run --detach` starts a session with no main command (PID 1 sleeps until
@@ -604,11 +611,16 @@ network). `network = "open"` (hisn 0.6.0, opt-in via `sandbox.hisn.network_mode`
 or the `/network` command) narrows outbound to public TCP only: unix sockets
 and loopback work; private and LAN addresses, UDP and other families get
 EACCES. DNS is served inside the session. Open is meant for code you trust and
-needs kernel 5.14 or newer (hisn 0.6.1; 0.6.0 accepted 5.9) and Yama
+needs hisn 0.6.2+ (0.6.2 closes the remaining open-mode timing gap — the
+supervisor now executes every INET listen/connect/bind itself via Landlock TCP
+rules), which requires kernel 6.7+ with Landlock ABI v4 (hisn 0.6.1 needed
+only kernel 5.14) and Yama
 ptrace_scope 0 or 1: hisn 0.6.1 closes a gap where a socket handed to a
-program before a connect that then failed was not covered by the policy, and a
-narrower timing limitation remains (hisn documents it; use open only for code
-you trust until hisn 0.6.2). In open mode bind and listen are decided by the
+program before a connect that then failed was not covered by the policy, and
+0.6.2 enforces the policy at the supervisor independently of when the program
+races a connect. Wakil checks the host kernel release at preflight for open
+sessions and fails with the 6.7 / Landlock ABI v4 requirement rather than at
+session start. In open mode bind and listen are decided by the
 hisn supervisor, so programs that listen inside the sandbox keep working. hisn
 refuses to start otherwise — Wakil shows hisn's own error text and never falls
 back to a wider mode (`/network host` or
@@ -863,7 +875,7 @@ them to get the default described in [Choosing the backend](#choosing-the-backen
 (the `"backend": "docker"` above is only what you write to PIN docker). Empty
 `home_root` means `<wakil state dir>/hisn-home/<workspace-hash>`.
 `kvr_binary` empty means `kvr-server` from `PATH`. `network_mode` is `"host"`
-(default) or `"open"` (opt-in, hisn 0.6.0: public TCP only; for code you trust, kernel 5.14+). A per-repo
+(default) or `"open"` (opt-in, hisn 0.6.0: public TCP only; for code you trust, kernel 6.7+ with Landlock ABI v4). A per-repo
 override (`/network open`) and the project file (`.wakil/sandbox.json`
 `hisn.network`) may narrow to `"open"`; a project file can never widen (its
 `"host"` is refused). Your own `/network host` is a different thing and does
@@ -884,7 +896,7 @@ hisn itself inside the sandbox and are rejected in per-exec env.
 
 * `.secrets/` and every other file in cwd is readable by all execs.
 * `network = "host"` (default): no network isolation. `network = "open"`
-  (opt-in; for code you trust, kernel 5.14+) narrows outbound to public TCP only; it does not block all access
+  (opt-in; for code you trust, kernel 6.7+ with Landlock ABI v4) narrows outbound to public TCP only; it does not block all access
   to hosts on the local network (a NAS, a local git server) — those are
   private addresses and get EACCES. See [Profiles](#profiles).
 * Soft revoke only (see Grants): already-open descriptors may survive.
@@ -935,8 +947,8 @@ hisn itself inside the sandbox and are rejected in per-exec env.
   are not labelled by hisn. The banner shows what hisn labels.
 * The hisn integration tests skip when `hisn check` fails (no unprivileged
   user namespaces); they have not been run in the build sandbox. The profiles
-  Wakil generates ARE checked against a real hisn >= 0.6.1 wherever the binary
+  Wakil generates ARE checked against a real hisn >= 0.6.5 wherever the binary
   exists (`TestRealHisn*`: `profile validate`/`explain` are file checks and need
   no user namespaces), so the contract does not rest on the test fake alone.
-  Run the session tests on a host with hisn >= 0.6.1:
+  Run the session tests on a host with hisn >= 0.6.5:
   `go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`

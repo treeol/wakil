@@ -22,7 +22,7 @@ release history is in [../CHANGELOG.md](../CHANGELOG.md).
 
 ## Sandbox and hisn
 
-- [sandbox-backends.md](sandbox-backends.md) — the hisn, docker and direct backends; hisn 0.6.1 minimum and the detach contract; profiles; `.wakil/sandbox.json`; known limits.
+- [sandbox-backends.md](sandbox-backends.md) — the hisn, docker and direct backends; hisn 0.6.5 minimum and the detach contract; profiles; `.wakil/sandbox.json`; known limits.
 - [../SECURITY.md](../SECURITY.md) — threat model, sandbox classification, hardening checklist.
 
 ## Architecture and ADRs
