@@ -111,8 +111,12 @@ For each task and run number:
    (a generator, a seed) lands in the folder's git history. A failing
    `setup.sh` aborts the run (it is not scored as a model failure).
    Right after the refill a leak guard checks that no `check.sh`,
-   `hidden`, `solution`, `gen`, `setup.sh`, `cmd/gen` or seeded generator
-   is in the folder or in its history; a hit aborts the bench.
+   `hidden`, `solution`, `gen`, `setup.sh`, `answer-key.json` or seeded generator
+   is in the folder or in its history; a hit aborts the bench. If a task's
+   `setup.sh` leaves an `answer-key.json` in the work folder (v2's
+   generator did — the key landed next to the docs output), the harness
+   removes it before the commit so it never sits in git history, and the
+   leak guard fails the prep if it reappears.
 3. `wakil run --auto --allow-destructive --no-memory [--auto-counsel]
    --result-json <file> --transcript <log>` runs with the task text as
    the final argument, under a `timeout` guard (with stdin from
@@ -123,13 +127,28 @@ For each task and run number:
    carry-over between runs (no memory tools, no `plan/current` read or
    write, no memory digest in the prompt). `WAKIL_HOST_WORKDIR` is set
    to the fixed work folder so the sandbox mounts it (not the configured
-   `work_dir`). For `collapse-long` only, the harness sets `WAKIL_CONFIG`
-   to a merged per-run config: a copy of the user's own resolved config
-   (`$WAKIL_CONFIG`, else `~/.config/wakil/config.json`, exactly the path
-   Wakil resolves) with only two keys changed — one ceiling per task
-   (`context_collapse_ceiling_tokens: 45000` for `collapse-long`,
-   `21000` for `collapse-long-v2`, see "Ceiling calibration" below) and
-   `context_collapse_min_bytes: 2000`. Both ceilings are low, bench-only,
+   `work_dir`). **Every task** (not only the collapse tasks) runs with
+   `WAKIL_CONFIG` set to a merged per-run config: a copy of the user's
+   own resolved config (`$WAKIL_CONFIG`, else
+   `~/.config/wakil/config.json`, exactly the path Wakil resolves) from
+   which every MCP/external-tool key is stripped (`mcp_servers`,
+   `subagent_mcp_servers`, `mcp_module_keywords`, `searxng_url`, all
+   oracle/mashura keys, the workflow counsel keys, `browser_enabled`,
+   `lsp_enabled`), with the enabled-by-default ones forced off
+   (`oracle_enabled: false`, `wf_final_review: false`,
+   `mashura: {level: "off"}` — deletion alone would fall back to the
+   default "medium" level), and — for the collapse tasks only — two keys
+   added: one ceiling per task (`context_collapse_ceiling_tokens: 45000`
+   for `collapse-long`, `21000` for `collapse-long-v2` and
+   `collapse-long-v3`, see "Ceiling calibration" below) and
+   `context_collapse_min_bytes: 2000`. **Why the strip:** until commit
+   `1ac8e01` the run config came from the user's own file, so agents
+   under test had the user's MCP servers available and called them — 46
+   run logs in `bench/results/` contain MCP tool calls (list in plan
+   §12.7); the caj tools run in a different sandbox than the bench
+   workdir, so work landed in a foreign workspace. `SEARXNG_URL` is
+   unset for the launch too (env overrides apply after the file).
+   The ceilings are low, bench-only,
    and identical for modules off and on, so every model collapses at the
    same projected size regardless of its probed window. Wakil reads exactly
    one config file and the two collapse keys have no env override, so a
@@ -140,9 +159,12 @@ For each task and run number:
    under `bench/results/`), is created at mode 0600 (subshell
    `umask 077`), is deleted right after `wait` on every path (success,
    failure, timeout), and its contents, path, and key values are never
-   printed, logged, copied into the run log or the CSV. The run log says
-   only `merged config (ceiling=<N> min_bytes=2000)` with the task's N
-   (45000 for collapse-long, 21000 for collapse-long-v2). The sandbox only
+   printed, logged, copied into the run log or the CSV. A normal-mode
+   EXIT/INT/TERM trap in the bench `main()` is the backstop when the
+   bench shell itself is interrupted (the merged file exists for every
+   task now). The run log says only
+   `merged config: mcp/external keys stripped, counsel off[, ceiling=<N> min_bytes=2000]`
+   with the task's N (45000 for collapse-long, 21000 for v2/v3). The sandbox only
    mounts the fixed work folder, so the agent under test cannot read the
    host temp dir; wakil's own error output is not covered (an endpoint
    error could name a URL in the transcript). The temp dir also
@@ -162,11 +184,11 @@ For each task and run number:
    dir (e.g. `../x`) is stopped as `error` / `config-relative-escape` /
    `valid=false:config` (the temp dir sits at a different depth, so such a
    path would mis-resolve), and the bench continues. A missing user config
-   is merged onto `{}` (env-only setups still run — a missing file means
-   defaults+env apply in Wakil too); an unparseable user file is recorded
+   is merged onto `{}` plus the strip (env-only setups still run — a
+   missing file means defaults+env apply in Wakil too); an unparseable
+   user file is recorded
    as `error` / `config-unreadable` / `valid=false:config` and the bench
-   continues. Only the `collapse-long` task merges a config; other tasks
-   set no `WAKIL_CONFIG` and use the user's config as-is. The user's own
+   continues. The user's own
    config is read by the host-side bench at run time, never by
    `--self-test` (which uses a fake config with a fake secret sentinel —
    see "Self-test"). A run that fails during bootstrap (before any model
@@ -175,6 +197,18 @@ For each task and run number:
    `style_guide_paths` shape of that line (key name + resolved path, no
    secrets) is printed to the terminal, other bootstrap errors are
    reported by name only.
+   **MCP guard.** After each completed run, the run log is scanned for
+   MCP tool calls: a transcript line whose tool name immediately after
+   the `· ` marker contains `__` (the `<server>__<tool>` naming scheme)
+   and does not start with `mashura__` (Wakil's built-in counsel tools —
+   the strip already turns those off). A hit means the agent reached an
+   MCP server despite the strip: the row is `invalid` /
+   `mcp` / `valid=false:mcp`, the tool names are written to the log, and
+   `check.sh` is skipped (an isolation failure is not a task result).
+   With no servers configured a hit should be impossible — the strip is
+   the primary control, the guard is the tripwire. Rows before commit
+   `1ac8e01` may contain MCP calls (46 logs; list in plan §12.7) and are
+   not comparable with rows after it.
 4. `check.sh` from the task folder runs in the work folder after every
    run that ended (`pass`, `declined`, or `error`); `result` is `pass`
    or `fail` from `check.sh`, and `exit_reason` keeps what the run
@@ -326,18 +360,29 @@ checks). Output (CSV and logs) goes to
 repo, and the run asserts that nothing under `bench/results/` changed.
 The self-test sets `WAKIL_CONFIG` to a **fake** user config (fake
 endpoints with a fake secret sentinel `AKIA_FAKE_SENTINEL`) before any
-`collapse-long` run, so it never reads the host's real
+run, so it never reads the host's real
 `~/.config/wakil/config.json` and passes on a host with no config at
 all. It asserts the fake secret never reaches the run log, the CSV or
-stdout, that the merged config keeps the fake endpoints and sets
-exactly the two collapse keys, that the merged file/dir are 0600/0700
+stdout, that the merged config (built for **every** task) keeps the
+fake endpoints, strips every MCP/external-tool key, forces the
+enabled-by-default ones off (`oracle_enabled`, `wf_final_review`,
+mashura level), and sets exactly the two collapse keys for the collapse
+tasks, that the run env has `SEARXNG_URL` unset, that the merged
+file/dir are 0600/0700
 and are gone after success, failure and timeout, and that a missing
 config still runs (merged onto `{}`) while an unparseable one is
-`error` / `config-unreadable` / `valid=false:config`.
+`error` / `config-unreadable` / `valid=false:config`. It also covers
+the MCP guard: a stub whose run log contains `· caj__run_command …`
+lines scores `invalid` / `mcp` / `false:mcp` with the tool names in the
+log, while `mashura__` lines and a clean log are not flagged. The v3
+cases: grep-only fail, a report with a `notes` field and correct totals
+passes, a wrong report fails, the generator self-check rejects a
+duplicated-entry fixture, the committed `gen/answer-key.json` equals
+the `check.sh` constants, and two generations are byte-identical.
 Cases: a stub that changes nothing (every task must report `fail`;
-`collapse-long` reports `invalid` with `false:no_collapse`); a
+the collapse tasks report `invalid` with `false:no_collapse`); a
 stub that copies the task's `solution/` into the work folder (every task
-must report `pass`; `collapse-long` needs `collapses >= 1` — the solve
+must report `pass`; the collapse tasks need `collapses >= 1` — the solve
 stub emits 3 at the chosen ceiling);
 wrong solutions (a wrong `report.json`, a wrong per-package constant in
 `refactor-multi`, a bloated fix outside the buggy function in
@@ -436,6 +481,47 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   that is the intended safety net, not a bug: the ceiling is a question
   about what crosses it in the conversation, and the task measures
   retention across a forced collapse for agents that read in-turn.
+- **`collapse-long-v3`** is the successor of v2 (v1/v2 files unchanged;
+  rows across task names are never comparable). v2 had three defects
+  its run logs exposed (plan §12.0): the task text described years and
+  item codes the data does not have; corrections referred to "entry N"
+  with no visible numbering (the real rule was an implicit 0-based
+  index); and the generator duplicated ledger lines and doubled words
+  ("The the", "the the miller") — careful agents refused to answer, and
+  two Haiku runs that had computed the exact expected sums wrote no
+  report or asked for the rule. v3 fixes all three: **every ledger
+  entry line carries a visible per-file 1-based identifier** ("entry 7
+  of orchard" — the same number in another file is a different entry),
+  the withdrawal line names the identifier it amends, binds within its
+  own file, and each entry has at most one withdrawal; the rule ("a
+  withdrawal replaces the figure of the entry it names, in the same
+  file") and the Ledger-block delimiter are stated in the task text;
+  the sentence templates never prefix "the " to an alias. A generator
+  self-check fails the generation on a duplicated ledger line, a
+  doubled word, two withdrawals naming one entry, or an identifier
+  that does not resolve within its file. The answer key is written
+  only to `gen/answer-key.json` in the task dir (committed,
+  deterministic; v2's generator had written it into the work folder —
+  two v2 run logs show agents noticed `answer-key.json` in the repo
+  root and declined to read it; the harness now also removes/flags it
+  as a leak) and the self-test asserts it equals the `check.sh`
+  constants. The task text tells the agent to always write
+  `report.json` with its best answer and to put doubts in a `notes`
+  field — `check.sh` ignores `notes` (any JSON type) and reads only
+  the six category totals, so a correct answer with doubts still
+  passes. Same fixture shape as v2 (40 files × ~44 KB, ledger past the
+  8 KB cut, number-laden decoys, must-read ≈ 800 KB ≈ 4× the ceiling).
+  Ceiling **21,000 tokens** (84,000 chars), same as v2: verified by
+  the plan §12.3 replay (recorded-strategy model, v3 task-text
+  length) — **1 mid-turn collapse in both modes under all three
+  argument distributions**; same defaults assumption and strategy-model
+  caveat as the v2 calibration (the replay models the recorded Haiku
+  strategy, not a v3-specific run; a quieter strategy still scores
+  `invalid`, the safety net). The pre-commit gate: a careful one-shot
+  script-only solver (all ledger figures, no withdrawal replacement)
+  produces wrong sums (779–875 per category vs the true 853–1345).
+  Determinism: two generations byte-identical. Validity is ≥1 collapse
+  like v1/v2; recommended timeout `--timeout 1800`.
 - **`debug-subtle` minimality rule** (rows before the commit that
   introduced this rule are **not comparable** with rows after it — the new
   rule is not compatible with the old "all changed lines ≤ 6"): changed
