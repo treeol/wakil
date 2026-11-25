@@ -258,6 +258,21 @@ zero-skip acceptance) → Block 4 (docs/CHANGELOG).
   unstable/undocumented, do NOT wire it: list under Open points.
 - Everything else new → Open points (§ below), one line each. No impl.
 
+### Block 2 verdict (2026-11-25): NOT wired — kept Open point
+Observed `capabilities --json` on the real 0.6.5 binary: stable schema
+`hisn-capabilities/v1` with `version`, `protocol_revision` (4), `declared_protocol_version`
+(3), and 11 named features (detached-exec, journal-cursor, journal-unreadable,
+exec-stdin, seat-credential-stdin, network-none/host/open with a `reason` when
+`available:false`, rootfs, ssh-agent, services), each with `available` + `reason`.
+The version gate already names the open-mode floor (0.6.2+, Landlock ABI v4 /
+kernel 6.7) and Preflight now fails closed for open below 6.7, which covers the
+only Wakil-relevant capability — wiring `network-open.available` as an
+*additional* reason adds a second source of truth for the same requirement
+without a second behavior. Pre-0.6.5 binaries lack `capabilities` and would need
+silent skip. Decision: version + kernel floor stay canonical; `capabilities`
+stays an Open point (would only add value if Wakil ever gates a *new*
+optional feature on hisn support).
+
 ### Block 3 — integration vs real 0.6.5
 - Download `hisn-x86_64-linux-gnu` + `SHA256SUMS` to `.tmp/hisn-0.6.5/`,
   `sha256sum -c` both; report asset + checksum (expect
