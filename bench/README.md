@@ -126,11 +126,12 @@ For each task and run number:
    `work_dir`). For `collapse-long` only, the harness sets `WAKIL_CONFIG`
    to a merged per-run config: a copy of the user's own resolved config
    (`$WAKIL_CONFIG`, else `~/.config/wakil/config.json`, exactly the path
-   Wakil resolves) with only two keys changed —
-   `context_collapse_ceiling_tokens: 45000` and
-   `context_collapse_min_bytes: 2000`. The ceiling is low, bench-only, and
-   identical for modules off and on, so every model collapses at the same
-   projected size regardless of its probed window. Wakil reads exactly
+   Wakil resolves) with only two keys changed — one ceiling per task
+   (`context_collapse_ceiling_tokens: 45000` for `collapse-long`,
+   `21000` for `collapse-long-v2`, see "Ceiling calibration" below) and
+   `context_collapse_min_bytes: 2000`. Both ceilings are low, bench-only,
+   and identical for modules off and on, so every model collapses at the
+   same projected size regardless of its probed window. Wakil reads exactly
    one config file and the two collapse keys have no env override, so a
    merged file is the only way to layer them on top of the user's
    endpoints without replacing them; Wakil itself is unchanged. The
@@ -140,7 +141,8 @@ For each task and run number:
    `umask 077`), is deleted right after `wait` on every path (success,
    failure, timeout), and its contents, path, and key values are never
    printed, logged, copied into the run log or the CSV. The run log says
-   only `merged config (ceiling=45000 min_bytes=2000)`. The sandbox only
+   only `merged config (ceiling=<N> min_bytes=2000)` with the task's N
+   (45000 for collapse-long, 21000 for collapse-long-v2). The sandbox only
    mounts the fixed work folder, so the agent under test cannot read the
    host temp dir; wakil's own error output is not covered (an endpoint
    error could name a URL in the transcript). The temp dir also
@@ -397,16 +399,26 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   each with a ~12-fact ledger block past the 8 KB cut at 20–45 KB in
   (whole-file reads truncate before it), dense number-laden filler decoys
   so a candidate-line script outputs > 180K chars, and corrections that
-  supersede earlier figures. Must-read text ≈ 800 KB ≈ **4× the 45,000-token
-  ceiling** (180,000 chars — same value, same `ToolResultCap` and
-  `long-session` pins as v1, settings identical for modules off/on; the
-  merged config now also pins `tool_result_cap: 8000` and
-  `context_mode: "long-session"` so user values cannot change the task).
+  supersede earlier figures. Must-read text ≈ 800 KB. v2's ceiling is
+  **21,000 tokens** (84,000 chars), calibrated from the real 2026-11-25
+  Haiku run described below (commit `1404d0d`, plan §11): the same value,
+  same `ToolResultCap`, same settings for modules off/on, and — unlike
+  the earlier claim in this section — **no `tool_result_cap` or
+  `context_mode` pins**: the bench merge sets only the two collapse
+  keys (`scripts/bench.sh`, the private merged config), so a user's
+  `tool_result_cap` / `context_mode` values still govern the run. The
+  calibration assumes the defaults (8,000 / `long-session`); a host run
+  whose effective values differ is a different ceiling in practice —
+  that assumption is stated, not asserted at run time.
   A ranged-read strategy needs ~100 calls; the recommended timeout is
   `--timeout 1800`. v1 is **unchanged** (its CSV rows stay comparable as
   "0-collapse invalids"); v2 is a new task name. Validity is **≥1 collapse** —
   a completed v2 run with 0 collapses is `invalid`/`false:no_collapse` like
-  v1. The pre-commit gate for the fixture: a best-effort script-only solver
+  v1. Rows before commit `1404d0d` used the old 45,000-token ceiling and
+  are **not comparable** with rows after it: the single v2 row before
+  that commit (`20261125T013001`, 0 collapses, `invalid`) belongs to the
+  old ceiling and is the very run the new ceiling is calibrated from.
+  The pre-commit gate for the fixture: a best-effort script-only solver
   (dedupe + number-word filter + last-wins) must produce a wrong report
   (verified: it reported 1,472–1,704 per category vs the true
   1,074–1,350 — every category wrong). Determinism: two generations are
@@ -418,6 +430,12 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   scores `invalid`; an "explore then script" run can pass validity without
   retaining anything — the task measures "crossed the ceiling with a
   correct report", and `check.sh` cannot inspect scratch-file writes.
+  A strategy that keeps its in-conversation tail below the ceiling
+  without reading the fixture in-conversation (the approach the
+  calibration run itself used) scores 0 collapses and is `invalid` —
+  that is the intended safety net, not a bug: the ceiling is a question
+  about what crosses it in the conversation, and the task measures
+  retention across a forced collapse for agents that read in-turn.
 - **`debug-subtle` minimality rule** (rows before the commit that
   introduced this rule are **not comparable** with rows after it — the new
   rule is not compatible with the old "all changed lines ≤ 6"): changed
@@ -435,9 +453,9 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   clamp), 0 outside. Self-test cases: 5-line reference passes, 11-line
   rewritten loop passes, correct fix + unrelated helper outside fails,
   whole-file rewrite fails, existing bloated-helper case still fails.
-- **Ceiling calibration (off vs on).** The ceiling is 45,000 tokens
+- **Ceiling calibration (off vs on).** `collapse-long` keeps 45,000 tokens
   (180,000 chars), identical for both modes, chosen from a calibration
-  replay of the task through a fake backend that drove one long-session
+  replay of that task through a fake backend that drove one long-session
   turn with 40 `read_file` calls in fixture order and the real preamble
   each mode sends. Measured mid-turn collapses at that ceiling: 3 in
   modules-off and 3 in modules-on (the onset of doubt: 40,000 gives off 3,
@@ -458,6 +476,62 @@ CI runs the self-test and `shellcheck -s sh` on `scripts/bench.sh`,
   `context_mode`, and without mid-run `load_module` traffic in on mode);
   a real model's read order and strategy will differ, which is why the
   `invalid` rate is a first-class metric.
+- **collapse-long-v2 ceiling calibration (real run, 2026-11-25).** The
+  v2 ceiling is **21,000 tokens** (84,000 chars), identical for both
+  modes, calibrated from the recorded real run
+  (`scripts/bench.sh --task collapse-long-v2 --runs 1 --model
+  anthropic/claude-haiku-5.5 --context-modules off --timeout 1800
+  --mashura off`: 99 s, 1,177,802 in / 18,679 out, 89% cached, $0.0356,
+  18 tool calls, 0 collapses, check passed → `invalid`). The model
+  solved the task by moving the work into the sandbox (heredocs,
+  `python3`, `wc`, `sed`/`grep` dumps), so the conversation never
+  reached the old 45,000-token ceiling; the turn-end collapse note
+  (`collapses_turn_end=1`) records the working set exactly (12,108
+  tokens = 48,432 chars, description `msgs 2–37, run_shell ×14,
+  git_status ×1, list_dir ×1, read_file ×1, …`). The conversation
+  sequence is 1× `list_dir` (1,126 B), 1× `search_files` (247 B),
+  1× `read_file` (8,499 B = 8,000-char cap + spill suffix), then 14×
+  `run_shell` with in-conversation results 150–6,042 B (the two 8,499-B
+  `run_shell` results are the exfiltration dumps), and 1× `git_status`
+  (75 B); every call carries 85–367 B of assistant text and 42–50 B of
+  arguments except the 11,784-B heredoc argument that wrote the
+  parser. Measurement method: the run log carries byte sizes, not full
+  request bodies, so the calibration replayed the recorded sequence
+  (sizes, arguments, and assistant texts reconstructed from the
+  transcript and the exact `W` anchor) through the real `streamTurn` +
+  `collapseMidTurnPrefix` against a fake backend and a fake executor,
+  with each mode's real `buildPreambleForNetwork` output (53,083 B off,
+  53,499 B on) and the real v2 task text (751 B); `ToolResultCap` was
+  ≥ 8,499 so the recorded post-cap bodies are the in-conversation
+  ones, and the verifier is `CollapseCounts` (mid-turn = `Partial`
+  records). Counts (mid-turn collapses, `CollapseCounts`):
+
+  | ceiling (tokens) | off/A | off/B | off/C | on/A | on/B | on/C |
+  |---|---|---|---|---|---|---|
+  | 20,000 | 3 | 2 | 2 | 3 | 3 | 2 |
+  | **21,000** | **2** | **1** | **2** | **2** | **1** | **2** |
+  | 22,000 | 1 | 1 | 1 | 1 | 1 | 1 |
+  | 23,000 | 1 | 0 | 1 | 1 | 1 | 1 |
+  | 24,000+ | 0 | 0 | 0 | 0 | 0 | 0 |
+
+  A/B/C are three argument distributions of the same 12,588-B total
+  (A = heredoc-concentrated as recorded, B = even spread, C =
+  late-heavy). 21,000 is the only candidate with 1–3 in both modes
+  under all three distributions with no count boundary within ~1.5 KB
+  (20,000 thrashes on restored context; 22,000 is within 1.5 KB of
+  the 0 boundary; 23,000 fails under B). 21,000 and 22,000 happen to
+  produce identical counts in this replay; 21,000 is chosen as the
+  more robust of the two (its post-collapse tails are ~800 B away
+  from thrashing at every collapse, 22,000's are ~700 B). `hardMax` in
+  the replay is 3,015,095 chars at every candidate, so the ceiling —
+  not the guard — is the trigger. The "both modes" claim is scoped to
+  this recorded strategy: a host on-mode run was not made (no real
+  model requests except Mashūra), so behaviour under mid-run
+  `load_module` schema pinning is unmeasured. The calibration assumes
+  the defaults for `tool_result_cap` (8,000) and `context_mode`
+  (`long-session`), supported by counts and by the run log's 8,499-B
+  results and 52,879-byte prompt header; it is not asserted at run
+  time (see the correction in the `collapse-long-v2` bullet above).
 - `check.sh` runs on the host, unsandboxed, and executes the agent's
   non-test code when the hidden test imports the package. The static checks
   above stop the known ways to fake a pass; code that reads the hidden test
