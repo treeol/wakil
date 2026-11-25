@@ -417,6 +417,21 @@ func collapseIndexLine(archive string) string {
 	return "archive index: " + filepath.Join(dir, wtools.ArchiveIndexName) + " (read_file with offset/limit — one line per archived result: kind, path, label)\n"
 }
 
+// warnIndexAppendFailure surfaces the first archive-index append failure
+// of the session ONCE (mirroring pruneArchiveFailed): spills that failed
+// to index still have their in-context markers until the next collapse,
+// so a single warning — not a per-spill nag — is the honest signal.
+func (a *App) warnIndexAppendFailure() {
+	if a == nil || a.indexAppendWarned {
+		return
+	}
+	if wtools.IndexAppendFailures() == 0 {
+		return
+	}
+	a.indexAppendWarned = true
+	a.emitNotice(Yellow("⚠ archive index: some spills could not be indexed — their in-context markers stay valid until the next collapse; see the archive index for everything else"))
+}
+
 // WRITE PRIORITY: write targets are kept first (up to the full budget), reads
 // get the remainder. Both overflow counts are returned — no shared state.
 // The OLDEST entries are dropped (later tool calls reflect the turn's end
@@ -1260,6 +1275,7 @@ func (a *App) collapseFinishedTurns() {
 		}
 
 		note := buildCollapseNote(t, wOnly, archive)
+		a.warnIndexAppendFailure()
 		rec := CollapseRecord{
 			Turn:      t,
 			Archive:   archive,
@@ -1766,6 +1782,7 @@ func (a *App) handleCollapseContext(tc proxy.ToolCall) string {
 	}
 
 	note := buildCollapseNote(turn, w, archive)
+	a.warnIndexAppendFailure()
 	rec := CollapseRecord{
 		Turn:           turn,
 		Archive:        archive,
@@ -2024,6 +2041,7 @@ func (a *App) collapseMidTurnPrefix() {
 		return
 	}
 	note := buildCollapseNote(a.curTurn, w, archive)
+	a.warnIndexAppendFailure()
 	// The record anchors at the first kept assistant message, so the
 	// verbatim tail passes through the projection unchanged.
 	tailCallID := ""

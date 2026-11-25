@@ -352,6 +352,10 @@ type App struct {
 	// session.
 	pruneBytesSaved    int
 	pruneArchiveFailed bool
+	// indexAppendWarned makes the archive-index append-failure warning
+	// once per session (the tools package counts failures; the first
+	// one surfaces here, at collapse-note build time).
+	indexAppendWarned bool
 	pruneAutoCount     int
 	// pruneMissingPrev counts assistant replies with tool calls (round>1,
 	// not only context_mark) that omitted the optional prev property.
