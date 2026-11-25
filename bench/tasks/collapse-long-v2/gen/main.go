@@ -40,16 +40,16 @@ var numberWords = []struct {
 // Aliases per entity: each entity (year) has a real name and two aliases, so
 // no single name match finds every instance.
 var aliases = map[string][]string{
-	"harbour":  {"the harbourmaster", "the port-keeper", "the quay ledger"},
-	"ferry":    {"the ferry operator", "the ferryman", "the crossing house"},
-	"kiln":     {"the kiln-house keeper", "the burner", "the firing shed"},
-	"mill":     {"the miller", "the grinding shop", "the wheel-house"},
-	"bakery":   {"the baker", "the bakehouse", "the oven room"},
-	"market":   {"the stall-holder", "the market office", "the toll clerk"},
-	"chapel":   {"the chapelwarden", "the vestry", "the small chapel"},
-	"smithy":   {"the smith", "the forge", "the anvil bench"},
-	"orchard":  {"the ortsman", "the cider press", "the orchard house"},
-	"granary":  {"the granary guard", "the grain store", "the barn loft"},
+	"harbour": {"the harbourmaster", "the port-keeper", "the quay ledger"},
+	"ferry":   {"the ferry operator", "the ferryman", "the crossing house"},
+	"kiln":    {"the kiln-house keeper", "the burner", "the firing shed"},
+	"mill":    {"the miller", "the grinding shop", "the wheel-house"},
+	"bakery":  {"the baker", "the bakehouse", "the oven room"},
+	"market":  {"the stall-holder", "the market office", "the toll clerk"},
+	"chapel":  {"the chapelwarden", "the vestry", "the small chapel"},
+	"smithy":  {"the smith", "the forge", "the anvil bench"},
+	"orchard": {"the ortsman", "the cider press", "the orchard house"},
+	"granary": {"the granary guard", "the grain store", "the barn loft"},
 }
 
 var years = []string{"harbour", "ferry", "kiln", "mill", "bakery", "market", "chapel", "smithy", "orchard", "granary"}

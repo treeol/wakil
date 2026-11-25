@@ -54,16 +54,16 @@ var numberWords = []struct {
 // the sentence templates never prefix "the " to an alias (the v2 doubling
 // bug), they place the alias directly or use the base name.
 var aliases = map[string][]string{
-	"harbour":  {"the harbourmaster", "the port-keeper", "the quay ledger"},
-	"ferry":    {"the ferry operator", "the ferryman", "the crossing house"},
-	"kiln":     {"the kiln-house keeper", "the burner", "the firing shed"},
-	"mill":     {"the miller", "the grinding shop", "the wheel-house"},
-	"bakery":   {"the baker", "the bakehouse", "the oven room"},
-	"market":   {"the stall-holder", "the market office", "the toll clerk"},
-	"chapel":   {"the chapelwarden", "the vestry", "the small chapel"},
-	"smithy":   {"the smith", "the forge", "the anvil bench"},
-	"orchard":  {"the ortsman", "the cider press", "the orchard house"},
-	"granary":  {"the granary guard", "the grain store", "the barn loft"},
+	"harbour": {"the harbourmaster", "the port-keeper", "the quay ledger"},
+	"ferry":   {"the ferry operator", "the ferryman", "the crossing house"},
+	"kiln":    {"the kiln-house keeper", "the burner", "the firing shed"},
+	"mill":    {"the miller", "the grinding shop", "the wheel-house"},
+	"bakery":  {"the baker", "the bakehouse", "the oven room"},
+	"market":  {"the stall-holder", "the market office", "the toll clerk"},
+	"chapel":  {"the chapelwarden", "the vestry", "the small chapel"},
+	"smithy":  {"the smith", "the forge", "the anvil bench"},
+	"orchard": {"the ortsman", "the cider press", "the orchard house"},
+	"granary": {"the granary guard", "the grain store", "the barn loft"},
 }
 
 var entities = []string{"harbour", "ferry", "kiln", "mill", "bakery", "market", "chapel", "smithy", "orchard", "granary"}
