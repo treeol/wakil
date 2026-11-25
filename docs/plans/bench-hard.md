@@ -820,3 +820,470 @@ with rows after it. Name the commit (`git log` at commit time).
 - `bench/README.md`, `CHANGELOG.md`, this plan (`docs/plans/bench-hard.md`)
 - Wakil itself is **not** touched: `git diff 6d1a86a..HEAD -- internal cmd prompts`
   stays empty.
+
+## 11. collapse-long-v2 ceiling from a real run (2026-11-25, from 7369737)
+
+### 11.0 What happened (host run, modules off)
+
+`scripts/bench.sh --task collapse-long-v2 --runs 1 --model
+anthropic/claude-haiku-5.5 --context-modules off --timeout 1800 --mashura
+off`: 99 s, 1,177,802 in / 18,679 out, 89% cached, $0.0356, 18 tool
+calls, `collapses=0`, `collapses_turn_end=1`, the check PASSED, so the
+run was marked invalid — `valid=false:no_collapse`. Log:
+`bench/results/collapse-long-v2-1-013001.log`, CSV
+`bench/results/20261125T013001-bench.csv`.
+
+The model solved the task by moving the work into the sandbox (Python
+scripts in `/tmp`, iterated hypotheses about correction targeting) instead
+of the conversation: only three in-conversation results exceeded 3.4 KB
+(one `read_file` 8.3 KB, one `sed` dump 5.9 KB, one `grep` aggregation
+8.3 KB), everything else was small probe output. The conversation never
+reached the 45,000-token (180,000-char) ceiling. Making the content harder
+is an arms race (bigger fixture ⇒ more `grep`/`sed` offload, shorter
+in-conversation tail); the decision is to calibrate the ceiling from this
+real run instead.
+
+No secret-bearing content is copied into this plan or any report below:
+the run log carries no keys here — only tool sizes and agent text lines
+that identify paths and sums the report itself printed. Where a transcript
+line may contain secret-shaped fragments it is not reproduced.
+
+### 11.1 Verified findings: what the real run's trace holds
+
+- The run log is JSONL; its `"type":"output"` lines are transcript
+  lines. Tool-result sizes appear as `· <tool> <args>… → <n> lines ·
+  <bytes>` — byte sizes plus a line count, **not** full request contents.
+  There is no trace envelope holding the full request bodies in the repo
+  for this run (the log is a transcript, not a request trace). The spill
+  file the collapsed-turn line points at is host-side
+  (`~/.local/share/wakil/toolcache/...`); this session must not read the
+  user's real toolcache or config, so the replay simulates from recorded
+  sizes, and says so. The run log header itself records the effective
+  run profile (52,879-byte prompt from the mirrored `agent.txt`, 1M-token
+  `n_ctx` / 991,808 usable), which is the precondition evidence the
+  calibration rests on (§11.3): the two 8,499-B results fit an 8,000
+  cap plus spill suffix, and the turn-end collapse implies
+  `long-session` mode — so defaults, **without** reading the user's
+  config. The log does not record the two collapse-key values or
+  `tool_result_cap`, so a run-time check that the host's effective
+  values match defaults is not possible; README states the calibration
+  assumes defaults, with no run-time assertion.
+- The log's last line `· collapsed request 1: 12108 tokens → 1268 sent
+  (msgs 2–37, run_shell ×14, git_status ×1, list_dir ×1, read_file ×1, …
+  (+1 more tools)) → <archive>` is the **turn-end** collapse note
+  (`collapses_turn_end=1`), not the mid-turn trigger: `CollapseCounts`
+  (`internal/agent/collapse.go:2312-2325`) counts `Partial` records as
+  mid-turn and non-`Partial` as turn-end, and `writeResultJSON`
+  (`internal/wiring/resultjson.go:130-132`) writes the two separately.
+  The number 12,108 is `wSize / charsPerToken` (`formatCollapseNotice`,
+  `collapse.go:1449-1453`), where `wSize = Σ messageSize(Conv[i])` over
+  the turn's middle messages `i = s.first+1 .. s.last-1`
+  (`collapse.go:1191-1194`) — `messageSize` is `len(Content) +
+  len(ToolCall.Arguments)` (`collapse.go:2070-2079`). So the true
+  working set `W` (all 18 tool rounds: 36 messages, msgs 2–37) is
+  48,432–48,443 chars. That exceeds the result+text sum (§11.2) by
+  ~12.4 KB — that gap **is** the argument bytes (§11.2). At the old
+  ceiling the turn-end writer fired because the turn's working set
+  (12,108 tokens) exceeded `min_bytes=2000`, after the last request;
+  `collapses` (mid-turn) is what validity gates on (`bench.sh:581`:
+  pass/fail with 0 collapses ⇒ invalid). The bench therefore
+  calibrates the mid-turn ceiling (`midTurnCollapseCeiling`,
+  `internal/agent/collapse.go:1866-1871`: ceiling chars =
+  tokens × `charsPerToken` 4, `internal/agent/compact.go:15-18`).
+- The ceiling counts messages only: `sentSize(contextProjection())`
+  (`internal/agent/styleguides.go:430`) = Σ `len(Content)` + Σ
+  `len(ToolCall.Arguments)` (`internal/core/format/format.go:43-54`),
+  system message (Conv[0] preamble) included, task message included, tool
+  schemas excluded (`internal/agent/collapse.go` per §8.2). The trigger
+  fires between tool calls inside `streamTurn`
+  (`internal/agent/turn_phases.go:375-376`) when the projection exceeds
+  the ceiling (or `hardMax` = 0.95 × effective context — 1M-token model,
+  991,808 usable per the log header, so `hardMax` ≈ 750k chars and never
+  fires first on this run); the kept tail is ≤30% of the ceiling
+  (`collapseTailStart`, `internal/agent/collapse.go:1500-1569`), with at
+  least the most recent round always kept.
+- The prompt is loaded from `/tmp/.../agent.txt` at 52,879 bytes (log:
+  `agent prompt: loaded 52879 bytes`), matching `prompts/agent.txt`
+  (52,879 bytes on disk) — the full prompt, not the 18,573-byte core
+  mode (`prompts/core.txt`).
+
+### 11.2 Block 0 — measurement (per-request conversation size)
+
+Method: reconstruct Conv growth from the transcript's recorded result
+sizes **plus** the known total working set `W` (§11.1). Two independent
+sums must agree, and they do only when argument bytes are included:
+
+- Tool-result bytes (transcript `· … → N lines · B`): 32,523.
+- Assistant text bytes on tool rounds (the 16 streamed text lines
+  before tools 1–16; the final-answer lines belong to the turn's
+  answer message `A`, which is outside `W`): 3,322.
+- **Argument bytes: 12,587–12,590** (unknown distribution, anchored to
+  the collapse notice's exact total: `W` = 48,432–48,435 ⇒ arguments =
+  `W` − 32,523 − 3,322). There is no "~24 B/call envelope" anywhere in
+  the path — `messageSize` counts content + arguments only.
+- The checkpoint is not derived from result content: `buildCollapseNote`
+  (`collapse.go:284-361`) uses tool names, counts, and paths extracted
+  from **arguments** (`extractPaths`, `collapse.go:463-486` — path/file/
+  src/dst/paths fields only), and `buildFindings`
+  (`collapse_findings.go:63-122`) additionally reads assistant text and
+  result ok-flags. Filler result bodies therefore cannot underweight the
+  checkpoint through result content — the remaining variance is findings
+  text length, bounded by the 1,500-B `maxFindingsBytes` cap. The replay
+  prints the actual checkpoint size per collapse; a ceiling within ~1.5
+  KB of a count boundary is treated as unstable and rejected.
+
+Per-request sizes are `sentSize(contextProjection())` in chars
+(= preamble + task 751 B + cumulative `W`). The per-call argument
+column below is the **replay input table** (reviewer R2 fix); it sums
+to 12,588, in the anchored range. Its basis: call 10 (`cat >
+/tmp/parse_ledger.py` heredoc, shown in the transcript) is the
+parse script, and call 11 (`cat > /tmp/explore.py`) the second script —
+the transcript's truncated arguments are ≥50 chars each but cannot
+give exact bytes. The distribution is therefore estimated, **not**
+trusted: the replay runs it under three named distributions and the
+chosen ceiling must be stable across all of them (§11.3).
+
+**Distribution A — heredoc-concentrated** (base input):
+
+| # | tool | result B | text B | arg B | projection before request #+1 (chars) |
+|---|------|---------:|-------:|------:|--------------------------------------:|
+| 1 | list_dir | 1,126 | 104 | 42 | 55,107 |
+| 2 | search_files | 247 | 132 | 44 | 55,530 |
+| 3 | read_file | 8,499 | 159 | 45 | 64,233 |
+| 4 | run_shell | 150 | 156 | 40 | 64,579 |
+| 5 | run_shell | 8,499 | 190 | 42 | 73,310 |
+| 6 | run_shell | 1,638 | 297 | 46 | 75,291 |
+| 7 | run_shell | 6,042 | 201 | 44 | 81,578 |
+| 8 | run_shell | 163 | 250 | 46 | 82,037 |
+| 9 | run_shell | 333 | 214 | 50 | 82,634 |
+| 10 | run_shell (heredoc `parse_ledger.py`) | ~20 ("parsed 640 unparsed 0") | 85 | 11,784 | 94,523 |
+| 11 | run_shell (heredoc `explore.py`) | 41 | 250 | 50 | 94,864 |
+| 12–17 | run_shell ×6 (workdir) | 3,379+911+226+149+681+344 | 201+303+277+367+136+0 | 55 each | 98,499 → 102,168 |
+| 18 | git_status | 75 | 0 (answer text) | 25 | 102,268 (final peak) |
+
+All three distributions hit the same peak (102,268 chars ≈ 25,570
+tokens) because the peak is fixed by `W`; they differ only in
+when the crossing happens (first request ≥80,000 chars: req 8 in all
+three; first request ≥92,000 chars: req 11 / 13 / 15 across the three
+distributions on the trial splits below). The replay verifies the
+chosen ceiling's count under each, and the selection fails if the
+count moves between distributions (§11.3).
+
+Whether the recorded sizes are pre- or post-`tool_result_cap` is
+resolved by `app.go:3967-3998` + `turn_phases.go:587-628`:
+`toolLine(tc, result)` — and therefore the transcript's byte labels —
+is built from `result.text` **after** `CapOrStub` (the cap is applied
+at `turn_phases.go:628`, the line at `:587/:599`). The 8,499 B labels
+are already post-cap text (kept head + spill suffix sized to the
+8,000-byte cap, `internal/tools/toolcap.go:464-483`), so the
+transcript's bytes are the final in-Conv sizes. The replay therefore
+sets its test `ToolResultCap` ≥ 8,499 (still the default shape — every
+injected body ≤ 8,499 B, so `CapOrStub` is a no-op) instead of
+chaining a second cap over the recorded bodies.
+
+(The earlier per-call table is superseded by the input table above —
+kept here only for the narrative; delete on commit. It contained no
+argument column and ended at 89,950 chars = results + text only,
+eleven thousand short of the anchored `W`.)
+
+After tool 18, one final content response (request 19): the report text
+(~1.2 KB) plus `report.json` content. The deepest projection is at
+request 19 — **102,267–102,270 chars ≈ 25,570 tokens** (preamble
+53,084 + task 751 + `W` 48,432–48,435), anchored to the exact total
+from the collapse notice. Three results are large (8,499 / 8,499 /
+6,042 B); the rest are ≤3.4 KB. The 45,000-token ceiling (180,000
+chars) is ~1.76× this peak. The turn-end collapse that *did* fire
+(12,108 tokens at the end) shows even the small working set was
+collapsed — the mid-turn ceiling was never crossed.
+
+**Strategy named:** sandbox-offloaded parse — the model wrote whole
+Python parsers to `/tmp` inside the sandbox, probed hypotheses about
+correction targeting with small scripts, and got only bounded output
+back. The ledger bytes (40 × ~43 KB) never entered Conv at all; only
+query outputs did. This is the correct general workaround for the
+conversation growth the task intends to force, and it is why
+verification cannot depend on content volume: the offload *reduces*
+in-conversation bytes but the conversation still accumulates one round
+per probe, so a ceiling in the low-20s of thousands of tokens still
+fires on this strategy.
+
+### 11.3 Block 1 — calibration (design)
+
+Replay the recorded sequence through a throwaway Go test (package
+`agent`, deleted before commit — same discipline as Fix 1's §8.7), driving
+the real `streamTurn` with the scripted fake backend (`sseServer` +
+`toolCallFrames`, `internal/agent/testhelpers_test.go:221-269`) and the
+real `collapseMidTurnPrefix` path — with **final in-Conv sizes** (§11.2):
+the fake executor returns result bodies of exactly the recorded byte
+sizes (filler text of that length), and arguments carry the §11.2
+input table's byte sizes (passed as the `toolCallFrames` argument
+payloads of the matching total length). The sequence, batching (one
+tool call per request, matching the real trace), and final content
+answer are reproduced as recorded. The real tool **names** are
+preserved on the fake calls (`read_file` specially affects
+`buildFindings` — §11.2 checkpoint note).
+
+Modes: `ContextModules=off` and `ContextModules=on`, same sequence,
+each mode's **own measured preamble** (`buildPreamble` per mode —
+written as 53,084 / 53,500 in §8.7 but re-measured in the test, since
+Δ416 B flips a count near a boundary). `tool_result_cap` and
+`context_mode` are **not** pinned today (a false claim in §10.2.1 /
+`bench/README.md:402-404` — the merge sets only the two collapse keys,
+`bench.sh:867`, grep-verified), so the throwaway test runs at defaults
+and the resulting ceiling is valid **only on that basis**; the host's
+effective values are recorded as an explicit precondition, and pinning
+is assessed in §11.5. `style_guide_paths` was not active on the real
+run (no `style` line in the run log; style selection only adds bytes
+when a guide is enabled and a matching tool path was observed —
+`styleguides.go:338-431`) — the precondition records that too.
+
+Candidates (tokens → chars): 20,000 (80,000), 21,000 (84,000), 22,000
+(88,000), 23,000 (92,000), 24,000 (96,000), 25,000 (100,000), 26,000
+(104,000), 28,000 (112,000), 32,000 (128,000). Rationale: peak ≈ 25.6k
+tokens, so values just below it; **below ~20k the calibration thrashes**
+— post-collapse size is `F + tailBytes` with
+`F ≈ 53.8K (preamble+task) + checkpoint (note capped at 1,200,
+`noteCapBytes` `collapse.go:431`, + findings capped at 1,500,
+`maxFindingsBytes` `collapse_findings.go:18`) ≈ 55–57K`, and the tail can
+fill `tailCap = 30% of ceiling`, so re-fire is near-guaranteed while
+`0.7·C ≲ F + checkpoint`, i.e. below ~19.7–20.3k tokens (§8.7's 38–39
+collapses at 32K/64K chars are exactly that regime). The usable window
+is ~20.3k–25.6k; candidates 17–19k are excluded for that reason.
+The test also prints `hardMax` (`activeThresholds`) and asserts
+`hardMax > ceiling` for every candidate, with `ContextLimit` set to the
+real 1M-token profile from the log header (991,808 usable), so
+pruning/hard-max cannot silently take over.
+
+Selection rule (from the task, hardened by reviewer R2): the ceiling
+where this real run would collapse **at least 1 and at most 3 times in
+BOTH modes**, same value in both modes, preferring 2 — **and** whose
+count stays in 1–3 in both modes under all three argument
+distributions (§11.2: heredoc-concentrated / even-spread /
+late-heavy), with **no count boundary within ~1.5 KB** of the chosen
+ceiling's trajectory (checkpoint-size variance). The chosen candidate
+is the most stable passing one (preferring 2; if two pass, the one
+further from a boundary under all three distributions). If no
+candidate passes, that is reported and no ceiling is committed.
+Applies to collapse-long-v2 only; collapse-long v1 stays unchanged.
+The reassurance that the `hardMax` assert (`§11.3`) and the per-mode
+preamble printing are part of the table the replay prints, so the
+chosen number is traceable. The self-test gains a **v2 recording
+stub asserting the new literal and a v1 recording run asserting 45000**
+(the existing stub only runs `collapse-long`, so after the split nothing
+would assert the v2 branch — reviewer B7). The assertions compare
+against **hardcoded literals**, not the `_collapse_ceiling` variable
+(a variable-vs-variable comparison is tautological). Otherwise the
+stub machinery (pass/valid, fail, invalid via noop, grep-only) is
+size-independent and unchanged.
+
+**On-mode caveat (BLOCKING for "both modes" claims).** This trace never
+called `load_module` — but every tool in this trace (`list_dir`,
+`search_files`, `read_file`, `run_shell`, `git_status`) is in
+`coreToolNames` (`internal/agent/modules.go:41-86`), so no tool here
+requires `load_module` at all; a real on-mode run of this strategy
+loads **zero** modules and `preservedSchemaMessages` has nothing to
+pin. A strategy that *does* load a module (e.g. an LSP-heavy one)
+raises `F` permanently after the first load, so the on-mode count for
+**it** can exceed the replay's. The "1–3 in both modes" claim is
+therefore a claim about **this recorded strategy**, on-mode included
+(preamble swap only, zero module loads — true for this trace's tool
+set). Do-not-alter forbids new real-model runs, so a host on-mode run
+is recorded as unverified, not assumed (§11.4).
+
+### 11.4 Risks and what could make the calibration wrong
+
+- **Over-cap results (8,499 B ×2): resolved.** Transcript byte labels
+  are built after `CapOrStub` (`turn_phases.go:587-628`,
+  `app.go:3967`), so 8,499 B is the final post-cap text. The replay
+  injects final in-Conv sizes — the recorded 8,499 B **is** the in-Conv
+  size — and bypasses the cap for those two calls. Chaining a second
+  `CapOrStub` over them would shrink them by ~500 B each.
+- **Argument bytes (12,587–12,590 B total, distribution estimated).**
+  The "lower bound is safe" argument proves only ≥1 collapse, never ≤3:
+  larger real arguments cross earlier and can produce **more**
+  collapses, and shift which rounds the 30% tail keeps. This is why
+  §11.2 anchors to the exact total (`W` = 48,432–48,435 from the
+  collapse notice) instead of treating the peak as a lower bound. The
+  per-call distribution is estimated — the residual risk is a ±1 count
+  at a boundary, mitigated by the three-distribution stability rule
+  (§11.3): a candidate passes only if its count stays in 1–3 in both
+  modes under all three distributions, and the chosen one is the most
+  stable. If no candidate passes, that is reported as the result and
+  no ceiling is committed.
+- **Post-collapse tail dynamics.** After a mid-turn collapse the
+  projection keeps preamble + task + one checkpoint (note capped at
+  1,200 + findings capped at 1,500) + a ≤30%-of-ceiling tail. Whether a
+  second collapse fires depends on that post-collapse size plus
+  remaining growth, so the replay exercises the real
+  `collapseMidTurnPrefix` and **reports the post-collapse
+  `sentSize(contextProjection())` at each collapse** — a 1–2 KB
+  checkpoint mis-estimate at a 68–88 KB ceiling would otherwise silently
+  flip the count. The `boundaryIdx <= taskIdx+1` early-return (a
+  collapse needs at least two completed rounds before it can fire) is
+  likewise live in the replay.
+- **Modules on/off difference.** The Δ416 B preamble is re-measured
+  per mode in the replay. A module-loaded round would pin
+  `load_module` schemas through every later collapse
+  (`preservedSchemaMessages`, `collapse.go:793-840`), raising `F`
+  permanently — but no tool in this trace is module-deferred (§11.3),
+  so zero loads is the honest on-mode replay of this strategy. The
+  host on-mode run is unverified (DO NOT ALTER forbids new real-model
+  runs).
+- **Result JSONL ≠ Conv.** The recorded "B" figures are transcript
+  display sizes. They are equal to in-Conv sizes only because
+  `toolLine` prints `result.text` post-cap and `TranscriptSize` counts
+  the same string; per-message structural overhead is counted in
+  neither. The one known constant difference: `sentSize` adds
+  `styleSelection().Bytes()` (zero here — no style guide active on
+  this run). The reconstruction treats displayed bytes as in-Conv
+  bytes; the exact `W` cross-check (§11.2) constrains the total, so
+  any residual per-message constant can only shift which call crosses.
+- **Preamble is host-dependent.** Conv[0] is >50% of any candidate
+  ceiling. The log shows the prompt loaded from the mirrored
+  `/tmp/.../agent.txt` — the user's own file, byte-equal to
+  `prompts/agent.txt` today. A prompt/`agent.txt` change on the host
+  invalidates the chosen number; README states this.
+- **One run, one model (Haiku).** Only n=1, modules off; modules-on is
+  a preamble-swap replay, not a real run. The chosen ceiling is that
+  run's property; the `invalid` safety net stays for other strategies
+  that stay below it (stated in `bench/README.md`). Run-to-run variance
+  exceeds the ~4.5k-token window, so expect `invalid` rows to continue
+  on different strategies/models — the calibration makes *this*
+  strategy collapse, not every strategy.
+- **Merged-config pinning.** `tool_result_cap` / `context_mode` are
+  not pinned by the merge today (§11.3); §11.5 only parameterizes the
+  ceiling per task and does **not** add pins, so a non-default user
+  `tool_result_cap`, `context_mode` or `context_prune` still invalidates
+  the calibration. Recorded as a precondition on the host run, and the
+  §10.2.1 / README pin claim is corrected in Block 2 rather than
+  silently re-verified.
+- **Turn-end vs mid-turn.** Only mid-turn collapses (`collapses`) gate
+  validity. A ceiling that only triggers the turn-end collapse leaves
+  the run invalid, so the replay counts `midTurnCollapses` only.
+
+### 11.5 Touched paths (planned)
+
+- `scripts/bench.sh` — parameterized per task (one `_collapse_ceiling`
+  variable, set from the task name before the branch, so the
+  `mktemp -d` / `umask 077` / `jq 2>/dev/null` / `../` escape /
+  `bench_cfg_cleanup` guards cannot drift): `collapse-long-v2` gets the
+  new ceiling, `collapse-long` keeps 45000. The four literal sites
+  (`jq` merge, no-user-config printf, log line, self-test `jq`
+  assertion) all read the shared variable. The stale `3 collapses in
+  both modes (plan §8.7)` comments are updated to point at this
+  section's table.
+- `bench/README.md` — measurement table, calibration table, chosen
+  ceiling + why, the limit, the non-comparability note (§11.6), and a
+  correction of the false `tool_result_cap`/`context_mode` pin claim
+  (§10.2.1/§11.3): the merged config sets only the two collapse keys.
+- `docs/plans/bench-hard.md` — this section.
+- `CHANGELOG.md` [Unreleased] — bench entry (Block 2).
+- Wakil itself unchanged: `git diff 6d1a86a..HEAD -- internal cmd
+  prompts` stays empty. Throwaway replay test deleted before commit.
+
+### 11.6 Block 2 — docs (planned)
+
+`bench/README.md` (the measurement table, the calibration table, the
+chosen ceiling and why, the limit: a different strategy can still stay
+below; invalid remains the safety net), `CHANGELOG.md` [Unreleased]
+entry. Non-comparability note: the single v2 row before this commit
+(`20261125T013001`) used the 45,000 ceiling and isn't comparable; name
+the commit.
+
+### 11.7 Tests
+
+- **Block 0/1 (throwaway replay):** the throwaway `internal/agent`
+  calibration test prints the candidate × mode table (deleted before
+  commit) plus per-collapse post-collapse `sentSize`, per-mode
+  preambles, and the `hardMax` assert. The permanent record is the
+  plan tables (§11.2–11.3) and the chosen literal in `scripts/bench.sh`.
+- **Block 1 (self-test):** `scripts/bench.sh --self-test` — the
+  collapse-long-v2 cases (grep-only fail, ranged-read pass, noop invalid)
+  **plus a new v2 recording run asserting the new ceiling and the
+  existing v1 recording run asserting 45000** (so a split bug cannot
+  pass green); no other collapse-long-v1 case changes. Full gates per
+  the task: `gofmt -l cmd internal prompts scripts`, `go vet ./...`,
+  `golangci-lint run`, `go test -count=1 -timeout 30m ./...` (every
+  package line reported), `scripts/bench.sh --self-test`, shellcheck on
+  changed scripts if installed.
+- **Block 2 (docs):** `scripts/check_config_docs.sh` unaffected (no
+  config change); `bench/README.md` + CHANGELOG.
+
+### 11.9 Mashūra round 2 — findings and disposition (2026-11-25)
+
+Round 2 asked whether the Round-1 folds resolve the blocking
+calibration errors. All three reviewers: folds resolved in **direction**
+but two gaps remained. **Folded (R2):** the §11.2 input table now
+carries an explicit per-call argument column summing to 12,588 with
+rows ending at the anchored peak (102,268 chars) — the trajectory, not
+just the total, is specified; selection now requires 1–3 in both modes
+under **three named distributions** (§11.2) with no count boundary
+within ~1.5 KB, and a defined fallback (no candidate passes ⇒ no
+ceiling committed); `ToolResultCap` handling corrected whole (test cap
+≥ 8,499, §11.2 — no per-call bypass fiction); checkpoint provenance
+confirmed argument-derived (`extractPaths`/`buildFindings` read no
+result content) with the ~1.5 KB boundary-margin rule; precondition
+evidence cited from the log header with the missing run-time check
+stated plainly (§11.1). **Corrected figure:** arguments 12,587–12,590
+(was 12,441; the 146-B residue was final-answer text outside `W`).
+**Listed:** candidate 20,000 sits on the thrash floor (expect
+rejection by the stability rule, not by the sweep); `tokens_in` gap
+noted but not reconciled (tool schemas are excluded from the ceiling
+by design); "both modes" claims stay scoped to this recorded
+strategy in README wording.
+
+### 11.8 Mashūra round 1 — findings and disposition (2026-11-25)
+
+Round 1 asked: "Is this a sound way to make collapse-long-v2 collapse
+reliably, and what could make the calibration wrong?" (BLOCKING scoped
+to a calibration error that changes the chosen number, a modules off/on
+difference, or a leak of secrets or checks). 3 reviewers (claude-fable,
+muse-wonder, gemini-neon) answered. Verdict: approach sound in shape,
+but the calibration as drafted would pick the wrong number. All claims
+below verified against the tree (read in this session), not taken on
+faith.
+
+**Folded as BLOCKING:**
+
+- **B1 — Reconstruction undercounted by ~12.4 KB; the log holds the
+  exact figure.** `12108` in the turn-end notice is `wSize/4`
+  (`formatCollapseNotice`, `collapse.go:1449-1453`), `wSize` = Σ
+  `messageSize` over the mid-turn messages (`collapse.go:1191-1194`,
+  `messageSize` at `:2070-2079`). True `W` = 48,432–48,443 chars vs
+  35,991 reconstructed. **Folded:** §11.1/§11.2 anchor to 48,432 and
+  name the 12,441-B gap as argument bytes.
+- **B2 — "Lower bound is safe" proves only ≥1, not ≤3 (see §11.4).**
+  Candidates 17–20k sit in the post-collapse thrashing floor
+  (`C > F/0.7 ≈ 19.7–20.3k` tokens). **Folded:** candidate range starts
+  at 20,000; distribution sensitivity checked in the replay.
+- **B3 — On-mode `load_module` pinning.** Verified
+  (`preservedSchemaMessages`, `collapse.go:793-840`): a loaded module's
+  schemas survive every collapse, raising `F` permanently. **Partly
+  disproved for this trace:** every tool in the recorded trace is in
+  `coreToolNames` (`modules.go:41-86`), so no tool needed
+  `load_module` — zero loads is the honest on-mode replay of this
+  strategy. **Folded:** on-mode = preamble swap only; host on-mode run
+  recorded as unverified (DO NOT ALTER forbids new real-model runs).
+- **B4 — `tool_result_cap`/`context_mode` not pinned (false §10.2.1
+  claim).** Grep-verified: merge sets only the two collapse keys
+  (`bench.sh:867`). **Folded:** corrected in §11.3/§11.4/§11.5; README
+  correction assigned to Block 2; precondition recorded. No pins added
+  (out of scope for the per-task ceiling split).
+- **B5 — Over-cap double-count risk.** Resolved by code order:
+  `toolLine` is built from post-cap text (`turn_phases.go:587`,
+  `app.go:3967`). **Folded:** inject final in-Conv sizes, bypass the cap
+  for the two 8,499-B calls (§11.2/§11.4).
+- **B6 (muse-wonder 6) — Same as B4 for v2.** Folded with B4.
+- **B7 (muse-wonder 7) — Self-test asserts nothing about the v2
+  ceiling.** **Folded:** new v2 recording stub + v1 assertion (§11.5,
+  §11.7).
+
+**Listed, not folded:** "reliably" is n=1 — variance exceeds the window
+(stated in §11.4); calibration not reproducible from the tree (the
+replay is throwaway by DO NOT ALTER; the input tables in §11.2–11.3
+are the permanent record); `tokens_in` (62k/request average) vs chars/4
+is unexplained here (tool schemas are real request bytes but are
+excluded from the ceiling by design — noted, not reconciled); stale
+§8.7 comments updated per §11.5; README true-sum ranges / "parsed 640" /
+wrong-sum values are a pre-existing leaky surface (unchanged here).
+
