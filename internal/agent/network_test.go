@@ -268,7 +268,7 @@ func TestEffectiveNetwork(t *testing.T) {
 func TestSystemPromptNetworkMode(t *testing.T) {
 	const staticPrefix = "STATIC AGENT PROMPT PREFIX"
 	wantHost := "Network mode: host (LAN and internet reachable)."
-	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 5.14+)."
+	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 6.7+ (Landlock ABI v4))."
 
 	lastLine := func(s string) string {
 		lines := strings.Split(s, "\n")
@@ -453,7 +453,7 @@ func (e *runningSessionNetworkExec) SandboxStatus(_ context.Context) sandbox.Sta
 // prompt line to "open" once the sandbox session is replaced.
 func TestSystemPromptNetworkMode_StaysLiveUntilSessionReplaced(t *testing.T) {
 	wantHost := "Network mode: host (LAN and internet reachable)."
-	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 5.14+)."
+	wantOpen := "Network mode: open (public internet over TCP only; LAN and private addresses are refused with a permission error, do not retry them; open is meant for code you trust and needs kernel 6.7+ (Landlock ABI v4))."
 
 	lastLine := func(s string) string {
 		lines := strings.Split(s, "\n")
