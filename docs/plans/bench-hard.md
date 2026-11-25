@@ -464,3 +464,359 @@ safe). `CHANGELOG.md` [Unreleased] bench entry, extended.
 `bench.sh:853` writes the "no user config" fallback without a `(umask 077 && …)`
 guard. It holds no secrets today (two non-secret keys), but the 0600 invariant
 should be uniform — fixed alongside the mirror in Block 1.
+
+## 10. collapse-long-v2 and debug-subtle fix (BASE 326def0, Tier 3)
+
+### 10.0 What happened on the host (verified this session)
+
+**collapse-long v1 never collapsed in real runs.** Three real Haiku runs
+completed and passed the check, all correctly marked `invalid` (0 collapses):
+
+| run log | result | in / out tokens | tool calls |
+|---|---|---|---|
+| `bench/results/collapse-long-1-003037.log` | pass | 394,955 / 3,774 | 6 |
+| `bench/results/collapse-long-1-003123.log` | pass | 449,507 / 5,140 | 7 |
+| `bench/results/collapse-long-1-003545.log` (CSV `20261125T003545-bench.csv`) | pass | 326,007 / 3,601 | 5 |
+
+Per-tool-call sequence from the transcripts (result sizes are the transcript
+labels — bytes **after** `ToolResultCap=8000` truncation, `internal/config/config.go:493`):
+
+| request | tool call | result bytes | cumulative labelled bytes |
+|---|---|---|---|
+| 003037 #1 | `run_shell ls -la docs/` | 2.6 KB | 2.6 KB |
+| | `read_file docs/note-01.txt` | 4.7 KB | 7.3 KB |
+| | `search_files docs` | 6.0 KB | 13.3 KB |
+| | `run_shell cat … \| sort \| uniq -c` | 2.9 KB | 16.2 KB |
+| | `run_shell for f in note-*.txt …` | 4.3 KB | 20.5 KB |
+| | `run_shell python3 … parse + write report.json` | 1.6 KB | 22.1 KB |
+| 003123 #1 | `list_dir docs` | 1.1 KB | 1.1 KB |
+| | `read_file_full docs/note-01.txt` | 8.3 KB | 9.4 KB |
+| | `run_shell python3 … unique lines` | 3.8 KB | 13.2 KB |
+| | `run_shell python3 … parse` | 3.2 KB | 16.4 KB |
+| | `run_shell python3 … verify filler` | 103 B | 16.5 KB |
+| | `run_shell python3 … verify` | ~0.2 KB | 16.7 KB |
+| | `write_file report.json` | 79 B | 16.8 KB |
+| 003545 #1 | `list_dir docs` | 1.1 KB | 1.1 KB |
+| | `read_file docs/note-01.txt` | 8.3 KB | 9.4 KB |
+| | `search_files docs` | 4.3 KB | 13.7 KB |
+| | `search_files docs` (no matches) | 0 B | 13.7 KB |
+| | `run_shell grep -v filler` | 2.5 KB | 16.2 KB |
+| | `write_file report.json` | 79 B | 16.3 KB |
+
+**Strategy (all three): scripted extraction, never ranged reads.** Each run:
+one orientation read of `note-01.txt`, one exploratory grep/search, then a
+Python/shell script that parses all 40 files in the shell and writes
+`report.json`. The model's transcript says it plainly ("I'll parse them with a
+script", "I used a shell filter to strip the repeated filler"). Total
+conversation growth was ~16–22 KB labelled bytes ≈ 4–5.5K tokens — an order of
+magnitude below the 45,000-token ceiling (180,000 chars, `scripts/bench.sh:867`).
+
+**Why v1 didn't collapse (two compounding causes).**
+1. **The fixture is grep/script friendly.** Numbers are in words but the
+   sentence shapes are only 5 fixed phrasings (`bench/tasks/collapse-long/gen/main.go:60-66`);
+   a script listing unique lines trivially recovers them. Our earlier replay
+   (§8.7) assumed 40 sequential `read_file` calls — the real model never did that.
+2. **Tool results are capped at `ToolResultCap=8000` chars** (`app.go:2464`
+   `CapOrStub`). Even the one full `read_file_full` returned 8.3 KB ≈ the cap.
+   The conversation can only grow by ~8 KB per read, so the ceiling needs
+   ~180,000 chars ≈ 23 capped reads — and the model's scripted strategy used ~6 calls.
+
+**debug-subtle rejects correct fixes.** `bench/tasks/debug-subtle/check.sh:68-70`
+counts ALL changed lines vs the pristine tree and fails at >6. The reference fix
+is 5 lines (4-line loop → 1). The host runs (`debug-subtle-1-005309.log` and 5
+siblings) all show `check: ok (TestTakeCases TestHelperCases)` + `fix is not
+minimal: 8 changed lines`. The original brief asked to count only lines OUTSIDE
+`windowTake`; the implementation counts everything. A correct fix that rewrites
+the loop plus a comment (12 lines) or clamps negative `k` inside the helper
+fails on size, not on correctness.
+
+**No secrets in the logs examined.** The three collapse-long logs and one
+debug-subtle log above contain no keys, Authorization headers, or endpoint
+URLs — only model prose, tool labels, and harness lines. (The run config
+carries endpoints but is never printed; this session did not read it.)
+
+### 10.1 Block 0 — numbers that drive the v2 design
+
+- Ceiling counts **messages only**: `sentSize(contextProjection())`
+  (`internal/agent/styleguides.go:430-432`; `TranscriptSize` = Σ `len(Content)` +
+  Σ `len(ToolCall.Arguments)`, `internal/core/format/format.go:43-54`). The
+  ~53 KB preamble is inside `Conv[0]` and therefore inside the count; the tool
+  array is not. Same value for modules off/on (the ~416-byte on/off preamble
+  delta from §8.2 is negligible at v2 scale — do not compensate).
+- `ToolResultCap` default is **8000 chars** (`internal/config/config.go:493`;
+  cap applied `app.go:2464` via `wtools.CapToolResult`). Long-session default
+  is 200000 tokens; the bench override is 45000 tokens = 180,000 chars
+  (`scripts/bench.sh:867,908,911`).
+- Real per-call growth: one `read_file_full` of a whole 8KB fixture file =
+  8.3 KB in Conv. One `search_files` = 4.3–6.0 KB. One shell script pass =
+  1.6–4.3 KB.
+- To collapse ≥2 times under a scripted strategy, a correct solution must
+  pull **≥ 2× the ceiling in ceiling units** through the conversation, and the
+  must-read text must exceed what any single tool result can return
+  (8 KB cap / 40 files ⇒ the fact region must sit past the 8 KB cut in each file).
+
+### 10.2 Block 1 — `collapse-long-v2` (additive; v1 untouched)
+
+New task dir `bench/tasks/collapse-long-v2/` with the same layout as v1
+(`task.txt`, `check.sh`, `repo/`, `solution/`, `setup.sh`, `gen/`).
+`collapse-long` (v1) files are **not modified** — old CSV rows stay comparable.
+v2 is a new task name, discovered by the existing glob (`scripts/bench.sh:222-228`);
+self-test noop/solve loops cover it generically.
+
+**Design goal (revised after Mashūra round 1):** make the semantic-judgment
+text itself several times the ceiling, so even a best-effort script filter's
+output exceeds the ceiling. Two sub-goals from the review, stated plainly:
+(a) commit to **many facts per file** with dense decoys — filler must contain
+number words, figures for other entities, superseded/conditional statements —
+so a script that prints every candidate line across 40 files exceeds 180K
+chars; (b) so every reasonable strategy (scripted or in-turn) crosses the
+ceiling at least once. The `invalid` rule (completed 0-collapse run) extends
+to v2 by task name: `scripts/bench.sh:581` reads `task = "collapse-long"`;
+add `|| task = "collapse-long-v2"` (the §4 single computation point in
+`csv_row`, no other validity change). **Validity stays ≥1 collapse** — the
+"≥2" wording in this plan and in earlier drafts is corrected: ≥1 is what
+`csv_row` implements and what the self-test asserts; the design targets
+repeated crossings but the rule is ≥1 (Mashūra non-blocking items folded).
+
+**Fixture (seed-generated, generator + seed outside the workdir, as v1).**
+`gen/main.go` (new, seed fixed in code, own seed value distinct from v1's 42):
+- 40 files `docs/note-XX.txt`, each **~60 KB** (7.5× v1's 8 KB) of natural-language
+  prose, each stating **~12 facts** (one per entity) in words — dense facts,
+  not 1 fact per filler desert:
+  - numbers written in words with varied names/aliases; entities referred to by
+    2–3 aliases each, assigned per file;
+  - each file states its ~12 facts at a seeded random offset (e.g. a 400-line
+    "ledger block" at 20–45 KB into the file, past the 8,000-char
+    ToolResultCap cut), so `cat`/head/`read_file` whole-file reads are
+    truncated before the facts and the agent must read in offset/limit ranges;
+  - **dense decoys in filler**: filler sentences contain number words, figures
+    about other (non-totalled) entities, "approximately" hedges, and
+    conditional statements — so a number-word filter that prints every
+    candidate line outputs **> 180K chars** across the corpus;
+  - some files carry a **correction**: an early figure, then a later sentence
+    that supersedes it ("the entry above is withdrawn; the corrected figure
+    is …"), so a script that grabs the first (or any unverified) figure gets
+    it wrong — the check needs the final figure per entity.
+- Canvas: 40 files × ~60 KB ≈ 2.4 MB on disk. The correct-solution must-read
+  text is the 40 ledger blocks ≈ 40 × ~20 KB ≈ 800 KB ≈ **4× the 180,000-char
+  ceiling** (≥ 2× the ceiling in ceiling units, as the brief requires —
+  measured in ceiling units, not disk bytes).
+- **best-effort script-only solver must fail** (Mashūra B4): before the commit,
+  the author runs a best-effort python script (dedupe + number-word filter +
+  last-wins over corrections) against the generated fixture. The fixture is
+  rejected unless that script produces a **wrong** `report.json`. This test is
+  a pre-commit gate, recorded in this plan's final form; the self-test's
+  `stub_greponly-v2` is a regression lock on the same property (it must stay
+  `fail`), not the proof of the wall.
+- **Timeout/cost envelope** (Mashūra B2): a ranged-read strategy reads
+  ~800 KB at ≤8 KB per `read_file` ≈ **100 tool calls**. At that scale the
+  default 600 s timeout is tight for a 1M-token model with per-call latency.
+  The bench is run via `scripts/bench.sh --task collapse-long-v2 …` and the
+  user may pass `--timeout 1800` — the README states the recommended timeout
+  and the ~100-call estimate. (A smaller fixture was considered and rejected:
+  ~800 KB is the honest 4×-ceiling size; a sub-ceiling fixture would be a
+  v1-class false pass.)
+- **Determinism** (Mashūra B5): the generator must not range over a Go map in
+  a way that varies output (slices only, or sorted keys); the author runs
+  `setup.sh` twice into two dirs and `diff -r`s them (byte-identical) before
+  the commit. The emitted answer key is written to `gen/` (outside the
+  workdir) and the self-test asserts it equals the `check.sh` constants
+  (generator↔check tie, so a generator bug cannot leave the task unsolvable
+  with a green self-test).
+- Report requirement: `report.json` with per-category sums, where the check
+  needs facts from **early AND late files** — so a run that collapses early
+  must retain early facts. **Falsifier note** (Mashūra B3): a run that collapses
+  by exploring then scripts, or that externalises a running tally to a scratch
+  file, can `pass` validity without retaining anything. The task measures
+  "crossed the ceiling with a correct report", not "recalled from the archive"
+  — stated in `task.txt` and README as a known limit, not hidden. The dense-
+  decoy wall makes the "explore then script" path produce a wrong report, so
+  the realistic bypasses are narrow, but the check cannot rule them out
+  structurally. `check.sh` checks only `report.json` (as v1); it does not
+  inspect the transcript for scratch-file writes.
+
+**task.txt** describes only the goal (read every file, sum by category,
+corrections win, don't modify docs/) — no mention of the offset, the cap, or
+the phrasing variety.
+
+**check.sh**: parsed-JSON comparison like v1 (expected sums baked in, python3,
+exit codes 0/1 via `gocheck_fail`/99 via `gocheck_error`), run through
+`gocheck_init`. Expected sums live only in `check.sh` + `solution/report.json`,
+never in `repo/`.
+
+**setup.sh**: same shape as v1 (`go run -C "$here/gen" . "$PWD/docs"`),
+generator + seed outside `repo/`, runs before the workdir's first commit;
+`leak_check` + post-run leak guard cover `gen/` generically.
+
+**10.2.1 Ceiling (chosen from Block 0 measurements, not a replay).**
+The real Haiku strategy pulled ~22 KB (003037) in 6 calls and ~17 KB (003123)
+in 7, ~16 KB (003545) in 5. The cap is 8 KB per tool result. A ceiling of
+**45,000 tokens (180,000 chars)** — the SAME value as v1, settings identical
+for modules off/on — needs ≥ 23 capped reads to fire once, and the v2
+must-read text (~800 KB, 4× the ceiling) crosses it repeatedly. A scripted
+grep strategy must fail the **check** (dense decoys + corrections + aliases),
+not merely avoid the collapse by avoiding reads — that is the acceptance
+test in the fixture paragraph above. `ToolResultCap` and `ContextMode`
+(`long-session`) are **pinned in the same merged config** (Mashūra B6):
+`tool_result_cap: 8000`, `context_mode: "long-session"` — user values that
+change the task are overridden, and the run log records all four numbers
+(ceiling, min_bytes, tool_result_cap, context_mode). `min_bytes` stays 2000
+(one-turn run; neutralises a user value, as v1). The bench override line gains
+`collapse-long-v2` next to `collapse-long` (`scripts/bench.sh:851`), same
+values, same merged-config machinery.
+
+Rejected alternatives: a lower ceiling was considered and rejected — it would
+risk firing during the preamble/task for small files and would make the two
+tasks' CSV rows non-comparable in scale. Same ceiling keeps v1 and v2
+commensurable as "crossed the same ceiling N times".
+
+**Self-test (fake backend).**
+- `stub_solve` for `collapse-long-v2` (today: `collapses:3` when workdir ends
+  `/collapse-long` — extend the match to `*-v2` or use a `-v2`-aware case) →
+  `pass/valid`; `stub_noop` → `invalid/false:no_collapse` (the §4 computation
+  point now includes v2).
+- `stub_wrongreport` (one wrong sum) → `fail`.
+- `stub_greponly-v2`: runs the author-written best-effort filter against the
+  fixture → must `fail`. **Regression lock only** — the wall proof is the
+  pre-commit best-effort script test in the fixture paragraph (Mashūra B4).
+- **Generator↔check tie** (Mashūra B5): the generator writes its answer key
+  beside `gen/`; the self-test asserts the key equals the `check.sh`
+  constants. Two-generation `diff -r` is a pre-commit gate (see above).
+- A **ranged-read simulation**: a stub emitting synthetic tool results that
+  cross the ceiling (e.g. a result-json with `collapses:2` + a correct report
+  produced after ranged reads) → `pass/valid`, proving the run is scorable
+  when the strategy earns ≥1 collapse. (The stub is a harness simulation, not
+  a model; the real-run calibration is the host's job — stated in README.)
+
+**Tests per block:** B1 passes when `scripts/bench.sh --self-test` is green
+including the three new cases, and a direct `check.sh` run on `repo/` fails
+while `repo/`+`solution/` passes in a temp dir.
+
+### 10.3 Block 2 — debug-subtle: a fair minimality rule
+
+`bench/tasks/debug-subtle/check.sh` today counts every changed line across the
+whole tree and fails at >6 (`:68-70`). New rule (hidden tests untouched):
+
+- Count changed lines (gofmt-normalized, hidden tests removed first, exactly as
+  today) **only outside the extended `windowTake` window** — the window runs
+  from the `// windowTake returns…` doc-comment line through the matching
+  closing brace (the `^func windowTake` line plus its contiguous comment
+  block above), so a doc-comment touch on the function is inside, not
+  outside. Lines inside the window are unlimited in count (rewritten loop,
+  comments, clamped `k`).
+- Outside the window: at most **2 changed lines**. Why 2 (revised after
+  Mashūra): the reference fix touches 0 outside lines. The plausible correct
+  touches outside are (a) ONE one-line edit (e.g. fixing the `Take` doc
+  comment or a one-line `Take` guard), costing `-1 +1 = 2` by the existing
+  added+removed counting, or (b) an **import addition** (a new stdlib import
+  costs more than 1 line after gofmt normalization — see below). They are
+  alternatives, not cumulative: 2 exactly covers one one-line edit, and the
+  import case is pre-empted by the wider window + the deleted+added counting
+  below. An import-touching fix needs the file's current import block: if
+  `window.go` has no import, adding one is `import "x"` (1 added line, no
+  blank line is added by gofmt for a single-line import); if it later gains
+  a block, the check normalizes both sides identically. The author verifies
+  the actual diff for the import case at implementation time.
+- **Overall safety cap: at most 30 changed lines in total** (inside +
+  outside), to stop a whole-file rewrite, which would otherwise be unlimited
+  inside the window and could smuggle in the hidden tests' answers (hardcode
+  boundary inputs in ~1000 lines). 30 is sized from the real function: the
+  function is 13 lines; a clean rewrite with comments lands at ~20–25
+  changed lines (removed+added). 30 rejects anything package-wide.
+- **Counting detail** (Mashūra B9): removed lines are classified by their
+  OLD-file line number (inside iff inside the pristine window range); added
+  lines are classified by their NEW-file line number (inside iff inside the
+  agent-tree window range). A hunk spanning the boundary is split per-line.
+  Pure insertions are classified by the new-file position. New/deleted files
+  (other than the agent's own `*_test.go`, which are excluded from the diff
+  entirely — see next bullet) count all their lines as outside. Boundary
+  self-tests cover: insertion directly after the closing brace (outside),
+  insertion of a comment above `func windowTake` (inside window).
+- **Agent-written tests are excluded from the diff.** The diff runs on the
+  test-stripped copy (`gocheck_prepare` deletes every `*_test.go`; the check
+  deletes the hidden tests it copies in). The agent's visible-test edits
+  never count toward the minimality rule — a correct fix plus a regression
+  test is not punished (Mashūra B8).
+
+**Implementation in check.sh:** after the existing gofmt-normalization, extract
+the `windowTake` line range from `window/window.go` on both trees (awk from
+`^func windowTake` to the matching `^}`), count:
+- `outside` = changed lines whose old-file coordinate falls outside that range
+  (for new/deleted files, all lines count as outside — a new helper file is
+  outside, correctly);
+- `total` = all changed lines (existing count).
+Fail with distinct messages: `fix touches N lines outside windowTake (at most 2
+allowed)` / `fix is not minimal: N changed lines (at most 30 allowed)`.
+Deterministic across gofmt versions because both trees are gofmt-normalized
+before diffing (the §1.3/§3.1c argument, unchanged).
+
+**Self-test cases** (all through the existing `run_one` + stub machinery):
+1. 5-line reference fix (existing `stub_solve` for debug-subtle) → `pass`.
+2. Correct longer fix inside `windowTake` (12 changed lines: rewritten loop +
+   a comment + clamped `k`) → `pass`. New stub `stub_longfix`.
+3. Correct fix + 5 unrelated lines changed outside `windowTake` → `fail`. New
+   stub `stub_outside`.
+4. Whole-file rewrite (>30 lines: rewrite `window.go` with the fix plus
+   re-structured functions/comments) → `fail`. New stub `stub_rewrite`.
+5. Existing wrong-solution case (bloated `ExtraHelper` outside the function, 12
+   lines) → still `fail` (the existing `stub_bloated`).
+6. **Replay of the 6 host diffs** (Mashūra B7): the author replays each of the
+   6 host `debug-subtle` logs (3 off, 3 on — all `8 changed lines` under the
+   old rule) by applying the logged agent fix to the pristine tree and running
+   the NEW check against it. If any replayed correct fix still fails (extra
+   lines outside the window), the window/budget is widened before the commit.
+   The replay result is recorded in the final report.
+7. Boundary cases (Mashūra B9): insertion immediately after the closing brace
+   → `fail` (outside); contiguous comment added above `func windowTake` →
+   `pass` (inside). New stubs or direct check.sh invocations in the self-test.
+
+**Comparability note** in `bench/README.md`: debug-subtle rows before this
+commit used the old rule (all changed lines ≤ 6) and are **not comparable**
+with rows after it. Name the commit (`git log` at commit time).
+
+### 10.4 Block 3 — docs
+
+- `bench/README.md`: collapsed-long-v2 section (what it is, why v1 didn't
+  collapse — the measured table from §10.0, scripted strategy, 8 KB cap,
+  chosen ceiling 45,000 tokens with the numbers, ≥2 collapses requirement),
+  debug-subtle minimality rule + non-comparability note (§10.3), blockers.
+- `CHANGELOG.md` [Unreleased]: one line per user-visible change.
+
+### 10.5 Open risks
+
+1. **Scripted-around collapse again.** If a model writes the fixture to disk
+   externally, reads it in pieces under the cap, and never lets 180K chars
+   accumulate in Conv, v2 also goes `invalid`. That is the designed outcome
+   (invalid, first-class), not a pass. Mitigation: the 1.6 MB must-read text
+   makes accumulating < 180K nearly impossible for any reasonable read loop —
+   but a per-file process-and-forget loop defeats it structurally. Accepted
+   as a known limit, stated in README (same class as v1's scripting limit).
+2. **Phrasing variety is finite.** With 6+ phrasings the grep-only stub fails,
+   but a clever model that reads 1–2 files fully and infers the pattern can
+   still script. The offsets + corrections are the teeth; the phrasings are
+   friction, not the wall. The grep-only simulation in the self-test proves the
+   wall, not the friction.
+3. **Ceiling vs preamble symmetry.** 180K chars vs ~53 KB preamble leaves
+   ~127 KB of growth before firing. A ranged-read strategy reading 8 KB at a
+   time needs ~16 reads to fire once — the v2 fixture (40 files × ~40 KB of
+   ranged reads each) guarantees that when the agent actually reads. OK.
+4. **debug-subtle window extraction.** Parsing `func windowTake` by `^func`…
+   `^}` is brittle if the agent moves the function or renames it — a rename
+   is a correct behaviour change but fails extraction, so every line counts as
+   outside and the fix fails. This matches the task text ("inside the buggy
+   function") — the task says where the fix belongs. Accepted; the failure
+   message names the function.
+5. **No real-model validation this session** (DO NOT ALTER: no real model
+   requests except Mashūra). The ceiling and the grep-only wall are proven by
+   measurement + self-test simulations; the host's real Haiku runs are the
+   calibration. Stated as unverified in the final report.
+
+### 10.6 Touched paths
+
+- `bench/tasks/collapse-long-v2/` (new: task.txt, check.sh, setup.sh,
+  gen/main.go, repo/{go.mod}, solution/report.json)
+- `bench/tasks/debug-subtle/check.sh`
+- `scripts/bench.sh` (override branch + validity line + stub match + self-test stubs)
+- `bench/README.md`, `CHANGELOG.md`, this plan (`docs/plans/bench-hard.md`)
+- Wakil itself is **not** touched: `git diff 6d1a86a..HEAD -- internal cmd prompts`
+  stays empty.
