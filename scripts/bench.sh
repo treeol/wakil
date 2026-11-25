@@ -849,6 +849,18 @@ run_one_locked() {
     _wakil_config_env=""
     _bench_cfg_link_names=""
     if [ "$task" = "collapse-long" ] || [ "$task" = "collapse-long-v2" ]; then
+        # One ceiling per task: v1 was calibrated on the synthetic
+        # 40-read replay (45000 tokens, plan §8.7), v2 on the real
+        # 2026-11-25 Haiku run (21000 tokens, plan §11). _collapse_ceiling
+        # is read by the jq merge, the empty-base printf, the log line,
+        # and the self-test assertions below; everything else in this
+        # branch (private temp dir, 0600/0700, mirror, cleanup) is shared
+        # by both tasks so the secret-handling cannot drift.
+        if [ "$task" = "collapse-long-v2" ]; then
+            _collapse_ceiling=21000
+        else
+            _collapse_ceiling=45000
+        fi
         _user_cfg="${WAKIL_CONFIG:-$HOME/.config/wakil/config.json}"
         if [ ! -f "$_user_cfg" ]; then
             # Wakil tolerates a missing file (defaults + env apply); merge
@@ -864,7 +876,7 @@ run_one_locked() {
             # user file. An unparseable user file means wakil itself would
             # fail on it — that is recorded via the config-unreadable
             # exit_reason below, not by a bench abort.
-            ( umask 077 && jq '. + {context_collapse_ceiling_tokens: 45000, context_collapse_min_bytes: 2000}' "$_user_cfg" > "$_cfg_file" ) 2>/dev/null
+            ( umask 077 && jq --argjson _ceiling "$_collapse_ceiling" '. + {context_collapse_ceiling_tokens: $_ceiling, context_collapse_min_bytes: 2000}' "$_user_cfg" > "$_cfg_file" ) 2>/dev/null
             if [ $? -ne 0 ] || [ ! -s "$_cfg_file" ]; then
                 printf 'collapse-long override: user config unparseable (bench did not launch; valid=false:config)\n' >> "$log_file" 2>/dev/null || true
                 bench_cfg_cleanup
@@ -905,10 +917,10 @@ run_one_locked() {
                 fi
             fi
         else
-            ( umask 077 && printf '%s\n' '{"context_collapse_ceiling_tokens":45000,"context_collapse_min_bytes":2000}' > "$_cfg_file" )
+            ( umask 077 && printf '%s\n' "{\"context_collapse_ceiling_tokens\":${_collapse_ceiling},\"context_collapse_min_bytes\":2000}" > "$_cfg_file" )
         fi
         _wakil_config_env="WAKIL_CONFIG=$_cfg_file"
-        printf 'collapse-long override: merged config (ceiling=45000 min_bytes=2000)\n' >> "$log_file" 2>/dev/null || true
+        printf 'collapse-long override: merged config (ceiling=%s min_bytes=2000)\n' "$_collapse_ceiling" >> "$log_file" 2>/dev/null || true
     fi
 
     if [ -n "$model_name" ]; then
@@ -1574,6 +1586,10 @@ EOF
 # Recording stub for the merged-config cases. Asserts the merged config
 # keeps the fake endpoints block and sets exactly the two collapse keys,
 # that the file is 0600 and the dir 0700, and records the merged path.
+# The expected ceiling literal in the jq line below is the per-task
+# value (45000 for collapse-long, 21000 for collapse-long-v2 — plan
+# §11); the v2 stub is generated from this body by substituting that
+# one literal (see below), so both stubs assert the right number.
 _fail=0
 _cfg="$WAKIL_CONFIG"
 [ -n "$_cfg" ] || { echo "RECORD: WAKIL_CONFIG unset" >> "$BENCH_ST_RECORD"; exit 97; }
@@ -1602,6 +1618,17 @@ JSON
 exit $_fail
 EOF
     chmod +x "$stub_record"
+    # collapse-long-v2 uses the real-run-calibrated ceiling (plan §11), not
+    # the v1 45000: generate its stub by replacing the v1 literal with the
+    # v2 literal. The ceiling line is the only difference.
+    stub_record_v2="$tmpdir/wakil-record-v2"
+    sed -e 's/\.context_collapse_ceiling_tokens == 45000/.context_collapse_ceiling_tokens == 21000/' "$stub_record" > "$stub_record_v2"
+    chmod +x "$stub_record_v2"
+    BENCH_ST_RECORD="$tmpdir/st-record-v2" BENCH_TASK_DIR="$tasks_dir/collapse-long-v2" run_one collapse-long-v2 "self-merged-v2" "$stub_record_v2" >"$tmpdir/st-merged-v2-stdout" 2>&1 || { echo "self-test FAILED: merged v2 run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "merged content wrong" "$tmpdir/st-record-v2" 2>/dev/null && { echo "self-test FAILED: merged v2 content wrong (ceiling 21000)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    grep -q "ceiling=21000 min_bytes=2000" "$log_file" 2>/dev/null || { echo "self-test FAILED: merged v2 log line missing the v2 ceiling (log: $(tail -1 "$log_file"))" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
+    { [ "$_row_result" = "pass" ] && [ "$_row_valid" = "true" ]; } || { echo "self-test FAILED: merged v2 success: expected pass/true, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     # Success path: merged config deleted, row pass, no sentinel in log/CSV/stdout.
     BENCH_ST_RECORD="$tmpdir/st-record" BENCH_TASK_DIR="$tasks_dir/collapse-long" run_one collapse-long "self-merged" "$stub_record" >"$tmpdir/st-merged-stdout" 2>&1 || { echo "self-test FAILED: merged success run returned non-zero" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _m_file=$(sed -n 's/^RECORD: merged=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
