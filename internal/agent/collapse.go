@@ -8,6 +8,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -375,6 +376,7 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 		fmt.Fprintf(&b, "read: (+%d more — see archive)\n", hiddenRead)
 	}
 	fmt.Fprintf(&b, "full record: %s (read_file with offset/limit — host-side path: shell cannot see it)\n", archive)
+	b.WriteString(collapseIndexLine(archive))
 	note := b.String()
 	if len(note) > noteCapBytes {
 		// Rebuild a minimal note: header + archive path only.
@@ -388,6 +390,7 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 			fmt.Fprintf(&mb, "automatic mashura rounds (started by wakil): %d\n", autoRounds)
 		}
 		fmt.Fprintf(&mb, "full record: %s (read_file with offset/limit — host-side path: shell cannot see it)\n", archive)
+		mb.WriteString(collapseIndexLine(archive))
 		note = mb.String()
 		// If even the minimal note exceeds the cap (very long archive path),
 		// leave it as-is — the path is essential and must not be truncated.
@@ -395,7 +398,24 @@ func buildCollapseNote(turn int, w []proxy.Message, archive string) string {
 	return note
 }
 
-// fitNotePaths trims both buckets into a SHARED budget of maxNotePaths with
+// collapseIndexLine renders the constant per-chat index pointer every
+// collapse note carries. The path is the index file in the SAME chat
+// dir as the archive (the index is written into the chat dir alongside
+// the spill), so it derives from the archive path — no signature churn.
+// Emitted UNCONDITIONALLY (never skipped when the index is missing or
+// failed) so re-rendered projections never change mid-chat. Constant
+// per chat: no counts, no per-spill content — the prompt-cache-safe
+// recovery reference.
+func collapseIndexLine(archive string) string {
+	if archive == "" {
+		return ""
+	}
+	dir := filepath.Dir(archive)
+	if dir == "" || dir == "." {
+		return ""
+	}
+	return "archive index: " + filepath.Join(dir, wtools.ArchiveIndexName) + " (read_file with offset/limit — one line per archived result: kind, path, label)\n"
+}
 // WRITE PRIORITY: write targets are kept first (up to the full budget), reads
 // get the remainder. Both overflow counts are returned — no shared state.
 // The OLDEST entries are dropped (later tool calls reflect the turn's end
@@ -757,6 +777,7 @@ func degradePointerLine(rec CollapseRecord, u []proxy.Message) string {
 	b.WriteString("full record: ")
 	b.WriteString(rec.Archive)
 	b.WriteString(" (read_file with offset/limit — host-side path: shell cannot see it)\n")
+	b.WriteString(collapseIndexLine(rec.Archive))
 	if rec.MemoryKey != "" {
 		b.WriteString("memory index: ")
 		b.WriteString(rec.MemoryKey)

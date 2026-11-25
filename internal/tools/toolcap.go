@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"unicode/utf8"
 )
 
@@ -368,6 +369,12 @@ func StatHostCacheFile(path string) (int64, error) {
 // spillToDisk writes content to a uniquely-named temp file under cacheDir and
 // returns the path. Returns "" if cacheDir is empty or the write fails.
 // Uses os.CreateTemp so two concurrent spills of the same tool never collide.
+//
+// The index append needs the chatID, which spillToDisk does not have —
+// so the append happens in SpillToCache / the wrappers below, which DO
+// have it, immediately after spillToDisk returns a successful path
+// (the file is already closed at that point, then the path is handed
+// out — the append sits between the two).
 func spillToDisk(cacheDir, toolName, content string) string {
 	if cacheDir == "" {
 		return ""
@@ -400,7 +407,169 @@ func spillToDisk(cacheDir, toolName, content string) string {
 // dispatchSubagent writing a durable subagent summary) that need the same
 // spill-to-disk mechanism without reimplementing it.
 func SpillToCache(chatID, toolName, content string) string {
-	return spillToDisk(toolCacheDir(chatID), toolName, content)
+	path := spillToDisk(toolCacheDir(chatID), toolName, content)
+	if path != "" {
+		// The spill file is closed; index it BEFORE returning the path
+		// to any caller ("written before hand-out" is structural).
+		appendArchiveIndex(chatID, toolName, path, content)
+	}
+	return path
+}
+
+// ---------------------------------------------------------------------------
+// Per-chat archive index (findable archives)
+//
+// A chat's toolcache dir holds one fixed-name, append-only index file
+// (archive-index.txt). Every successful spill appends one record —
+// "<kind>\t<absolute path>\t<label>" — BEFORE the path returns to any
+// caller, so a collapse note that points at the index file gives the
+// model one stable path from which every handed-out archive is
+// findable, no matter how many collapses have elided the individual
+// marker lines. Records begin with a leading "\n" so a crash-torn
+// write degrades to a corrupt fragment (path fails to resolve, the
+// host ENOENT text re-points at the index), never to a wrong path.
+// Failure to append never loses the spill (the file is already
+// closed); the failure is counted (IndexAppendFailures) and the agent
+// layer surfaces it once per session.
+
+// archiveIndexName is the fixed file name of the per-chat index. It
+// cannot collide with a spill file: spills are "<toolname>-<rand>.txt".
+const archiveIndexName = "archive-index.txt"
+
+// ArchiveIndexName is the exported fixed index file name.
+const ArchiveIndexName = archiveIndexName
+
+// IndexPathFor returns the index file path for a chat (the same path
+// collapse notes and host-missing errors name).
+func IndexPathFor(chatID string) string {
+	dir := toolCacheDir(chatID)
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, archiveIndexName)
+}
+
+// archiveIndexFailures counts failed index appends in this process —
+// the agent layer surfaces the first one per session as a notice.
+var archiveIndexFailures atomic.Int64
+
+// IndexAppendFailures returns the number of failed index appends
+// since process start.
+func IndexAppendFailures() int64 { return archiveIndexFailures.Load() }
+
+// FailureCountFor is kept for test ergonomics: the counter is
+// process-global, so this is just IndexAppendFailures. (The per-chat
+// framing of the original test plan was dropped: one counter, one
+// process.)
+func FailureCountFor(_ string) int64 { return IndexAppendFailures() }
+
+// indexKind maps a spill toolName to its index kind. Unknown names
+// fall back to "misc" — still indexed, still findable.
+func indexKind(toolName string) string {
+	switch {
+	case strings.HasPrefix(toolName, "dispatch_subagent"):
+		return "subagent-summary"
+	case strings.HasPrefix(toolName, "turn-") || strings.HasPrefix(toolName, "round-") ||
+		strings.HasPrefix(toolName, "compact-") || strings.HasPrefix(toolName, "hardmax-"):
+		return "collapse-spill"
+	case toolName == "repo_map" || toolName == "repo_symbols":
+		return "repo-map"
+	case toolName == "review_diff":
+		return "review-diff"
+	case strings.HasPrefix(toolName, "read_file") || toolName == "load_skill" ||
+		strings.HasPrefix(toolName, "write_file") || toolName == "search_files":
+		return "tool-result"
+	default:
+		return "misc"
+	}
+}
+
+// indexLabel derives the short label from the spilled content: the
+// first non-empty line, truncated to 80 runes, tabs/newlines/CRs
+// stripped, invalid UTF-8 cut. It never contains tool arguments or
+// content past the first line. The "#N" sequence suffix keeps rows
+// with identical generic first lines ("{", "total 48") distinct.
+func indexLabel(content string, seq int) string {
+	first := ""
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			first = line
+			break
+		}
+	}
+	first = strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return ' '
+		}
+		return r
+	}, first)
+	// Truncate to 80 runes at a valid boundary.
+	if len([]rune(first)) > 80 {
+		cut := 0
+		n := 0
+		for i := range first {
+			if n == 80 {
+				cut = i
+				break
+			}
+			n++
+		}
+		if cut == 0 {
+			cut = len(first)
+		}
+		first = truncateInvalidUTF8Suffix(first[:cut])
+	}
+	return fmt.Sprintf("%s #%d", first, seq)
+}
+
+// indexSeq is a process-global monotonically increasing record
+// counter. A crash resets it — harmless (rows stay distinct by path).
+var indexSeq atomic.Int64
+
+// appendArchiveIndex appends one record for a just-written spill.
+// Best-effort: any failure is counted, never returned (the spill has
+// already succeeded). The index file is opened O_CREATE|O_WRONLY|
+// O_APPEND; a pre-existing symlink or non-regular file at the index
+// path is refused (Lstat check + O_NOFOLLOW where available) — an
+// append must never follow a planted symlink out of the chat dir.
+func appendArchiveIndex(chatID, toolName, spillPath, content string) {
+	dir := toolCacheDir(chatID)
+	idxPath := IndexPathFor(chatID)
+	if dir == "" || idxPath == "" {
+		return
+	}
+	if li, err := os.Lstat(idxPath); err == nil {
+		if li.Mode()&os.ModeSymlink != 0 || !li.Mode().IsRegular() {
+			archiveIndexFailures.Add(1)
+			return
+		}
+	}
+	// Defence in depth: the Lstat check above refuses a pre-planted
+	// symlink/non-regular file, and the fstat below re-checks on the
+	// open fd. O_NOFOLLOW would close the Lstat/Open TOCTOU window;
+	// that window is the documented own-data-dir race (see
+	// resolveHostCachePath's threat model at toolcap.go:188-199) —
+	// accepted, not hidden.
+	f, err := os.OpenFile(idxPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		archiveIndexFailures.Add(1)
+		return
+	}
+	// Re-check on the open fd: a swap between Lstat and Open is the
+	// documented own-data-dir race (see resolveHostCachePath's threat
+	// model); fstat is the cheap belt-and-suspenders.
+	if fi, ferr := f.Stat(); ferr != nil || !fi.Mode().IsRegular() {
+		_ = f.Close()
+		archiveIndexFailures.Add(1)
+		return
+	}
+	seq := indexSeq.Add(1)
+	rec := "\n" + indexKind(toolName) + "\t" + spillPath + "\t" + indexLabel(content, int(seq))
+	if _, err := f.WriteString(rec); err != nil {
+		archiveIndexFailures.Add(1)
+	}
+	_ = f.Close()
 }
 
 // StubToolResult spills the entire result to disk and returns a ~50-char
@@ -409,7 +578,9 @@ func SpillToCache(chatID, toolName, content string) string {
 // bytes of the raw output enter ctx.
 func StubToolResult(result, toolName, chatID string) string {
 	n := len(result)
-	if path := spillToDisk(toolCacheDir(chatID), toolName, result); path != "" {
+	path := spillToDisk(toolCacheDir(chatID), toolName, result)
+	if path != "" {
+		appendArchiveIndex(chatID, toolName, path, result)
 		return fmt.Sprintf("[budget — %d chars at: %s]", n, path)
 	}
 	// Spill failed — the full content is lost (not recoverable via read_file).
@@ -466,6 +637,9 @@ func CapToolResult(result, toolName, chatID string, cap int) string {
 		return result
 	}
 	spillPath := spillToDisk(toolCacheDir(chatID), toolName, result)
+	if spillPath != "" {
+		appendArchiveIndex(chatID, toolName, spillPath, result)
+	}
 	total := len(result)
 
 	// Size the kept head so head+marker fits within cap. First render uses
@@ -506,5 +680,6 @@ func SpillFullResult(result, toolName, chatID string) string {
 	if spillPath == "" {
 		return result
 	}
+	appendArchiveIndex(chatID, toolName, spillPath, result)
 	return result + fmt.Sprintf("\n[full content at: %s]", spillPath)
 }

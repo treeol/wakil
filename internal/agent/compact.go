@@ -556,6 +556,13 @@ func (a *App) Compact(ctx context.Context, sum summarizer, force bool) (bool, er
 			return false, errors.New("compaction aborted: failed to write archive of the turns to be summarised (originals kept intact)")
 		}
 		note += " · archive: " + arch
+		if idx := collapseIndexLine(arch); idx != "" {
+			// The compacted summary replaces the summarizable block —
+			// any prior collapse notes inside it dissolve into lossy
+			// prose. Carry the constant index pointer here so the
+			// index stays findable after compaction.
+			note += " · " + strings.TrimSpace(idx)
+		}
 		a.compactSeq++
 		a.lastCompactNote = note
 	}
