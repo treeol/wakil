@@ -1534,7 +1534,7 @@ case "$1" in
     # collapse-long run is pass/valid, not invalid (a real binary that
     # solved it after collapsing reports >0).
     _collapses=0
-    case "$workdir" in */collapse-long|*/collapse-long-v2) _collapses=3 ;; esac
+    case "$workdir" in */collapse-long|*/collapse-long-v2|*/collapse-long-v3) _collapses=3 ;; esac
     cat > "$result_json" <<JSON
 {"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":$_collapses,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
@@ -1603,7 +1603,7 @@ EOF
         BENCH_TASK_DIR="" run_one "$task" "self-noop" "$stub_noop"
         _row_result=$(csv_cell "$csv_file" last 6)
         _row_valid=$(csv_cell "$csv_file" last 19)
-        if [ "$task" = "collapse-long" ] || [ "$task" = "collapse-long-v2" ]; then
+        if [ "$task" = "collapse-long" ] || [ "$task" = "collapse-long-v2" ] || [ "$task" = "collapse-long-v3" ]; then
             # The noop stub reports collapses:0, so a completed collapse-long
             # run is not scorable: result invalid, valid false:no_collapse.
             if [ "$_row_result" != "invalid" ] || [ "$_row_valid" != "false:no_collapse" ]; then
@@ -2531,6 +2531,126 @@ EOF
         _row_result=$(csv_cell "$csv_file" last 6)
         [ "$_row_result" = "pass" ] || { echo "self-test FAILED: collapse-long-v2 ranged read: expected pass, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
         echo "  collapse-long-v2: grep-only fail, ranged-read pass"
+    fi
+
+    st_case "== self-test: collapse-long-v3 (grep-only fail, ranged-read with notes pass, untouched fail, wrong report fail, gen self-check + key tie) =="
+    if [ -d "$tasks_dir/collapse-long-v3" ]; then
+        # Grep-only simulation: counts every category line's number word
+        # (no withdrawal replacement) -> wrong report -> fail.
+        stub_greponly3="$tmpdir/wakil-greponly-v3"
+        cat > "$stub_greponly3" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-greponly-v3/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    # Naive grep: original figures, no withdrawal replacement, wrong sums.
+    printf '{"alpha": 1339, "beta": 1285, "delta": 1377, "epsilon": 1393, "gamma": 949, "zeta": 1269}\n' > "$workdir/report.json"
+    printf '{"wakil_version":"stub-greponly-v3/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":2,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_greponly3"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/collapse-long-v3" run_one collapse-long-v3 "self-greponly3" "$stub_greponly3"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: collapse-long-v3 grep-only: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Ranged-read simulation: correct totals WITH a notes field
+        # (non-string type) -> pass/valid (the check ignores notes).
+        stub_ranged3="$tmpdir/wakil-ranged-v3"
+        cat > "$stub_ranged3" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-ranged-v3/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    printf '{"wakil_version":"stub-ranged-v3/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":120,"collapses":2,"collapses_turn_end":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_ranged3"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/collapse-long-v3" run_one collapse-long-v3 "self-ranged3" "$stub_ranged3"
+        _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
+        { [ "$_row_result" = "pass" ] && [ "$_row_valid" = "true" ]; } || { echo "self-test FAILED: collapse-long-v3 ranged read with notes: expected pass/true, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Wrong report (one sum off by one): fail.
+        stub_wrong3="$tmpdir/wakil-wrong-v3"
+        cat > "$stub_wrong3" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-wrong-v3/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    printf '{"alpha": 1226, "beta": 1310, "delta": 1298, "epsilon": 1345, "gamma": 853, "zeta": 1190}\n' > "$workdir/report.json"
+    printf '{"wakil_version":"stub-wrong-v3/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":40,"collapses":2,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_wrong3"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/collapse-long-v3" run_one collapse-long-v3 "self-wrong3" "$stub_wrong3"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: collapse-long-v3 wrong report: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Untouched fixture: no report.json -> fail (the noop loop above
+        # covers the invalid/no-collapse case; here check.sh's own verdict).
+        # Generator self-check and key tie: a clean generation in a temp
+        # dir must succeed, pass the built-in self-check, write the key,
+        # and the key must equal the check.sh constants. A broken fixture
+        # (one duplicated ledger line, produced by a patched copy of the
+        # generator in a temp dir — never by editing the shipped fixture)
+        # must be rejected with the defect named. Two generations must be
+        # byte-identical.
+        _gen3_dir="$tmpdir/gen3-checks"
+        mkdir -p "$_gen3_dir/gen" "$_gen3_dir/out" "$_gen3_dir/d1" "$_gen3_dir/d2"
+        cp "$tasks_dir/collapse-long-v3/gen/main.go" "$tasks_dir/collapse-long-v3/gen/go.mod" "$_gen3_dir/gen/"
+        # Good generation: succeeds, self-check passes, key written.
+        ( cd "$_gen3_dir/out" && with_go_env go run -C "$_gen3_dir/gen" . "$_gen3_dir/out/docs" "$_gen3_dir/key.json" ) >"$_gen3_dir/gen-out" 2>&1 || { echo "self-test FAILED: v3 clean generation failed:" >&2; cat "$_gen3_dir/gen-out" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        [ -s "$_gen3_dir/key.json" ] || { echo "self-test FAILED: v3 clean generation wrote no answer key" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Committed answer key and a fresh generation both equal the
+        # check.sh constants (the self-test tie, plan §12.3).
+        python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); b={"alpha":1226,"beta":1309,"delta":1298,"epsilon":1345,"gamma":853,"zeta":1190}; sys.exit(0 if a==b else 1)' "$tasks_dir/collapse-long-v3/gen/answer-key.json" || { echo "self-test FAILED: committed gen/answer-key.json does not equal the check.sh constants" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        python3 -c 'import json,sys; a=json.load(open(sys.argv[1])); b={"alpha":1226,"beta":1309,"delta":1298,"epsilon":1345,"gamma":853,"zeta":1190}; sys.exit(0 if a==b else 1)' "$_gen3_dir/key.json" || { echo "self-test FAILED: fresh generation key does not equal the check.sh constants" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Broken fixture: duplicate one ledger line (patched generator
+        # copy); the self-check must abort the generation with the defect
+        # named.
+        sed -e 's/lines = append(lines, entryLine(rng, r.entity, alias, r.cat, r.qty, k+1))/lines = append(lines, entryLine(rng, r.entity, alias, r.cat, r.qty, k+1)); lines = append(lines, entryLine(rng, r.entity, alias, r.cat, r.qty, k+1))/' \
+            "$tasks_dir/collapse-long-v3/gen/main.go" > "$_gen3_dir/gen/main.go"
+        ( cd "$_gen3_dir/out" && with_go_env go run -C "$_gen3_dir/gen" . "$_gen3_dir/out/docs2" "$_gen3_dir/key2.json" ) >"$_gen3_dir/broken-out" 2>&1 && { echo "self-test FAILED: broken fixture (duplicated line) was accepted by the generator self-check" >&2; cat "$_gen3_dir/broken-out" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; } || true
+        grep -qE "duplicated ledger line|identifier .* used by two entries" "$_gen3_dir/broken-out" 2>/dev/null || { echo "self-test FAILED: broken-fixture run did not name the defect" >&2; cat "$_gen3_dir/broken-out" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Two generations of the shipped generator byte-identical.
+        ( cd "$_gen3_dir/out" && with_go_env go run -C "$tasks_dir/collapse-long-v3/gen" . "$_gen3_dir/d1" "$_gen3_dir/detkey1.json" ) >/dev/null 2>&1
+        ( cd "$_gen3_dir/out" && with_go_env go run -C "$tasks_dir/collapse-long-v3/gen" . "$_gen3_dir/d2" "$_gen3_dir/detkey2.json" ) >/dev/null 2>&1
+        diff -r "$_gen3_dir/d1" "$_gen3_dir/d2" >/dev/null 2>&1 || { echo "self-test FAILED: two v3 generations are not byte-identical" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        diff "$_gen3_dir/detkey1.json" "$_gen3_dir/detkey2.json" >/dev/null 2>&1 || { echo "self-test FAILED: two v3 answer keys differ" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        echo "  collapse-long-v3: grep-only fail, ranged-read with notes pass/true, wrong report fail, generator self-check catches a duplicated entry, key ties to check.sh, deterministic"
     fi
 
     st_case "== self-test: agent-written test code must not fake a pass (expect fail) =="

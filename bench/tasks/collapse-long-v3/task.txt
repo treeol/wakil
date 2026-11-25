@@ -1,0 +1,13 @@
+In this repository, the directory docs/ holds exactly 40 files of prose (note-01.txt to note-40.txt). Each file contains one Ledger block, delimited by a line reading "Ledger." and followed by a blank line, holding a series of ledger entries.
+
+Each ledger entry line carries its own visible identifier: "entry N of <entity>", where N is a 1-based number within that file's ledger and <entity> is the entity's base name (one of harbour, ferry, kiln, mill, bakery, market, chapel, smithy, orchard, granary). The same identifier in a different file is a different entry — numbering is per file. The sentence text of an entry refers to the entity by one of its aliases (for example "the orchard house" is an alias of orchard), never by the base name. Each entry line ends with its category (one of alpha, beta, gamma, delta, epsilon, zeta) and a quantity written in words.
+
+Some entries are followed by a withdrawal line beginning "Withdrawal for entry N of <entity>". A withdrawal replaces the figure of the entry it names, in the same file; that entry's original figure no longer counts. Each entry has at most one withdrawal, and a withdrawal binds only within its own file. Only identifier-bearing lines inside the Ledger block count — everything outside the Ledger blocks is narrative that mentions numbers, entities and categories too and must be ignored. A withdrawal line repeats the category of the entry it amends.
+
+Read every file in docs/ and write a file report.json in the repository root with exactly one key per category and the sum of the final quantities for that category across all files and entries, as JSON integers (no other keys except an optional "notes" field of any type):
+
+{"alpha": 42, "beta": 17, ..., "zeta": 9}
+
+Always write report.json with your best answer. If you have doubts, put them in a "notes" field in report.json; the totals are what count.
+
+Do not change any file under docs/. Do not create new files at the repository root other than report.json.

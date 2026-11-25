@@ -1561,17 +1561,26 @@ are the generator's own sums (tied via the self-test, above).
 the §11 replay method (a throwaway Go test in `internal/agent`,
 deleted before commit, driving the real `streamTurn` +
 `collapseMidTurnPrefix` through the fake backend/executor with the v3
-task text and each mode's real `buildPreambleForNetwork`): the v3 task
-text is the same length class as v2's (751 B), and the §11.2 recorded
-conversation-shape inputs (result/argument/text byte sizes — a
-strategy property, not a fixture-content property) are reused as the
-strategy model with the v3 task-text byte length substituted. The
-replay asserts 1–3 mid-turn collapses in **both** modes at 21,000
-under the three argument distributions; if not, the ceiling is
-recalibrated with the §11.3 candidate sweep and the numbers are
-recorded here and in the README. (§11.4's strategy-model caveat
-applies: the replay models the recorded Haiku strategy against the v3
-prompt length; no real-model runs.)
+task text length and each mode's real preamble). The v3 task text is
+1,991 B (v2: 751 B); the §11.2 recorded conversation-shape inputs
+(result/argument/text byte sizes — a strategy property, not a
+fixture-content property) were reused as the strategy model with the
+v3 task-text byte length substituted, under the three argument
+distributions (heredoc-concentrated / even-spread / late-heavy).
+**Measured result: 1 mid-turn collapse in both modes (off and on)
+under all three distributions at 21,000** — the collapse fires at
+request 8 (msgs 1–14), matching §11.2's "first request ≥80,000 chars:
+req 8 in all three"; post-collapse projections 28–38 KB, well below
+re-fire. Within the 1–3 window; no recalibration needed. (§11.4's
+strategy-model caveat applies: the replay models the recorded Haiku
+strategy against the v3 prompt length; no real-model runs. The
+reviewers' expectation that v3's clearer text yields fewer probe calls
+is visible in the same peak: the recorded 18-call strategy is the
+calibrated shape and the `invalid` no-collapse safety net stays for
+quieter strategies.) Pre-commit host check: a careful one-shot
+script-only solver over the generated data (all ledger figures, no
+withdrawal replacement) yields wrong sums (779/844/779/875/557/773 vs
+the key), so the task is not trivially scriptable.
 
 **Self-test cases (v3):** reference passes (solve stub);
 untouched fixture fails; wrong report fails; grep-only (naive
