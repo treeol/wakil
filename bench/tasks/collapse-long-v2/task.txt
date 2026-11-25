@@ -1,0 +1,7 @@
+In this repository, the directory docs/ holds about 40 files of prose. Each file contains a ledger with several entries. Each entry has a category (one of alpha, beta, gamma, delta, epsilon, zeta), a year, an entity (an item code with an alias), and a quantity written in words. Sometimes a file corrects an earlier entry: the corrected figure replaces the one it amends, and the entry it amends no longer counts.
+
+Read every file in docs/ and write a file report.json in the repository root with one key per category and the sum of the final quantities for that category across all files and entries, as JSON:
+
+{"alpha": 42, "beta": 17, ...}
+
+Do not change any file under docs/. Do not create new files at the repository root other than report.json.

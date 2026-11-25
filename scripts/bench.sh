@@ -578,7 +578,7 @@ bench_cfg_cleanup() {
 csv_row() {
     task=$1; run=$2; result=$3; exit_reason=$4; secs=$5; rj=$6
     _collapses=$(json_field "$rj" "collapses")
-    if [ "$task" = "collapse-long" ] && { [ "$result" = "pass" ] || [ "$result" = "fail" ]; } && { [ -z "$_collapses" ] || [ "$_collapses" = "0" ] || [ "$_collapses" = "null" ]; }; then
+    if { [ "$task" = "collapse-long" ] || [ "$task" = "collapse-long-v2" ]; } && { [ "$result" = "pass" ] || [ "$result" = "fail" ]; } && { [ -z "$_collapses" ] || [ "$_collapses" = "0" ] || [ "$_collapses" = "null" ]; }; then
         result="invalid"
     fi
     case "$result" in
@@ -848,7 +848,7 @@ run_one_locked() {
     # $WAKIL_CONFIG if set, else ~/.config/wakil/config.json.
     _wakil_config_env=""
     _bench_cfg_link_names=""
-    if [ "$task" = "collapse-long" ]; then
+    if [ "$task" = "collapse-long" ] || [ "$task" = "collapse-long-v2" ]; then
         _user_cfg="${WAKIL_CONFIG:-$HOME/.config/wakil/config.json}"
         if [ ! -f "$_user_cfg" ]; then
             # Wakil tolerates a missing file (defaults + env apply); merge
@@ -1445,7 +1445,7 @@ case "$1" in
     # collapse-long run is pass/valid, not invalid (a real binary that
     # solved it after collapsing reports >0).
     _collapses=0
-    case "$workdir" in */collapse-long) _collapses=3 ;; esac
+    case "$workdir" in */collapse-long|*/collapse-long-v2) _collapses=3 ;; esac
     cat > "$result_json" <<JSON
 {"wakil_version":"stub-solve/0.0.0","model":"stub","exit_reason":"pass","workdir":"$workdir","seconds":0.0,"tokens_in":100,"tokens_out":5,"tokens_cached":75,"cost_usd":0.001234,"tool_calls":2,"collapses":$_collapses,"collapses_turn_end":1,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}
 JSON
@@ -1514,7 +1514,7 @@ EOF
         BENCH_TASK_DIR="" run_one "$task" "self-noop" "$stub_noop"
         _row_result=$(csv_cell "$csv_file" last 6)
         _row_valid=$(csv_cell "$csv_file" last 19)
-        if [ "$task" = "collapse-long" ]; then
+        if [ "$task" = "collapse-long" ] || [ "$task" = "collapse-long-v2" ]; then
             # The noop stub reports collapses:0, so a completed collapse-long
             # run is not scorable: result invalid, valid false:no_collapse.
             if [ "$_row_result" != "invalid" ] || [ "$_row_valid" != "false:no_collapse" ]; then
@@ -2123,6 +2123,239 @@ EOF
         [ "$_row_result" = "fail" ] || { echo "self-test FAILED: debug-subtle bloated fix: expected fail (minimal-fix rule), got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     fi
     echo "  wrong report (collapse-long), wrong K (refactor-multi), bloated fix (debug-subtle) all scored fail"
+
+    st_case "== self-test: debug-subtle fair minimality (long inside pass, outside fail, rewrite fail) =="
+    if [ -d "$tasks_dir/debug-subtle" ]; then
+        # Inside windowTake (rewritten loop + comment + clamp): 11 changed lines, 0 outside -> pass.
+        stub_longfix="$tmpdir/wakil-longfix"
+        cat > "$stub_longfix" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-longfix/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/repo/." "$workdir/"
+    cat > "$workdir/window/window.go" <<'GO'
+// Package window takes a window of elements from a slice.
+package window
+
+// Take returns up to n elements of s. A negative n returns an empty slice.
+func Take(s []int, n int) []int {
+	if n < 0 {
+		return []int{}
+	}
+	return windowTake(s, n)
+}
+
+// windowTake returns the first n elements of s.
+// It copies the window exactly, including the exact-size case.
+func windowTake(s []int, n int) []int {
+	// Correct window copy: exactly n elements, clamped to the slice.
+	k := n
+	if k < 0 {
+		k = 0
+	}
+	if len(s) < k {
+		k = len(s)
+	}
+	out := make([]int, 0, k)
+	// Fill the window one element at a time from index zero.
+	for i := 0; i < k; i++ {
+		out = append(out, s[i])
+	}
+	return out
+}
+GO
+    printf '{"wakil_version":"stub-longfix/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_longfix"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/debug-subtle" run_one debug-subtle "self-longfix" "$stub_longfix"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "pass" ] || { echo "self-test FAILED: debug-subtle long inside fix: expected pass, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Outside windowTake: correct fix + an unrelated helper -> fail.
+        stub_outside="$tmpdir/wakil-outside"
+        cat > "$stub_outside" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-outside/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    cat >> "$workdir/window/window.go" <<'GO'
+
+// Take2 is an unrelated helper added outside windowTake.
+func Take2(s []int, n int) []int {
+	if n < 0 {
+		return []int{}
+	}
+	return windowTake(s, n)
+}
+GO
+    printf '{"wakil_version":"stub-outside/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_outside"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/debug-subtle" run_one debug-subtle "self-outside" "$stub_outside"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: debug-subtle outside fix: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Whole-file rewrite (>30 lines / >2 outside): restructured package -> fail.
+        stub_rewrite="$tmpdir/wakil-rewrite"
+        cat > "$stub_rewrite" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-rewrite/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/repo/." "$workdir/"
+    cat > "$workdir/window/window.go" <<'GO'
+// Package window takes a window of elements from a slice.
+//
+// This package exposes a single operation, Take, which returns a window
+// of the first n elements of a slice. The helper windowTake does the
+// copying; both are exercised directly by the hidden tests, so the
+// helper's contract is fixed: windowTake returns the first n elements
+// of s, clamped to the slice, with a negative n treated as zero.
+//
+// The window semantics are: empty slice yields empty, single-element
+// slice yields that element when n >= 1, full slice yields the whole
+// slice, over-full n yields the whole slice, negative n yields empty.
+package window
+
+// Take returns up to n elements of s. A negative n returns an empty slice.
+//
+// Take is the public entry point. It validates n and delegates to the
+// helper so that callers never need to know about the internal copy.
+func Take(s []int, n int) []int {
+	if n < 0 {
+		return []int{}
+	}
+	return windowTake(s, n)
+}
+
+// windowTake returns the first n elements of s.
+//
+// The helper copies exactly n elements when the slice is long enough,
+// and the whole slice otherwise. A negative n is treated as zero so
+// that direct callers cannot panic in make.
+func windowTake(s []int, n int) []int {
+	k := n
+	if k < 0 {
+		k = 0
+	}
+	if len(s) < k {
+		k = len(s)
+	}
+	out := make([]int, 0, k)
+	for i := 0; i < k; i++ {
+		out = append(out, s[i])
+	}
+	return out
+}
+GO
+    printf '{"wakil_version":"stub-rewrite/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_rewrite"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/debug-subtle" run_one debug-subtle "self-rewrite" "$stub_rewrite"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: debug-subtle rewrite: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    fi
+    echo "  debug-subtle fair minimality: long-inside pass, outside fail, rewrite fail"
+
+    st_case "== self-test: collapse-long-v2 (grep-only fail, solve pass, noop invalid) =="
+    if [ -d "$tasks_dir/collapse-long-v2" ]; then
+        # Grep-only simulation: counts every category line's first number
+        # word (no corrections) -> wrong report -> fail.
+        stub_greponly="$tmpdir/wakil-greponly-v2"
+        cat > "$stub_greponly" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-greponly-v2/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    # Naive first-number grep: double-counts corrections, wrong sums.
+    printf '{"alpha": 1656, "beta": 1698, "delta": 1657, "epsilon": 1704, "gamma": 1669, "zeta": 1472}\n' > "$workdir/report.json"
+    printf '{"wakil_version":"stub-greponly-v2/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":1,"collapses":2,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_greponly"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/collapse-long-v2" run_one collapse-long-v2 "self-greponly" "$stub_greponly"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "fail" ] || { echo "self-test FAILED: collapse-long-v2 grep-only: expected fail, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        # Ranged-read simulation: correct report with collapses>=1 -> pass/valid.
+        stub_ranged="$tmpdir/wakil-ranged-v2"
+        cat > "$stub_ranged" <<'EOF'
+#!/bin/sh
+case "$1" in
+  version) echo "stub-ranged-v2/0.0.0" ;;
+  run)
+    shift
+    workdir=$WAKIL_HOST_WORKDIR
+    result_json=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --result-json) result_json=$2; shift 2 ;;
+        --transcript) shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    cp -R "$BENCH_TASK_DIR/solution/." "$workdir/"
+    printf '{"wakil_version":"stub-ranged-v2/0.0.0","model":"stub","exit_reason":"pass","workdir":"%s","seconds":0.0,"tool_calls":120,"collapses":2,"collapses_turn_end":0,"mashura_rounds":0,"context_modules":"off","modules_loaded":""}\n' "$workdir" > "$result_json"
+    exit 0 ;;
+esac
+EOF
+        chmod +x "$stub_ranged"
+        task_idx=1
+        BENCH_TASK_DIR="$tasks_dir/collapse-long-v2" run_one collapse-long-v2 "self-ranged" "$stub_ranged"
+        _row_result=$(csv_cell "$csv_file" last 6)
+        [ "$_row_result" = "pass" ] || { echo "self-test FAILED: collapse-long-v2 ranged read: expected pass, got $_row_result" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+        echo "  collapse-long-v2: grep-only fail, ranged-read pass"
+    fi
 
     st_case "== self-test: agent-written test code must not fake a pass (expect fail) =="
     # A fake agent that leaves the bug in place and writes code that makes
