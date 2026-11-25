@@ -3827,7 +3827,7 @@ func hostCacheReadResult(path string, sizeLimit, hardCap int64, kind, adviceSuff
 		// their precise text. (The sentence keeps the "ERROR:"
 		// prefix formatResult/stringToToolResult rely on.)
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Sprintf("ERROR: no file at this exact path in the tool cache — %s. Check the path was copied verbatim from the tool result marker or collapse note; if it was, use search_files on the cache directory to find the file's current name.", path)
+			return "", fmt.Sprintf("ERROR: no file at this exact path in the tool cache — %s. Check the path was copied verbatim from the tool result marker or collapse note; if it was, read_file the archive index at %s to find the file's current path (one line per archived result: kind, path, label).", path, requestedChatIndexPath(path))
 		}
 		return "", formatResult(out, err)
 	}
@@ -3839,6 +3839,27 @@ func hostCacheReadResult(path string, sizeLimit, hardCap int64, kind, adviceSuff
 	// truncated content is returned with the flag, not an embedded note.
 	_ = truncated
 	return out, ""
+}
+
+// requestedChatIndexPath returns the archive-index path for the chat the
+// REQUESTED path lives in (its first segment under the toolcache root),
+// so a missing child-dir path points at the child's index. Falls back to
+// "" when the path is not a toolcache path (hostCacheReadResult is only
+// reached for classified paths, so this is defence in depth).
+func requestedChatIndexPath(path string) string {
+	root := wtools.ToolCacheRoot()
+	if root == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(filepath.Clean(root), filepath.Clean(path))
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	chatSeg := strings.SplitN(filepath.ToSlash(rel), "/", 3)[0]
+	if chatSeg == "" {
+		return ""
+	}
+	return filepath.Join(root, chatSeg, wtools.ArchiveIndexName)
 }
 
 // formatFileView renders file content with cat -n style line numbers, optionally

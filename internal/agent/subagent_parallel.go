@@ -479,11 +479,19 @@ func (a *App) finalizeSubagentBlock(jobs []subagentJob, results []subagentJobRes
 func renderSubagentResult(a *App, task string, summary SubagentSummary, filesChanged []string) string {
 	fullJSON := summary.Render()
 	result := fullJSON
-	if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
-		result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
+	// The summary-spill marker is emitted LAST (after the files-changed
+	// block) so ExtractSpillPath's trailing-marker recovery finds it:
+	// eviction/pre-send-trim can then stub to the ORIGINAL summary file
+	// instead of re-spilling the whole rendered result.
+	var spillPath string
+	if p := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); p != "" {
+		spillPath = p
 	}
 	if len(filesChanged) > 0 {
 		result += renderFilesChanged(summary.FilesChanged, filesChanged)
+	}
+	if spillPath != "" {
+		result += fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
 	}
 	return result
 }

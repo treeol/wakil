@@ -1914,14 +1914,20 @@ func (a *App) handleDispatchSubagent(ctx context.Context, tc proxy.ToolCall) str
 	// findings — the main agent can read_file the path to recover detail.
 	fullJSON := summary.Render()
 	result := fullJSON
-	if spillPath := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); spillPath != "" {
-		result = fullJSON + fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
+	var spillPath string
+	if p := wtools.SpillToCache(a.chatID(), "dispatch_subagent", fullJSON); p != "" {
+		spillPath = p
 	}
 	// Append the mechanical files_changed list (ground truth) for edit-tier
 	// children. When the model's self-reported files_changed disagrees with
 	// the mechanical record, render both with the discrepancy noted.
 	if len(filesChanged) > 0 {
 		result += renderFilesChanged(summary.FilesChanged, filesChanged)
+	}
+	// The summary-spill marker goes LAST (trailing-marker recovery must
+	// find it — see renderSubagentResult).
+	if spillPath != "" {
+		result += fmt.Sprintf("\n[subagent summary at: %s]", spillPath)
 	}
 
 	// Loud warning on exhaustion — not a dim tool-line. The main agent must
