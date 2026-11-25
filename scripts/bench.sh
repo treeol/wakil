@@ -965,7 +965,7 @@ run_one_locked() {
         for _iv in "WAKIL_SKILLS_DB=$_skills_db" "WAKIL_SESSIONS_DIR=$_sessions_dir" "WAKIL_REPO_STATE_DIR=$_repo_state_dir"; do
             _iname="${_iv%%=*}"; _ival="${_iv#*=}"
             if [ -z "$_ival" ] || [ ! -d "$(dirname "$_ival")" ]; then
-                echo "$prog: $iname must be set to a path in an existing directory (got '$_ival')" >&2
+                echo "$prog: $_iname must be set to a path in an existing directory (got '$_ival')" >&2
                 set -e; return 1
             fi
         done
@@ -1005,7 +1005,8 @@ run_one_locked() {
                     .browser_enabled, .lsp_enabled)
                  + {oracle_enabled: false, wf_final_review: false, mashura: {level: "off"}}
                  + (if '"$_merge_add"' == "{}" then {} else '"$_merge_add"' end)' "$_user_cfg" > "$_cfg_file" ) 2>/dev/null
-            if [ $? -ne 0 ] || [ ! -s "$_cfg_file" ]; then
+            _merge_rc=$?
+            if [ "$_merge_rc" -ne 0 ] || [ ! -s "$_cfg_file" ]; then
                 printf 'merged config: user config unparseable (bench did not launch; valid=false:config)\n' >> "$log_file" 2>/dev/null || true
                 bench_cfg_cleanup
                 csv_row "$task" "$run" "error" "config-unreadable" 0 ""
