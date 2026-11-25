@@ -416,6 +416,7 @@ func collapseIndexLine(archive string) string {
 	}
 	return "archive index: " + filepath.Join(dir, wtools.ArchiveIndexName) + " (read_file with offset/limit — one line per archived result: kind, path, label)\n"
 }
+
 // WRITE PRIORITY: write targets are kept first (up to the full budget), reads
 // get the remainder. Both overflow counts are returned — no shared state.
 // The OLDEST entries are dropped (later tool calls reflect the turn's end
