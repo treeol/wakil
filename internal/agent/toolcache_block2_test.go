@@ -31,7 +31,7 @@ func TestSubagentMarkerIsTrailingForEditTier(t *testing.T) {
 	rendered := renderSubagentResult(app, "edit docs/a.go and docs/b.go", summary, []string{"docs/a.go", "docs/b.go"})
 
 	// The files-changed block must come BEFORE the marker now.
-	if strings.Index(rendered, "[files_changed") < 0 {
+	if !strings.Contains(rendered, "[files_changed") {
 		t.Fatalf("rendered result missing the files-changed block: %q", Truncate(rendered, 300))
 	}
 	if strings.Index(rendered, "[files_changed") > strings.LastIndex(rendered, "[subagent summary at: ") {
