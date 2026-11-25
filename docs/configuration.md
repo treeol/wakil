@@ -94,6 +94,7 @@ change. Nothing is written.
 | `WAKIL_KVR_DISABLED` | `false` | Disable the staging KV store *(the config key `kvr_disabled` is the same switch)*. |
 | `WAYLAND_DISPLAY` | *unset* | Selects the Wayland clipboard transport (`wl-paste`) for image clipboard reads; `DISPLAY` selects the X11 transport. |
 | `WAKIL_TUI_PERF` | *unset* | `1`/`true`/`yes`/`on`: record the duration of every TUI frame and input event into the per-session diagnostic log (`~/.local/share/wakil/diag-<session>.log`, also `$XDG_DATA_HOME/wakil/`) and print a three-line summary on stderr after the terminal is restored on exit — `count`, `slowest` event type, largest frame in bytes, and separate `update`/`view` median+99th percentile, with the log path named in the summary line. Off by default; no cost when off. See the `docs/work-0.8.4-progress.md` Part 1 section. |
+| `WAKIL_SKILLS_DB` | `~/.local/share/wakil/skills/skills.db` *(or `$XDG_DATA_HOME/wakil/skills/skills.db`)* | Overrides the global skill-store file. When set, that file (absolute, clean path; existing parent directory that is not a symlink; the file itself, if it exists, a regular file and not a symlink) is opened instead of the default; when unset, behaviour is unchanged. An invalid value fails at startup naming the variable — never silently falls back to the real store. Used by `scripts/bench.sh` (from Block 2) to give every bench run a fresh, empty skill store. `WAKIL_SKILLS_DB=""` counts as unset. |
 
 ## Selection and copy
 

@@ -30,8 +30,13 @@ func TestSkillDBPath_UsesStagingDataRoot(t *testing.T) {
 	old := os.Getenv("XDG_DATA_HOME")
 	defer os.Setenv("XDG_DATA_HOME", old)
 	os.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("WAKIL_SKILLS_DB", "")
+	t.Setenv("WAKIL_REPO_STATE_DIR", "")
 
-	p := SkillDBPath()
+	p, err := SkillDBPath()
+	if err != nil {
+		t.Fatalf("SkillDBPath: %v", err)
+	}
 	if p == "" {
 		t.Fatal("SkillDBPath returned empty")
 	}

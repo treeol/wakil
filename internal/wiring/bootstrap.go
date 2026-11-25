@@ -435,7 +435,13 @@ func BuildApp(cfg config.Config, exe exec.Executor, opts BuildAppOpts) (*agent.A
 	// so sweep is a no-op and would only churn. Anchors are disabled for
 	// skills — there is no stable workspace root to anchor against, so we
 	// pass "" as the workspace root.
-	skillDBPath := agent.SkillDBPath()
+	skillDBPath, skillErr := agent.SkillDBPath()
+	if skillErr != nil {
+		// Only a validation error for an explicitly set WAKIL_SKILLS_DB is
+		// fatal (bench isolation: never silently fall back to the real
+		// store). A memory.Open failure below stays best-effort.
+		return nil, nil, skillErr
+	}
 	if skillDBPath != "" {
 		endSk := timeline.Begin("open skill store")
 		skillStore, err := memory.Open(skillDBPath, "")

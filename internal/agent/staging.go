@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -104,14 +105,69 @@ func MemoryDBPath(ws string) string {
 //
 // Uses the same stagingDataRoot() precedence as memory (XDG_DATA_HOME /
 // WAKIL_REPO_STATE_DIR / ~/.local/share default), NOT a hardcoded home path.
-// Returns "" if the data directory cannot be determined. The directory is
-// NOT created here — memory.Open creates it.
-func SkillDBPath() string {
+//
+// WAKIL_SKILLS_DB, when set, replaces this entirely (bench data isolation);
+// it must be absolute with an existing parent directory and must not be a
+// symlink. An invalid value is an error — never a silent fallback to the
+// real store. When unset, behaviour is byte-for-byte the default resolution.
+// Returns "" with a nil error if the data directory cannot be determined.
+// The directory is NOT created here — memory.Open creates it.
+func SkillDBPath() (string, error) {
+	if v := os.Getenv("WAKIL_SKILLS_DB"); v != "" {
+		if err := validateSkillsDBOverride(v); err != nil {
+			return "", err
+		}
+		return v, nil
+	}
 	dataDir := stagingDataRoot()
 	if dataDir == "" {
-		return ""
+		return "", nil
 	}
-	return filepath.Join(dataDir, "skills", "skills.db")
+	return filepath.Join(dataDir, "skills", "skills.db"), nil
+}
+
+// validateSkillsDBOverride checks the WAKIL_SKILLS_DB value: absolute,
+// clean path, existing parent directory, and (if it exists) a regular file,
+// not a symlink. Only the leaf and its immediate parent are checked —
+// deeper ancestors (e.g. a symlinked /tmp) are not a reason to refuse.
+// Every error names the variable so a mis-set value is diagnosable at
+// startup instead of silently opening the real store.
+func validateSkillsDBOverride(v string) error {
+	if !filepath.IsAbs(v) {
+		return fmt.Errorf("WAKIL_SKILLS_DB must be an absolute path: %q", v)
+	}
+	if filepath.Clean(v) != v {
+		return fmt.Errorf("WAKIL_SKILLS_DB must be a clean path (no ./ or ../ elements): %q", v)
+	}
+	parent := filepath.Dir(v)
+	pinfo, err := os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("WAKIL_SKILLS_DB parent directory does not exist: %q (%v)", parent, err)
+	}
+	if !pinfo.IsDir() {
+		return fmt.Errorf("WAKIL_SKILLS_DB parent is not a directory: %q", parent)
+	}
+	lpinfo, err := os.Lstat(parent)
+	if err != nil {
+		return fmt.Errorf("WAKIL_SKILLS_DB parent: %v", err)
+	}
+	if lpinfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WAKIL_SKILLS_DB parent is a symlink: %q", parent)
+	}
+	linfo, err := os.Lstat(v)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("WAKIL_SKILLS_DB: %v", err)
+	}
+	if linfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("WAKIL_SKILLS_DB is a symlink: %q", v)
+	}
+	if !linfo.Mode().IsRegular() {
+		return fmt.Errorf("WAKIL_SKILLS_DB is not a regular file: %q", v)
+	}
+	return nil
 }
 
 // SessionHistoryDBPath returns the host-side path to the session-history index
