@@ -3818,6 +3818,17 @@ func hostCacheReadResult(path string, sizeLimit, hardCap int64, kind, adviceSuff
 	}
 	out, truncated, err := wtools.ReadHostCacheFileBounded(path, cap)
 	if err != nil {
+		// A classified toolcache path whose file is absent under the
+		// root surfaces Go's (*os.Root).Stat PathError verbatim
+		// ("statat <rel>: no such file or directory") — an internal
+		// op name the model cannot act on. Render an actionable "no
+		// file at this exact path" sentence instead, and gate it on
+		// ENOENT only so escape, permission and I/O failures keep
+		// their precise text. (The sentence keeps the "ERROR:"
+		// prefix formatResult/stringToToolResult rely on.)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Sprintf("ERROR: no file at this exact path in the tool cache — %s. Check the path was copied verbatim from the tool result marker or collapse note; if it was, use search_files on the cache directory to find the file's current name.", path)
+		}
 		return "", formatResult(out, err)
 	}
 	if strings.ContainsRune(out, 0) {
