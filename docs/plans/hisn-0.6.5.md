@@ -291,6 +291,30 @@ optional feature on hisn support).
 - If they cannot run (kernel/ns/permission): name the exact failure, write
   the exact host command for the user, mark assertive claims UNVERIFIED.
 
+### Block 3 result (2026-11-25, agent sandbox): SKIPS, not failures
+- Asset: `.tmp/hisn-0.6.5/hisn-x86_64-linux-gnu` 6702008 B, sha256
+  `890147848475d0aee57d1dab3effa939a3392426dd6aaae2b174fe1dc5f981aa`
+  (matches `SHA256SUMS`).
+- Command: `XDG_RUNTIME_DIR=$PWD/.tmp/rt-065 WAKIL_HISN_BIN=$PWD/.tmp/hisn-0.6.5/hisn-x86_64-linux-gnu go test -count=1 -v -timeout 10m -run 'TestIntegration|TestRealHisn' ./internal/sandbox/hisn/`
+  (log `.tmp/b3-integration.log`, exit 0).
+- Result: 31 tests matched. All 28 `TestIntegration*`/`TestRealHisn*` that need
+  a session SKIP with `hisn unusable on this host: sandbox backend hisn: hisn
+  check failed — this host cannot run hisn sessions` (unshare(NEWUSER)
+  Operation not permitted — user namespaces disabled in this sandbox), i.e. the
+  `hisn check` gate fired, not test failures. What DID run against the real
+  0.6.5 binary: 5 `TestRealHisn*` PASS (generated base profile, full surface,
+  ack matrix, persistent home, SSH table) + `TestIntegrationToolPath` PASS.
+  `TestRealHisnAcceptsRootfs` SKIP (no rootfs built). The full session cycle
+  against 0.6.5 is UNVERIFIED here and must run on the host:
+  `WAKIL_HISN_BIN=$PWD/.tmp/hisn-0.6.5/hisn-x86_64-linux-gnu go test -count=1 -v -timeout 10m -run 'TestIntegration|TestRealHisn' ./internal/sandbox/hisn/`
+  on a host where `hisn check` passes (userns enabled).
+- Captured from the real 0.6.5 binary (read-only, isolated runtime dir):
+  `--version` → `hisn 0.6.5`; `capabilities --json` (see Block 2);
+  `hisn check` shows `landlock ABI v11` and `landlock net rules (open mode)
+  ABI v11 (>= v4, Linux 6.7)` — confirms the kernel-floor text semantics.
+  Error-object sample shape confirmed for the parser via the committed
+  `hisn_error_test.go` fixture (recorded from real 0.6.5 output).
+
 ### Block 4 — docs + CHANGELOG
 - README/docs/configuration.md/docs/sandbox-backends.md: 0.6.5 minimum,
   open-mode kernel 6.7 / Landlock ABI 4 (was "5.14+"), E_TOO_LARGE note,
