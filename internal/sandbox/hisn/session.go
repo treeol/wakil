@@ -697,9 +697,10 @@ func (b *Backend) runSession(ctx context.Context, rec record, notes []string) (*
 
 // withSupervisorStderr appends the supervisor's exit state and captured stderr.
 // When the session was started with network = "open" and hisn's own output
-// names that mode (its refusal: kernel older than 5.14, Yama ptrace_scope,
+// names that mode (its refusal: kernel older than 6.7, Yama ptrace_scope,
 // no DNS upstream, ...), hisn's line leads the error and the way back to
-// "host" follows it; the full stderr stays in the tail.
+// "host" follows it; the full stderr stays in the tail. (The kernel floor
+// is 6.7 since hisn 0.6.2, which enforces open mode via Landlock TCP rules.)
 func (b *Backend) withSupervisorStderr(err error, sup *supervisorProc) error {
 	msg := sup.stderrText()
 	if msg == "" {

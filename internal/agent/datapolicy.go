@@ -291,5 +291,6 @@ func (a *App) projectNetworkOpen() bool {
 const networkPrecedenceNote = "precedence: a repo's .wakil/sandbox.json \"open\" is the project's setting, used at start and restored by /network reset — unless you set /network host for this repo, which wins; the line above shows the effective mode and its source."
 
 // networkOpenNote is the one sentence every place that describes the open
-// network mode carries: who it is for and what the host needs.
-const networkOpenNote = "open is meant for code you trust and needs kernel 5.14 or newer."
+// network mode carries: who it is for and what the host needs. Hisn 0.6.2+
+// enforces open mode via Landlock TCP rules (ABI v4, kernel 6.7+).
+const networkOpenNote = "open is meant for code you trust and needs kernel 6.7 or newer (Landlock ABI v4)."
