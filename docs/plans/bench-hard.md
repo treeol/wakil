@@ -1287,3 +1287,528 @@ excluded from the ceiling by design — noted, not reconciled); stale
 §8.7 comments updated per §11.5; README true-sum ranges / "parsed 640" /
 wrong-sum values are a pre-existing leaky surface (unchanged here).
 
+## 12. bench isolation and collapse-long-v3 (BASE c922afe, 2026-11-25)
+
+### 12.0 What happened on the host (verified this session)
+
+1. **MCP servers were available to bench runs.** The run config came from
+   the user's own config (`$WAKIL_CONFIG`, else
+   `~/.config/wakil/config.json`) for every task except `collapse-long`
+   and `collapse-long-v2`, which got the merged config (Fix 1/Fix 2,
+   §8–§9) — but that merge only *adds* the two collapse keys, so it kept
+   every MCP key too. `wakil run` had no flag to disable MCP. Agents
+   under test therefore saw `mcp:caj` (a sandboxed workspace server) and
+   called `caj__run_command`, `caj__read_file`, `caj__edit_file`,
+   `caj__write_file` — tools that run in a **different sandbox than the
+   bench workdir**, so work landed in a foreign workspace
+   (`bench/results/collapse-long-v2-1-022611.log` even shows two `/tmp`
+   dirs deleted inside caj's sandbox, not the bench's).
+   Scan of `bench/results/*.log` (this session, `grep -o '·
+   [a-z0-9_-]+__[a-z0-9_-]+'`): **46 logs contain MCP tool calls**,
+   `caj__run_command` 64×, `caj__read_file` 19×, `caj__edit_file` 8×,
+   `caj__write_file` 7×. No `trello__`/`invoicely__`/`context7__` calls.
+   The full row list is in §12.7.
+2. **collapse-long-v2's task text does not match its data.** The text
+   says each entry has "a year, an entity (an item code with an alias)"
+   — the generated files have neither years nor item codes. Corrections
+   say "Withdrawal for the entry N of X" with no visible numbering on
+   the entry lines (the real rule is the 0-based index of the amended
+   entry among the ledger block's lines, which no careful agent can
+   confirm from the text). Ledger lines are duplicated (the generator
+   writes both the amended entry's original line and the withdrawal
+   line), and words are doubled ("The the", "the the miller") because
+   the sentence templates prefix "the " to aliases that already start
+   with "the " (`gen/main.go:95-106`). Careful agents refused: the
+   022241 Haiku run computed the exact expected sums, then judged them
+   unreliable and wrote no `report.json`; the 022522 run asked the user
+   for the rule. Both count as fail — correct answers rejected by an
+   ambiguous task.
+3. **v2's answer key leaks into the work folder.**
+   `gen/main.go:184` writes `answer-key.json` to `filepath.Dir(out)`;
+   `setup.sh:13` invokes it as `go run -C "$here/gen" . "$PWD/docs"`
+   with the **workdir** as cwd, so `Dir(docs)` is the workdir **root** —
+   the sums sit next to `report.json` where the agent can read them.
+   Two run logs prove agents saw it (022344: "I did not open
+   `answer-key.json`, which is in the repo root"; 023650: same). The
+   README claim that "the self-test asserts it equals the check.sh
+   constants" is also false — no such assertion exists in
+   `scripts/bench.sh` (grep: zero hits for `answer-key`). v2 is DO NOT
+   ALTER, so this is fixed for v3 only and recorded as an open point
+   for v2 rows.
+
+### 12.1 Verified findings (read this session; file:line)
+
+**Config keys that bring MCP servers or other external tools into a run**
+(all in `internal/config/config.go` unless noted):
+
+- `mcp_servers` (`MCPServers []MCPServerConfig`, `:563`; validation
+  `:3688-3760`). Consumed by `internal/wiring/bootstrap.go:154-156` —
+  `agent.NewMCPManager` is built when `len(cfg.MCPServers) > 0`; the
+  manager's tools enter the tool array (`BuildTools`,
+  `bootstrap.go:256`) and the module registry
+  (`ModuleRegistryForApp`, `bootstrap.go:257`), and modules are
+  registered (`RegisterMCPModules`, `bootstrap.go:271-273`). MCP tool
+  names are `<server>__<tool>` (run-log evidence: `caj__run_command`).
+- `subagent_mcp_servers` (`SubagentMCPServers []string`, `:771`) — the
+  allowlist of MCP server names for tools-tier subagents. Harmless with
+  no servers, but stripped for completeness.
+- `mcp_module_keywords` (`MCPModuleKeywords map[string][]string`,
+  `:474`) — turn-1 module preloading keyed on server names. Same.
+- `searxng_url` (`SearXngURL`, `:561`) — the native `searxng_search` /
+  `searxng_url_read` web-search tools (`internal/tools/searxng.go:15-49`,
+  dispatch `internal/agent/app.go:3531-3533`). External tools; stripped.
+- Mashūra / oracle keys (external counsel): `oracle_enabled`
+  (`:584`), `oracle_model` (`:585`), `oracle_max_tokens` (`:586`),
+  `oracle_api_key_env` (`:587`), `oracle_timeout_seconds` (`:592`),
+  `mashura_fallback_model` (`:604`), `mashura_max_tokens` (`:609`),
+  `mashura_timeout_seconds` (`:610`), `mashura_review_budget_usd`
+  (`:614`), `mashura_mode` (`:615`), `mashura_max_tokens_by_tool`
+  (`:620`), `mashura_models` (`:629`), `mashura_roles` (`:639`),
+  `mashura_panels` (`:664`), `mashura_tool_panels` (`:670`), `mashura`
+  (block, `:675`), `wf_oracle_mode` (`:681`). Tool offer gate:
+  `mashuraOffered` (`internal/agent/mcp_manager.go:1064-1075`) — with
+  the block, any non-off effective level offers the tools when the
+  OpenRouter key is present; without it, `oracle_enabled: true` offers
+  them. `--mashura off` (the bench default) only withholds
+  `--auto-counsel` — it does **not** un-offer the tools, and the API
+  key is read from the environment (never stored in config), so a
+  merged config that keeps `oracle_enabled: true` or a `mashura` block
+  leaves `mashura__review` etc. callable by the agent: external AI
+  calls. All are stripped in the merged config.
+- `wf_final_review` (`:682`), `wf_briefing_max_bytes` (`:683`),
+  `auto_counsel` (`:617`), `counsel_max_per_session` (`:620-621`) —
+  workflow/oracle-adjacent keys. The bench runs `wakil run` without
+  `--plan`, so the workflow never starts; still stripped with the
+  oracle keys for one coherent "no external counsel" surface.
+
+**What a run writes to the user's real data, and the redirect keys:**
+
+- Memory: `--no-memory` already strips it (`internal/wiring/bootstrap.go:398-430`;
+  memory tools removed from the tool array `:275-296`). Not a leak.
+- **Skill store: the real `<data>/skills/skills.db` is opened by every
+  bench run** (`bootstrap.go:438-449` → `agent.SkillDBPath()`,
+  `internal/agent/staging.go:109-115`). It is global, not
+  workspace-keyed. Agents can read the user's skills (reference docs —
+  data, not secrets) and `memory.Open` gives the store write access.
+- Session history: workspace-keyed by the workdir path
+  (`staging.go:124-134`, `bootstrap.go:454-465`) — writes a *sandboxed*
+  index under `<data>/sessionhistory/<key-of-workdir>/`, not the user's
+  real workspace index. Toolcache spill files likewise land under
+  `<data>/toolcache/<chatID>/` (per-run chat IDs, sandboxed content).
+- Env-redirect keys: `XDG_DATA_HOME` redirects *everything*
+  (memory, skills, sessionhistory, sessions, repo-state, toolcache:
+  `staging.go:63-71`, `internal/agent/persist.go:14-27`,
+  `internal/agent/session.go:62-65`, `internal/tools/toolcap.go:91-99`,
+  `internal/wiring/hisn_executor.go:149-158`). But it **also redirects
+  the sandbox approval store** (`hisnStateDir` →
+  `<XDG_DATA_HOME>/wakil/hisn/approved/…`,
+  `internal/wiring/sandbox_project.go:42,115`): setting it for the run
+  would invalidate the user's one-time `wakil sandbox trust` approval
+  and every run would stop as `sandbox-not-acknowledged`. No key
+  redirects only the skill store. **Open point, not changed** (see
+  §12.6): a per-store redirect env var would be a Wakil change, which
+  DO NOT ALTER forbids.
+
+**Tool-call log format (for the guard):** the transcript log records
+each tool call as `· <name> <arg> → …` (`toolLine`,
+`internal/agent/app.go:3967-3973`, printed by
+`internal/agent/turn_phases.go:587`). A `<server>__<tool>` name is the
+one stable signature of an MCP call; no built-in tool name contains
+`__` (verified: `grep -rn '__' internal/tools/` hits only comments;
+run logs show `caj__run_command` exactly in this shape).
+
+**Existing merge machinery to reuse** (`scripts/bench.sh`): the
+collapse-long branch `:851-924` (private 0700 `mktemp -d` dir, 0600
+file via `umask 077`, `../` escape check on `style_guide_paths`,
+config-dir mirror, `bench_cfg_cleanup` `:548-563`, deleted on every
+exit path, secret values never printed; log line records only
+non-secret numbers). `csv_row` `:578-604` computes `valid` in one
+place. Self-test: fake user config with sentinel
+`AKIA_FAKE_SENTINEL` (`:1396-1405`), recording stubs, sentinel
+leak-checks, missing/unparseable/escape config cases
+(`:1655-1668`).
+
+### 12.2 Block 1 — every task runs MCP-free
+
+- Extend the merged-config mechanism to **every** task: all tasks get
+  the private temp dir + merged config in which the MCP/external keys
+  are removed or emptied — `mcp_servers` (deleted),
+  `subagent_mcp_servers` (deleted), `mcp_module_keywords` (deleted),
+  `searxng_url` (deleted), all oracle/mashura keys (deleted), plus the
+  workflow oracle-adjacent keys (`wf_oracle_mode`,
+  `wf_final_review`, `wf_briefing_max_bytes`, `auto_counsel`,
+  `counsel_max_per_session`). **Deletion is not enough for two keys
+  whose defaults are ON** (`MashuraLevelDefault` is `medium`,
+  `config.go:1156`; `WFFinalReview` defaults true,
+  `config.go:1625`): the merge also SETS explicit off values —
+  `"oracle_enabled": false`, `"mashura": {"level": "off"}`,
+  `"wf_final_review": false` — so the file strip cannot fall back to an
+  enabled default (§12.9 B2/G2). The collapse tasks keep the two
+  collapse keys (per-task ceiling: v1 45000, v2 21000, v3 21000) in the
+  **same** merged file — one mechanism, no second merge. The endpoint
+  block and everything else the model needs (endpoints with keys,
+  model, `agent_prompt_path`, `style_guide_paths`, …) are kept as-is.
+  **The launch env is scrubbed too:** `SEARXNG_URL` is unset for the
+  `wakil run` invocation (env overrides apply after the file,
+  `config.go:2149`); the remaining vars in that block are TUI-only or
+  endpoint config, verified in §12.9.
+- A run whose user config is missing merges onto `{}` plus the
+  overrides; an unparseable one is `error`/`config-unreadable`/
+  `valid=false:config` exactly as today (extended from the
+  collapse-only branch to all tasks).
+- **Normal-mode traps:** the merged file carries real API keys for
+  every task now, so `main()` installs EXIT/INT/TERM traps calling
+  `bench_cfg_cleanup` (today only `--self-test` has an EXIT trap,
+  `bench.sh:3463`; a SIGINT on a normal run would leave the 0600 file
+  in /tmp). INT/TERM added to the self-test trap as well (POSIX EXIT
+  traps don't fire on signals).
+- **Guard: after each run, scan the run log for MCP calls** — one
+  `grep -E '^· [a-zA-Z0-9_-]+__[a-zA-Z0-9_-]+'` over the log file,
+  excluding `mashura__` names (builtin counsel tools, §12.9). A hit
+  rewrites the row to `result=invalid`, `exit_reason=mcp`,
+  `valid=false:mcp` (a new `mcp)` branch in `csv_row`, which today
+  maps every `invalid` to `false:no_collapse`), names the tool names in
+  the log line, and skips `check.sh` (an MCP call is isolation
+  failure, not a task result). The guard runs only on a completed run
+  (before the leak/workdir guards' `check.sh` step); config-error and
+  timeout rows are unaffected. The match is anchored to a line-leading
+  `· ` (the `toolLine` shape, §12.1) so prose or JSONL payload text
+  that merely contains `__` is not flagged, and the run log's
+  non-transcript sections are excluded.
+- Self-test (fake configs only): (a) the merged config for a **normal**
+  task (fix-test) keeps the fake endpoints and has none of the
+  MCP/external keys plus the explicit-off values (jq assertion on the
+  recording stub's `$WAKIL_CONFIG`), and the stub saw `SEARXNG_URL`
+  unset; (b) a stub log containing a `· caj__run_command …` line → row
+  `invalid` / `mcp` / `false:mcp` and the log line names the tool; (b')
+  a stub log containing `· mashura__review …` is NOT flagged; (c) a
+  clean stub log is unaffected (row unchanged); (c') the existing
+  no-override-line assertion for non-collapse tasks
+  (`bench.sh:1702-1704`) is updated for the now-global override; (d)
+  the existing secret-sentinel and byte-identity assertions still pass.
+- Report: list the 46 MCP-contaminated CSV rows (§12.7), paths only,
+  not committed.
+
+### 12.3 Block 2 — collapse-long-v3 (v1/v2 unchanged)
+
+New task `bench/tasks/collapse-long-v3/` (same layout; v1/v2 files are
+not touched, apart from the all-task MCP-free config of Block 1 — no
+byte of their fixture, task text, ceiling, or check changes).
+
+**Task text ↔ data fidelity** (the v2 lesson): the text describes
+exactly what the data holds — categories, entities referred to by
+aliases (the only names in the sentence text), quantities in words,
+corrections identified by a visible identifier. **Every ledger entry
+line carries its own visible identifier** ("entry 7 of orchard"),
+**per-file and 1-based** — "entry 7 of orchard" in `note-03.txt` names
+that file's ledger entry 7; the same number in another file is a
+different entry. The identifier uses the entity's base name ("orchard"),
+the sentences use its aliases, and the task text ties them together in
+one sentence. The withdrawal line repeats the entry's identifier,
+states its replacement figure, and **binds only within its own file**;
+each entry has at most one withdrawal (a generator invariant, checked
+by the self-check). The rule is stated in the task text: "a withdrawal
+replaces the figure of the entry it names, in the same file; that
+entry's original figure no longer counts; only identifier-bearing
+lines in the Ledger block count." The Ledger block is delimited
+start/end markers, stated in the text. No years, no item codes, no
+implicit numbering. **No duplicated ledger lines, no doubled words** —
+the generator's sentence templates never prefix "the " to an alias,
+and each entry line is emitted exactly once. A **generator
+self-check** (in `gen/main.go`, runs on every generation) fails the
+generation on any of: (a) a ledger line's text appearing twice in the
+same file; (b) a doubled word (adjacent-token comparison,
+case-insensitive — Go's RE2 regex has no backreferences, §12.9; ledger
+lines only); (c) two withdrawals naming one entry; (d) an identifier
+that does not resolve within its own file.
+
+**Fixture (seed-generated, generator + seed outside the workdir):**
+40 files `docs/note-XX.txt` ≈ 60 KB each. Ledger block per file past
+the 8 KB ToolResultCap cut (20–45 KB in), 12 entries with categories
+(6 categories), aliases per entity, quantities 1–30 in words;
+withdrawals replace a fraction of entries (seeded, ~1/3 as v2). Dense
+number-laden decoy filler around it (same filler style as v2, kept
+number-word-bearing). Early and late files both required (the answer
+needs sums from all 40; the check requires all categories present).
+Must-read ledger text ≈ 800 KB ≈ 4× the 84,000-char ceiling (same
+envelope as v2, §10.2).
+
+**Answer key placement (v2 leak fixed):** the generator takes an
+explicit key-out path; `setup.sh` passes a path under the **task dir**
+(`gen/answer-key.json`, outside the workdir), the file is
+deterministic and **committed** (byte-stability proven by the
+two-generation `diff -r`) — never written into the work folder. The
+workdir guard (`leak_check`) additionally greps for `answer-key.json`
+in the work folder as a regression lock (§12.9 B5), and the self-test
+asserts its absence there while tying the committed key to the
+`check.sh` constants (parsing both, comparing values) — a generator
+bug cannot leave a green self-test over an unsolvable task.
+
+**Task text adds** (verbatim requirement): "Always write report.json
+with your best answer. If you have doubts, put them in a `notes` field
+in report.json; the totals are what count." The text shows the exact
+report.json shape: the six category keys at top level (integers), an
+optional `notes` field of any JSON type, and no other keys.
+
+**check.sh:** parses `report.json`; **reads only the total keys** —
+the `notes` field is ignored regardless of its JSON type; a key other
+than the six categories plus `notes` fails; the six category sums
+(integers) must equal the expected values. Missing `report.json` = fail
+(gocheck_fail, as v2). Unparseable JSON = fail. The expected values
+are the generator's own sums (tied via the self-test, above).
+
+**Ceiling: 21,000 tokens (84,000 chars), same as v2.** Verified with
+the §11 replay method (a throwaway Go test in `internal/agent`,
+deleted before commit, driving the real `streamTurn` +
+`collapseMidTurnPrefix` through the fake backend/executor with the v3
+task text and each mode's real `buildPreambleForNetwork`): the v3 task
+text is the same length class as v2's (751 B), and the §11.2 recorded
+conversation-shape inputs (result/argument/text byte sizes — a
+strategy property, not a fixture-content property) are reused as the
+strategy model with the v3 task-text byte length substituted. The
+replay asserts 1–3 mid-turn collapses in **both** modes at 21,000
+under the three argument distributions; if not, the ceiling is
+recalibrated with the §11.3 candidate sweep and the numbers are
+recorded here and in the README. (§11.4's strategy-model caveat
+applies: the replay models the recorded Haiku strategy against the v3
+prompt length; no real-model runs.)
+
+**Self-test cases (v3):** reference passes (solve stub);
+untouched fixture fails; wrong report fails; grep-only (naive
+first-number) fails; ranged-read stub passes; generator self-check
+passes (run the generator in the self-test work folder; a deliberately
+broken fixture — one duplicated ledger line — must make the self-check
+fail, proven by a purpose-built broken-fixture generation in a temp
+dir, never by editing the shipped fixture); a report with a `notes`
+field (non-string type included) and correct totals passes; the
+committed `gen/answer-key.json` equals the `check.sh` constants. The
+solve/noop stubs' collapse counting extends to v3 by task name (the
+`csv_row` `invalid` no-collapse rule adds `collapse-long-v3`, as v2
+did).
+
+### 12.4 Block 3 — docs
+
+- `bench/README.md`: MCP isolation (every task runs with the merged
+  MCP-free config; what is stripped; why the endpoints stay) and the
+  post-run MCP guard (`invalid`/`false:mcp`); a note that rows before
+  this commit may include MCP calls, with the count and the pointer to
+  the plan §12.7 list; the v3 section (what it is, why v2 was
+  ambiguous — text/data mismatch, invisible entry numbering, doubled
+  words/duplicated lines; visible entry identifiers; the `notes`
+  field; the ceiling and its replay verification; the answer-key
+  placement fix and the v2 open point).
+- `CHANGELOG.md` [Unreleased]: bench entry covering all three blocks.
+
+### 12.5 Touched paths
+
+- `scripts/bench.sh` — all-task merged config + MCP key strip +
+  `false:mcp` guard + self-test cases (Block 1); v3 ceiling branch +
+  v3 self-test cases (Block 2).
+- `bench/tasks/collapse-long-v3/` — new task (task.txt, gen/main.go +
+  answer key in gen/, setup.sh, check.sh, solution/report.json,
+  repo/go.mod).
+- `bench/README.md`, `CHANGELOG.md`, `docs/plans/bench-hard.md` (this
+  section).
+- Wakil itself unchanged: `git diff 6d1a86a..HEAD -- internal cmd
+  prompts` stays empty. Throwaway replay test deleted before commit.
+
+### 12.6 Open risks and open points
+
+- **Skill store (open point, not changed):** a bench run opens the
+  user's real `skills.db` (read/write). No config key or env var
+  redirects only that store; `XDG_DATA_HOME` would also move the
+  sandbox-approval store and invalidate the one-time `wakil sandbox
+  trust` (§12.1). A per-store redirect would be a Wakil change —
+  listed here, not implemented (DO NOT ALTER: Wakil stays unchanged).
+  Exposure is bounded: skills are project-agnostic reference docs; a
+  run can read them (prompt material) and the store can persist
+  writes. The MCP strip removes the *external-tool* path; this one is
+  a *data* path, recorded.
+- **v2 answer-key leak (open point):** v2 rows before this commit may
+  have been answerable by reading `answer-key.json` from the repo
+  root. v2 is DO NOT ALTER, so no fix there; v3 fixes it and v2 rows
+  stay non-comparable with v3 anyway (different task). Two v2 run
+  logs show agents *noticed* the file and declined to read it; no
+  evidence any run used it, but the possibility is recorded.
+- **MCP guard is log-based:** the transcript log's `· <name>` line is
+  the only in-log MCP signature. The line is printed per call
+  (`turn_phases.go:587`), so every executed MCP call is caught; a
+  hypothetical future binary that stops printing tool lines would
+  need a new signature. Fail-open is not possible for the *strip*
+  (config-level: no servers exist to call) — the strip is the primary
+  control, the guard the tripwire.
+- **Merged-config key drift:** the strip list is a fixed key list in
+  `bench.sh`; a future Wakil config key that adds external tools would
+  need the list extended (same maintenance property as the existing
+  escape check; stated in README).
+- **Ceiling replay is strategy-modelled:** as §11.3/§11.4 — the
+  recorded Haiku strategy, not a v3-specific run (no real-model runs
+  allowed). The `invalid` safety net stays.
+- **Timeout/cost envelope:** v3 same as v2 (~100 ranged reads;
+  `--timeout 1800` recommended, README).
+
+### 12.7 MCP-contaminated rows (logs under bench/results; not committed)
+
+46 logs, all under `bench/results/`: add-flag-1-220233,
+add-flag-1-223202, add-flag-1-224813, add-flag-2-110606,
+add-flag-2-220248, add-flag-2-220944, add-flag-3-110635,
+add-flag-3-111311, add-flag-3-144357, add-flag-3-220322,
+add-flag-3-221025, add-flag-3-224849, collapse-long-v2-1-022611,
+collapse-long-v2-2-022850, collapse-long-v2-3-023152,
+debug-subtle-2-021436, fix-test-1-105835, fix-test-1-110701,
+fix-test-1-171306, fix-test-1-225552, fix-test-2-110736,
+fix-test-2-144853, fix-test-2-220449, fix-test-2-222138,
+fix-test-2-224930, fix-test-3-110824, fix-test-3-225010,
+long-read-1-110123, long-read-1-110923, long-read-1-225703,
+long-read-2-110951, long-read-2-220639, long-read-3-111014,
+long-read-3-225238, refactor-multi-1-004803, refactor-multi-1-013850,
+refactor-multi-1-020848, refactor-multi-2-020959,
+refactor-multi-3-021041, rename-1-111039, rename-2-111122,
+rename-2-225324, rename-3-111144, rename-3-225351, steps-2-225434,
+steps-3-111235.
+
+### 12.8 Tests
+
+- Block 1: `scripts/bench.sh --self-test` (new merged-config-for-all
+  cases, MCP guard cases, existing sentinel/byte-identity cases
+  unchanged); full gates per the task: `gofmt -l cmd internal prompts
+  scripts` (empty), `go vet ./...`, `golangci-lint run`, `go test
+  -count=1 -timeout 30m ./...` (every package line reported),
+  shellcheck on changed scripts if installed (SKIP if not — it is not
+  installed on this host).
+- Block 2: self-test v3 cases (§12.3); the throwaway replay (deleted
+  before commit) verifying the 21,000 ceiling gives 1–3 collapses in
+  both modes; determinism check (two generations byte-identical,
+  `diff -r`); best-effort script-only solver must produce a wrong
+  report (pre-commit gate, as v2 §10.2).
+- Block 3: docs-only; `scripts/check_config_docs.sh` unaffected.
+
+### 12.9 Mashūra round 1 — findings and disposition
+
+Round 1 (panel of 3, BLOCKING = sandbox escape / gameable check / v3
+ambiguity / secret leak). Round 2 is not required: every blocking item
+below is either verified and folded into the design, or verified false
+and dismissed with file:line evidence.
+
+**Folded into the design (verified against the code):**
+
+- **Env overrides survive the file strip (B1, fable; G1, gemini).**
+  `envStr(&cfg.SearXngURL, "SEARXNG_URL")` (`config.go:2149`) — env
+  applied after the file. Fix: the bench launch unsets `SEARXNG_URL`
+  (and audits the env block `:2149-2180` — no other var there enables
+  a tool; `WAKIL_MENTION_BASE` is TUI-only, see below). Self-test (a)
+  extends: the stub asserts the variable is unset.
+- **Deleted mashura keys fall back to DEFAULT MEDIUM (B2/G2).**
+  `MashuraLevelDefault = MashuraLevelMedium` (`config.go:1156`); with
+  no block and no legacy keys, `ResolveEffective` returns the default
+  (`config.go:1225-1231`). Fix: the merged config SETS explicit off —
+  `"oracle_enabled": false`, `"mashura": {"level": "off"}` — and
+  deletes the remaining oracle/mashura keys. (With the block present,
+  legacy keys are ignored, `config.go:2057-2062`;
+  `deriveMashuraFromLegacy` maps `oracle_enabled: false` → off,
+  `config.go:1742-1746` — belt and braces.)
+- **No normal-mode EXIT trap (G3).** `trap st_on_exit EXIT` exists only
+  in `--self-test` (`bench.sh:3463`); normal mode has none, so
+  Ctrl-C/SIGTERM during a run leaves the 0600 merged config in /tmp.
+  With Block 1 the file now exists for every task. Fix: normal-mode
+  EXIT/INT/TERM traps calling `bench_cfg_cleanup` (INT/TERM also added
+  to the self-test trap; POSIX `EXIT` traps don't fire on signals).
+- **Doubled-word regex can't compile in Go (fable/gemini, listed).**
+  RE2 has no backreferences. Fix: the generator self-check tokenizes
+  each line and compares adjacent words case-insensitively (ledger
+  lines only; filler may legitimately contain "had had").
+- **`answer-key.json` not in leak_check (B5, muse-wonder).** The
+  workdir guard greps for `check.sh hidden solution gen setup.sh`
+  only. Fix: `answer-key.json` added to the guard + self-test asserts
+  its absence from the generated work folder (regression lock for the
+  v2-class path mistake).
+- **`csv_row` has no `mcp` exit-reason branch (fable, listed; also
+  muse-wonder B5).** `invalid)` maps unconditionally to
+  `false:no_collapse`. Fix: the guard sets `exit_reason="mcp"` and
+  `csv_row` gains an explicit `mcp)` branch producing
+  `result=invalid, valid=false:mcp`.
+- **Guard false positives / mashura collision (fable, listed).** The
+  log is JSONL; prose mentioning `foo__bar` would false-positive, and
+  the built-in `mashura__review` family also contains `__` (so
+  §12.1's "no built-in tool contains `__`" was wrong — corrected).
+  Fix: the guard matches only the transcript `output` lines that
+  start with `· ` (the `toolLine` shape) AND excludes `mashura__`
+  names (builtin counsel tools, already off via the explicit-off
+  strip; a mashura call after the strip is impossible, and the
+  exclusion keeps a stray builtin name from mislabeling a row).
+- **v3 under-specifications (B6 fable; #4/#5 gemini; #6 muse-wonder).**
+  Folded into the v3 task text + generator invariants: identifiers are
+  per-file and 1-based ("entry 7 of orchard" in note-03 names that
+  file's ledger entry 7); a withdrawal binds only within its own file;
+  at most one withdrawal per entry (generator invariant + self-check);
+  the withdrawal line repeats the entry's identifier and states its
+  replacement figure; the text says only identifier-bearing lines in
+  the Ledger block count, and how the block is delimited; the text
+  states the entity's base name in the identifier, aliases in the
+  sentences, with one sentence tying them; report.json shape is shown
+  exactly in the text (the six category keys at top level, optional
+  `notes` of any JSON type, no other keys — the check ignores `notes`
+  regardless of type); totals are integers, the text says so.
+- **Self-test case (d) stale (fable/gemini, listed).** The existing
+  assertion that non-collapse tasks log no override line
+  (`bench.sh:1702-1704`) must be inverted/updated when the merge
+  extends to all tasks. Folded.
+- **`gen/answer-key.json` written into the tree (fable/gemini,
+  listed).** The v3 setup runs the generator with an explicit key-out
+  path under the **task dir** (`gen/answer-key.json`, outside the
+  workdir, deterministic → committed; verified byte-stable by the
+  two-generation `diff -r`). The workdir never receives a key; the
+  leak_check lock above catches any regression.
+- **`ln` missing from harness_tools (gemini, listed).** Cosmetic; the
+  mirror already works in self-test (exercised). Not folded — recorded.
+
+**Dismissed with file:line evidence (panel claims that do not hold):**
+
+- **RepoState restores MCP/mashura state into a run (B3, fable).**
+  `RestoreRepoState` is TUI-only by contract (`repostate.go:330-347`:
+  "cmd/wakil/run.go must never call this function"); `RunHeadless`
+  (`headless.go:253-392`) never calls it or the conversation manager's
+  `restoreRepoState`. The per-repo mashura level cannot enter a
+  headless bench run.
+- **Cross-run transcript leak via /sessions //recall //remember (B4,
+  fable).** All three are TUI slash commands (`commands.go:557`,
+  `:630`, `:571`), dispatched only from the TUI input path
+  (`tui.go:1805-1816` → `DispatchCommand`). The headless path is
+  `SubmitInput` → `host.handleInput` (`host.go:1094`) →
+  `DriveTurnWithResilience` (`resilience.go:185`) → `SendOutcome`
+  (`app.go:1263`) → `streamTurn` (`turn_phases.go:216`) — no
+  slash-command dispatch anywhere; a task text starting with "/" is
+  plain text to the model. Per-run ChatIDs key the transcripts; no
+  agent tool reads them.
+- **`plugins` server-side web search (B3, fable).** `wireBody` appends
+  exactly one plugin, `context-compression` disabled
+  (`proxy/client.go:1285-1295`); there is no web-search plugin path.
+- **`WAKIL_MENTION_BASE` / mention injection (fable, audit of
+  `:2149-2186`).** `@`-mention resolution is TUI-only
+  (`tools.ResolveMentions` is called only from `tui.go:1845/:2035`);
+  headless never resolves mentions.
+- **B7 (fable): "script-only solver gate contradicts the v3 design."**
+  The gate is the §10.2-style *pre-commit host check* (a careful
+  one-shot script over the generated data must not produce the exact
+  totals — the withdrawals/aliasing see to that), not a self-test row
+  that would require ambiguity. Kept.
+
+**Listed, not folded:** `--mashura low|medium|high` still passes
+`--auto-counsel` (the bench pins `--mashura off`; a non-off value
+combined with the explicit-off config strip is a config-vs-flag
+contradiction → the README documents that non-off is rejected by the
+bench while the strip exists); ceiling likely fires less than v2 (v3
+removes the ambiguity that drove the 18-call probing trace — §11.2
+strategy model reused with that caveat stated; the `invalid`
+no-collapse safety net stands, and the replay recalibrates if needed);
+config-dir mirror surface (Wakil reads only `agent.txt` from the config
+dir on the run path — `style_guide_paths`/`agent_prompt_path` come from
+the config JSON itself; recorded, not re-proved); merged-config-for-all
+changes the failure surface of unparseable user configs for every task
+(a comparability note in the README, intended); the SIGKILL-leftover
+temp-config exposure is the same class as before the change (documented
+in §8/§9, unchanged); `searxng_search`/`searxng_url_read` names contain
+no `__` — the guard's `__` pattern cannot catch them, which is fine:
+the strip + `SEARXNG_URL` unset remove them at the source, and the
+guard is the tripwire, not the control.
+
