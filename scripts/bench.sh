@@ -540,11 +540,17 @@ csv_cell() {
 }
 
 # bench_cfg_cleanup: remove the merged-config temp dir — the merged
-# config.json (carries secrets) and the recorded mirror symlinks — then
-# rmdir it. Never rm -rf a dir with symlinks to directories: after a run the
-# only things that may be inside are the merged file, the links created at
-# mirror build, and (if a future binary writes something) an unknown file; the
-# latter is reported by name and left in place rather than deleted. Idempotent.
+# config.json (carries secrets), the recorded mirror symlinks, the private
+# skill store (Block 2: the run's WAKIL_SKILLS_DB slot plus its SQLite
+# sidecars) and the private sessions dir (Block 3: WAKIL_SESSIONS_DIR plus
+# the toolcache sibling, which is a child of the sessions parent) — then
+# rmdir it. Never rm -rf the dir itself: the skill DB is one enumerated
+# file (a fresh, empty store the run created), sessions/ and toolcache/
+# contain only this run's own session JSON and spill files (chat-ID dirs,
+# MkdirAll'd by the agent under a 0700 root — sandbox-adjacent staging
+# sockets are never written there, and the sandbox runs read-only against
+# this host dir). Unknown content is reported by name and left in place
+# rather than deleted. Idempotent.
 bench_cfg_cleanup() {
     [ -n "${_bench_cfg_tmp:-}" ] || return 0
     # Merged config first: secrets gone even if anything below fails.
@@ -554,6 +560,28 @@ bench_cfg_cleanup() {
             rm -f "$_bench_cfg_tmp/$_ln" 2>/dev/null || true
         fi
     done
+    # Private skill store for this run (WAKIL_SKILLS_DB slot + sidecars).
+    # The DB may not exist (a run that never opened it); -f covers that.
+    for _sb in skills.db skills.db-wal skills.db-shm skills.db-journal; do
+        rm -f "$_bench_cfg_tmp/$_sb" 2>/dev/null || true
+    done
+    # Private sessions + toolcache (Block 3): session JSONs and the
+    # .resume-index under sessions/, per-chat spill dirs under toolcache/.
+    # Removal only matches Enumerated leaves in the dir we created.
+    [ -d "$_bench_cfg_tmp/sessions" ] && find "$_bench_cfg_tmp/sessions" -mindepth 1 -type f -delete 2>/dev/null || true
+    [ -d "$_bench_cfg_tmp/sessions" ] && find "$_bench_cfg_tmp/sessions" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    [ -d "$_bench_cfg_tmp/toolcache" ] && find "$_bench_cfg_tmp/toolcache" -mindepth 1 -type f -delete 2>/dev/null || true
+    [ -d "$_bench_cfg_tmp/toolcache" ] && find "$_bench_cfg_tmp/toolcache" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    rmdir "$_bench_cfg_tmp/sessions" 2>/dev/null || true
+    rmdir "$_bench_cfg_tmp/toolcache" 2>/dev/null || true
+    # Private repo-state (Block 3, pre-created by this script): the run's
+    # sessionhistory/sessionhost DBs land under repo-state/ (their data
+    # root is the parent of WAKIL_REPO_STATE_DIR). Empty files + dirs, then
+    # rmdir — the dir itself is harness-created, so it must go or the
+    # private dir can never be removed.
+    [ -d "$_bench_cfg_tmp/repo-state" ] && find "$_bench_cfg_tmp/repo-state" -mindepth 1 -type f -delete 2>/dev/null || true
+    [ -d "$_bench_cfg_tmp/repo-state" ] && find "$_bench_cfg_tmp/repo-state" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    rmdir "$_bench_cfg_tmp/repo-state" 2>/dev/null || true
     if ! rmdir "$_bench_cfg_tmp" 2>/dev/null; then
         echo "$prog: warning: private config dir $_bench_cfg_tmp not empty after cleanup (left in place):" >&2
         find "$_bench_cfg_tmp" -mindepth 1 -maxdepth 1 -print 2>/dev/null | head -n 5 >&2 || true
@@ -895,6 +923,22 @@ run_one_locked() {
         fi
         _bench_cfg_tmp=$(mktemp -d 2>/dev/null) || { echo "$prog: cannot create private config dir for $task" >&2; set -e; return 1; }
         _cfg_file="$_bench_cfg_tmp/config.json"
+        # Data-isolation env (Block 2+3): the run's skill store, sessions
+        # dir and repo-state dir all live in this private temp dir, so a
+        # bench run never touches the user's real stores (the sandbox
+        # approval store is never moved — it does not derive from any of
+        # these). The paths are passed at launch (below); empty is fatal.
+        _skills_db="$_bench_cfg_tmp/skills.db"
+        _sessions_dir="$_bench_cfg_tmp/sessions"
+        _repo_state_dir="$_bench_cfg_tmp/repo-state"
+        for _iv in "WAKIL_SKILLS_DB=$_skills_db" "WAKIL_SESSIONS_DIR=$_sessions_dir" "WAKIL_REPO_STATE_DIR=$_repo_state_dir"; do
+            _iname="${_iv%%=*}"; _ival="${_iv#*=}"
+            if [ -z "$_ival" ] || [ ! -d "$(dirname "$_ival")" ]; then
+                echo "$prog: $iname must be set to a path in an existing directory (got '$_ival')" >&2
+                set -e; return 1
+            fi
+        done
+        mkdir -p "$_sessions_dir" "$_repo_state_dir" || { echo "$prog: cannot create private sessions/repo-state dirs for $task" >&2; set -e; return 1; }
         # jq merge: strip every MCP/external-tool key, force the
         # enabled-by-default ones off, and add the two collapse keys
         # when this task has a ceiling. The strip list is the §12.2
@@ -978,18 +1022,18 @@ run_one_locked() {
 
     if [ -n "$model_name" ]; then
         if [ -n "$_wakil_config_env" ]; then
-            env -u SEARXNG_URL "WAKIL_CONFIG=$_cfg_file" "WAKIL_MODEL=$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+            env -u SEARXNG_URL "WAKIL_CONFIG=$_cfg_file" "WAKIL_MODEL=$model_name" "WAKIL_SKILLS_DB=$_skills_db" "WAKIL_SESSIONS_DIR=$_sessions_dir" "WAKIL_REPO_STATE_DIR=$_repo_state_dir" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
                 --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
         else
-            WAKIL_MODEL="$model_name" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+            env "WAKIL_MODEL=$model_name" "WAKIL_SKILLS_DB=$_skills_db" "WAKIL_SESSIONS_DIR=$_sessions_dir" "WAKIL_REPO_STATE_DIR=$_repo_state_dir" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
                 --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
         fi
     else
         if [ -n "$_wakil_config_env" ]; then
-            env -u SEARXNG_URL "WAKIL_CONFIG=$_cfg_file" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+            env -u SEARXNG_URL "WAKIL_CONFIG=$_cfg_file" "WAKIL_SKILLS_DB=$_skills_db" "WAKIL_SESSIONS_DIR=$_sessions_dir" "WAKIL_REPO_STATE_DIR=$_repo_state_dir" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
                 --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
         else
-            timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
+            env "WAKIL_SKILLS_DB=$_skills_db" "WAKIL_SESSIONS_DIR=$_sessions_dir" "WAKIL_REPO_STATE_DIR=$_repo_state_dir" timeout -k "$kill_grace" "$timeout_sec" "$bin" run --auto --allow-destructive --no-memory $counsel_args \
                 --result-json "$result_json" --transcript "$log_file" "$task_text" </dev/null >"$log_file.out" 2>&1 9>&- &
         fi
     fi
@@ -1676,6 +1720,21 @@ _cfg="$WAKIL_CONFIG"
 [ -n "$_cfg" ] || { echo "RECORD: WAKIL_CONFIG unset" >> "$BENCH_ST_RECORD"; exit 97; }
 echo "RECORD: merged=$_cfg mode=$(stat -c %a "$_cfg" 2>/dev/null || echo nope) dir_mode=$(stat -c %a "$(dirname "$_cfg")" 2>/dev/null || echo nope)" >> "$BENCH_ST_RECORD"
 [ "${SEARXNG_URL:-}" = "" ] || { echo "RECORD: SEARXNG_URL not unset" >> "$BENCH_ST_RECORD"; _fail=1; }
+# Data isolation (Block 2+3): the run must get a private skill store, a
+# private sessions dir and a private repo-state dir — all inside the same
+# private temp dir as the merged config. Record and assert the shapes.
+_sdb="$WAKIL_SKILLS_DB"; _sdir="$WAKIL_SESSIONS_DIR"; _rsd="$WAKIL_REPO_STATE_DIR"
+echo "RECORD: skills_db=$_sdb sessions_dir=$_sdir repo_state_dir=$_rsd" >> "$BENCH_ST_RECORD"
+_cfgdir=$(dirname "$_cfg")
+[ -n "$_sdb" ] && [ "$(dirname "$_sdb")" = "$_cfgdir" ] || { echo "RECORD: WAKIL_SKILLS_DB not in private dir" >> "$BENCH_ST_RECORD"; _fail=1; }
+[ -n "$_sdir" ] && [ "$(dirname "$_sdir")" = "$_cfgdir" ] && [ "$(basename "$_sdir")" = "sessions" ] || { echo "RECORD: WAKIL_SESSIONS_DIR wrong" >> "$BENCH_ST_RECORD"; _fail=1; }
+[ -n "$_rsd" ] && [ "$(dirname "$_rsd")" = "$_cfgdir" ] && [ "$(basename "$_rsd")" = "repo-state" ] || { echo "RECORD: WAKIL_REPO_STATE_DIR wrong" >> "$BENCH_ST_RECORD"; _fail=1; }
+[ -d "$_sdir" ] && [ -d "$_rsd" ] || { echo "RECORD: private sessions/repo-state dirs missing" >> "$BENCH_ST_RECORD"; _fail=1; }
+# Touch a fake session file and toolcache spill inside the private dirs,
+# so the harness can check they are gone after the run (cleanup).
+mkdir -p "$_sdir" "$_cfgdir/toolcache/fake-chat" "$_rsd" 2>/dev/null || true
+printf 'fake-session\n' > "$_sdir/fake-chat.json" 2>/dev/null || true
+printf 'fake-spill\n' > "$_cfgdir/toolcache/fake-chat/spill.txt" 2>/dev/null || echo "RECORD: toolcache spill write failed" >> "$BENCH_ST_RECORD"
 jq -e '(.endpoints.fake) and (.mcp_servers == null) and (.subagent_mcp_servers == null) and (.mcp_module_keywords == null) and (.searxng_url == null) and (.oracle_enabled == false) and (.wf_final_review == false) and (.mashura.level == "off") and (.auto_counsel == null) and (.counsel_max_per_session == null) and (.mashura_panels == null) and (.mashura_mode == null) and (.wf_oracle_mode == null) and (.context_collapse_ceiling_tokens == 45000) and (.context_collapse_min_bytes == 2000)' "$_cfg" >/dev/null 2>&1 \
   || { echo "RECORD: merged content wrong" >> "$BENCH_ST_RECORD"; _fail=1; }
 # Delegate to the solve behaviour (copy solution, write result-json).
@@ -1721,13 +1780,34 @@ EOF
     _m_mode=$(sed -n 's/^RECORD: merged=[^ ]* mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
     _m_dmode=$(sed -n 's/^RECORD: merged=[^ ]* mode=[^ ]* dir_mode=\([^ ]*\).*/\1/p' "$tmpdir/st-record" 2>/dev/null | head -1)
     grep -q "merged content wrong" "$tmpdir/st-record" 2>/dev/null && { echo "self-test FAILED: merged content wrong (keeps endpoints + two keys)" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
-    [ "$_m_mode" = "600" ] || { echo "self-test FAILED: merged file mode=$_m_mode, want 600" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ -n "$_m_mode" ] && [ "$_m_mode" = "600" ] || { echo "self-test FAILED: merged file mode=$_m_mode, want 600" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ "$_m_dmode" = "700" ] || { echo "self-test FAILED: merged dir mode=$_m_dmode, want 700" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ -n "$_m_file" ] && [ ! -e "$_m_file" ] || { echo "self-test FAILED: merged config still exists: $_m_file" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     [ -n "$_m_file" ] && [ ! -e "$(dirname "$_m_file")" ] || { echo "self-test FAILED: merged config dir still exists" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     grep -q "AKIA_FAKE_SENTINEL" "$tmpdir/st-merged-stdout" "$log_file" "$csv_file" 2>/dev/null && { echo "self-test FAILED: fake secret reached stdout/log/CSV" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
     _row_result=$(csv_cell "$csv_file" last 6); _row_valid=$(csv_cell "$csv_file" last 19)
     { [ "$_row_result" = "pass" ] && [ "$_row_valid" = "true" ]; } || { echo "self-test FAILED: merged success: expected pass/true, got $_row_result/$_row_valid" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    # Data isolation (Block 2+3): the private dir held the run's skill
+    # store, sessions, toolcache spill and repo-state entries — all gone.
+    _priv_dir=$(dirname "$_m_file")
+    { [ ! -e "$_priv_dir" ]; } || { echo "self-test FAILED: private isolation dir still exists: $_priv_dir" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    _iso=$(sed -n 's/^RECORD: skills_db=\([^ ]*\) sessions_dir=\([^ ]*\) repo_state_dir=\([^ ]*\).*/\1|\2|\3/p' "$tmpdir/st-record" | head -1)
+    [ -n "$_iso" ] || { echo "self-test FAILED: stub did not record the isolation env" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    case "|$_iso|" in *"$_priv_dir"*|*"$_priv_dir/sessions"*|*"$_priv_dir/repo-state"*) ;; *) echo "self-test FAILED: isolation env not inside the private dir: $_iso" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1 ;; esac
+    # The fake "real" data root: a bench run must not touch it at all.
+    _fake_real="$tmpdir/fake-real-data"
+    mkdir -p "$_fake_real/skills" "$_fake_real/sessions" "$_fake_real/toolcache/abc"
+    printf 'FAKE_REAL_SKILLS\n' > "$_fake_real/skills/skills.db"
+    printf 'FAKE_REAL_SESSION\n' > "$_fake_real/sessions/real.json"
+    printf 'FAKE_REAL_SPILL\n' > "$_fake_real/toolcache/abc/spill.txt"
+    _fake_real_before=$(find "$_fake_real" -type f -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
+    _fake_real_list_before=$(find "$_fake_real" -type f -o -type l | sort)
+    XDG_DATA_HOME="$_fake_real" BENCH_TASK_DIR="" run_one collapse-long "self-isolated" "$stub_noop" >"$tmpdir/st-isolated-stdout" 2>&1 || true
+    _fake_real_after=$(find "$_fake_real" -type f -exec sha256sum {} + | sort | sha256sum | awk '{print $1}')
+    _fake_real_list_after=$(find "$_fake_real" -type f -o -type l | sort)
+    [ "$_fake_real_before" = "$_fake_real_after" ] || { echo "self-test FAILED: fake real data root contents changed: $_fake_real" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    [ "$_fake_real_list_before" = "$_fake_real_list_after" ] || { echo "self-test FAILED: fake real data root file list changed: $_fake_real" >&2; rm -rf "$tmpdir" "$_self_work_root"; exit 1; }
+    echo "  data isolation: run env private (skills/sessions/repo-state in the 0700 dir), dir gone on success, fake real data root byte-identical"
     # Timeout path: a 1s-timeout run is cut off mid-way; its merged
     # config is still deleted (no file remains under $TMPDIR from this run).
     _before=$(find "${TMPDIR:-/tmp}" -maxdepth 1 -name 'tmp.*' -newer "$_fake_user_cfg" 2>/dev/null | sort)

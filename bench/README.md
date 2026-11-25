@@ -197,6 +197,18 @@ For each task and run number:
    `style_guide_paths` shape of that line (key name + resolved path, no
    secrets) is printed to the terminal, other bootstrap errors are
    reported by name only.
+   **Bench data isolation.** Every run also gets three env vars pointing
+   into the same private 0700 temp dir as the merged config, so a bench
+   run never touches the operator's real data: `WAKIL_SKILLS_DB` (a
+   fresh, empty skill store — the agent sees no user skills), plus
+   `WAKIL_SESSIONS_DIR` and `WAKIL_REPO_STATE_DIR` (private sessions,
+   toolcache, session-history and session-host state; bench runs see no
+   per-repo settings). Rows from before commit `0408c5c` ran with the
+   operator's real skills (and real sessions/toolcache); they are not
+   comparable with isolated rows. The empty variable is a hard failure
+   before launch. The sandbox-approval store is never moved by any of
+   this, and the private dir (including the run's skill DB, sessions and
+   toolcache spill) is removed on every exit path.
    **MCP guard.** After each completed run, the run log is scanned for
    MCP tool calls: a transcript line whose tool name immediately after
    the `· ` marker contains `__` (the `<server>__<tool>` naming scheme)
