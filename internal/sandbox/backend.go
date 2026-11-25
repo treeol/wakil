@@ -10,17 +10,22 @@ import (
 )
 
 // MinHisnVersion is the oldest hisn release the hisn backend (and the
-// launcher's default-backend decision) supports. 0.6.1 is a security release:
-// in 0.6.0, network = "open" did not fully enforce the network policy for a
-// socket handed to a program before a connect that then failed. The constant
+// launcher's default-backend decision) supports. 0.6.5 is the first release
+// whose open-mode enforcement is sound end-to-end: 0.6.1 fixed a policy bypass
+// where network = "open" did not fully enforce the network policy for a socket
+// handed to a program before a connect that then failed, and 0.6.2 closed the
+// remaining open-mode timing gap (the supervisor now executes every listen and
+// INET connect/bind itself, so open mode is enforced independently of when the
+// program races a connect). Hisn 0.6.2+ also requires Landlock ABI v4
+// (kernel 6.7) for network = "open", enforced at Preflight. The constant
 // lives here, in the leaf backend-neutral package both internal/config and
-// internal/sandbox/hisn already import, so the minimum cannot drift between the
-// two constants that used to guard selection and refusal separately.
-const MinHisnVersion = "0.6.1"
+// internal/sandbox/hisn already import, so the minimum cannot drift between
+// the two constants that used to guard selection and refusal separately.
+const MinHisnVersion = "0.6.5"
 
 // MinHisnReason is why MinHisnVersion is the minimum, in a form that follows
 // "need >= <version>" in a user-facing message.
-const MinHisnReason = "security fix for network = \"open\""
+const MinHisnReason = "open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7)"
 
 // Sentinel errors shared by all backends.
 var (

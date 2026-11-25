@@ -73,6 +73,14 @@ func (b *Backend) Preflight(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("sandbox backend hisn: `hisn check` failed — this host cannot run hisn sessions:\n%s", tailLines(out, 12))
 	}
+	// Open mode needs Landlock ABI v4 (kernel 6.7+) since hisn 0.6.2: name the
+	// floor HERE, at preflight, instead of as a supervisor refusal at Start.
+	// Only when this backend actually selects open mode.
+	if b.opts.Network == "open" || b.opts.Surface.Network == "open" {
+		if err := checkOpenKernelFloor(hostKernelRelease(), "open"); err != nil {
+			return err
+		}
+	}
 	if b.opts.SSHAgent {
 		if err := preflightSSHAgent(); err != nil {
 			return err

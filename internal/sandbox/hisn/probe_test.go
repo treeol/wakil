@@ -42,7 +42,7 @@ func TestProbe(t *testing.T) {
 		if v != "0.6.0" {
 			t.Fatalf("v=%q", v)
 		}
-		for _, want := range []string{"hisn 0.6.0 is older than 0.6.1", "security fix", `network = "open"`} {
+		for _, want := range []string{"hisn 0.6.0 is older than 0.6.5", "open network mode needs hisn 0.6.2+", `Landlock ABI v4 / kernel 6.7`} {
 			if !strings.Contains(why, want) {
 				t.Errorf("why lacks %q: %q", want, why)
 			}

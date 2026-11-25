@@ -206,6 +206,9 @@ func byName(m map[string]lsEntry, name string) []lsEntry {
 func (b *Backend) listSessions(ctx context.Context) (map[string]lsEntry, error) {
 	out, err := b.output(ctx, false, "ls", "--json")
 	if err != nil {
+		if rendered, ok := ownHisnError(strings.TrimSpace(out)); ok {
+			return nil, fmt.Errorf("hisn ls: %w: %s", err, rendered)
+		}
 		return nil, fmt.Errorf("hisn ls: %w: %s", err, strings.TrimSpace(out))
 	}
 	var rows struct {
@@ -230,6 +233,9 @@ func (b *Backend) listSessions(ctx context.Context) (map[string]lsEntry, error) 
 func (b *Backend) verifyInstance(ctx context.Context, id, token string) (verified bool, err error) {
 	out, err := b.output(ctx, false, "inspect", "--session", id, "--json")
 	if err != nil {
+		if rendered, ok := ownHisnError(strings.TrimSpace(out)); ok {
+			return false, fmt.Errorf("hisn inspect %s: %w: %s", id, err, rendered)
+		}
 		return false, fmt.Errorf("hisn inspect %s: %w: %s", id, err, strings.TrimSpace(out))
 	}
 	var r struct {
@@ -590,6 +596,12 @@ func validateError(err error, out string) error {
 	if strings.Contains(msg, "network") && strings.Contains(msg, "open") {
 		return fmt.Errorf("hisn refused the open network mode: %s; switch back with /network host or sandbox.hisn.network_mode = \"host\" (Wakil never falls back to a wider mode)", msg)
 	}
+	// Fallback for everything else: a whole-output hisn-error/v1 object
+	// (hisn 0.6.3+ --json commands) surfaces as code+message. Plain text
+	// passes through byte-identical below.
+	if rendered, ok := ownHisnError(msg); ok {
+		return fmt.Errorf("hisn profile validate failed: %w: %s", err, rendered)
+	}
 	return fmt.Errorf("hisn profile validate failed: %w: %s", err, msg)
 }
 
@@ -777,6 +789,9 @@ func (b *Backend) ready(ctx context.Context, id, name string) (bool, string) {
 		return false, fmt.Sprintf("hisn ls reports the session as %q, want %q", ent.Name, name)
 	}
 	if out, err := b.output(ctx, false, "ls", "--session", id); err != nil {
+		if rendered, ok := ownHisnError(strings.TrimSpace(out)); ok {
+			return false, fmt.Sprintf("hisn ls --session: %v: %s", err, rendered)
+		}
 		return false, fmt.Sprintf("hisn ls --session: %v: %s", err, strings.TrimSpace(out))
 	}
 	return true, ""

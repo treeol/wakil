@@ -77,7 +77,7 @@ func fakeMain(state string, args []string) int {
 	case "--version":
 		v, err := os.ReadFile(filepath.Join(state, "version"))
 		if err != nil {
-			v = []byte("0.6.1")
+			v = []byte("0.6.5")
 		}
 		fmt.Printf("hisn %s\n", strings.TrimSpace(string(v)))
 		return 0
@@ -172,7 +172,7 @@ func fakeRun(state string, args []string) int {
 		fmt.Fprintln(os.Stderr, "hisn: injected failure: cannot create sandbox")
 		return 125
 	}
-	if mode == "refuseopen" { // hisn 0.6.1 style refusal of network = "open"
+	if mode == "refuseopen" { // hisn 0.6.5 style refusal of network = "open"
 		fmt.Fprintln(os.Stderr, "hisn: starting session")
 		fmt.Fprintln(os.Stderr, `hisn: refusing to start network = "open": this kernel lacks SECCOMP_ADDFD (kernel >= 5.14 required)`)
 		return 125

@@ -17,8 +17,11 @@ import (
 	"github.com/treeol/wakil/internal/timeline"
 )
 
-// MinVersion is the oldest supported hisn release: 0.6.1 (a security release
-// for the `network = "open"` mode that 0.6.0 introduced, on top of 0.5.x's additive ls --json and sessioninfo fields, and 0.4.2's
+// MinVersion is the oldest supported hisn release: 0.6.5 (0.6.2 closed the
+// open-mode timing gap — the supervisor executes every listen and INET connect
+// /bind itself — and 0.6.5 keeps the protocol at revision 4; on top of 0.6.1's
+// security release for the `network = "open"` mode that 0.6.0 introduced, on
+// top of 0.5.x's additive ls --json and sessioninfo fields, and 0.4.2's
 // `run --detach` contract that returns once the session is up, supervisor.pid
 // as "<pid> <starttime>", `ls --prune --name-prefix`; on top of 0.4.0's named
 // sessions, hisn-ls/v2 states running/stopped/crashed, the client record on
@@ -853,6 +856,11 @@ func classifyControlError(op, path, out string, err error) error {
 		return fmt.Errorf("%w: %s", sandbox.ErrNotGrantable, path)
 	case strings.Contains(msg, "E_PATH_FORBIDDEN"):
 		return fmt.Errorf("%w: %s (%s)", sandbox.ErrPathForbidden, path, msg)
+	}
+	// Fallback: a whole-output hisn-error/v1 object surfaces as code+message;
+	// plain text passes through byte-identical.
+	if rendered, ok := ownHisnError(msg); ok {
+		return fmt.Errorf("hisn %s %s: %w: %s", op, path, err, rendered)
 	}
 	return fmt.Errorf("hisn %s %s: %w: %s", op, path, err, msg)
 }

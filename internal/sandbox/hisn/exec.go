@@ -167,6 +167,14 @@ func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec san
 	cctx, cancel := context.WithCancel(ctx)
 	stop := context.AfterFunc(l.ctx, cancel)
 
+	// Capture the client's stderr so an exit-125 E_TOO_LARGE (hisn 0.6.5: a
+	// request over the supervisor's line limit is now an explicit error
+	// object, not a dropped connection) can be surfaced as a clear,
+	// program-never-started tool error in Wait, instead of the generic
+	// "hisn error" the diagWriter path reports today.
+	var tooLarge atomic.Bool
+	var tooLargeMsg atomic.Value // string: the rendered error object
+
 	var out io.Writer = io.Discard
 	if spec.Stdout != nil {
 		out = spec.Stdout
@@ -174,6 +182,9 @@ func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec san
 	// One gate for both streams: Stdout and Stderr are routinely the same writer.
 	var gate copyGate
 	dw := &diagWriter{w: gate.wrap(out)}
+	capTooLarge := func(w io.Writer) io.Writer {
+		return &tooLargeWriter{w: w, seen: &tooLarge, msg: &tooLargeMsg}
+	}
 	cmd := b.command(cctx, false, args...)
 	cmd.Stdin = spec.Stdin
 	cmd.Stdout = gate.wrap(out)
@@ -182,6 +193,10 @@ func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec san
 		dw = &diagWriter{w: gate.wrap(spec.Stderr)}
 		cmd.Stderr = dw
 	}
+	// Wrap the stderr sink so a whole-output E_TOO_LARGE object is caught.
+	// capTooLarge must see the same bytes diagWriter sees.
+	prevStderr := cmd.Stderr
+	cmd.Stderr = capTooLarge(prevStderr)
 	h, err := sandbox.StartCmd(cmd)
 	if err != nil {
 		stop()
@@ -189,17 +204,40 @@ func (b *Backend) execCLI(ctx context.Context, l *live, release func(), spec san
 		release()
 		return nil, err
 	}
-	return &execHandle{b: b, l: l, h: h, dw: dw, argv: spec.Argv, cleanup: func() { stop(); cancel(); release() }}, nil
+	return &execHandle{b: b, l: l, h: h, dw: dw, argv: spec.Argv, tooLarge: &tooLarge, tooLargeMsg: &tooLargeMsg, cleanup: func() { stop(); cancel(); release() }}, nil
+}
+
+// tooLargeWriter detects a whole-output E_TOO_LARGE error object on an exec
+// client's stderr (hisn 0.6.5+, 0.6.5 E_TOO_LARGE: an oversized request is
+// refused pre-send with exit 125 and the object on stderr, so the program
+// provably never started). Bytes pass through unchanged; detection is a
+// side-channel only, never a stdout/stderr mutation.
+type tooLargeWriter struct {
+	w    io.Writer
+	buf  []byte
+	seen *atomic.Bool
+	msg  *atomic.Value
+}
+
+func (t *tooLargeWriter) Write(p []byte) (int, error) {
+	t.buf = append(t.buf, p...)
+	if e, ok := parseHisnError(string(t.buf)); ok && e.IsTooLarge() {
+		t.seen.Store(true)
+		t.msg.Store(e.Error())
+	}
+	return t.w.Write(p)
 }
 
 // execHandle post-processes the hisn client's exit into a sandbox.ExitInfo.
 type execHandle struct {
-	b       *Backend
-	l       *live
-	h       *sandbox.CmdHandle
-	dw      *diagWriter
-	argv    []string
-	cleanup func()
+	b           *Backend
+	l           *live
+	h           *sandbox.CmdHandle
+	dw          *diagWriter
+	argv        []string
+	tooLarge    *atomic.Bool  // E_TOO_LARGE seen on the client's stderr (0.6.5)
+	tooLargeMsg *atomic.Value // string: the rendered E_TOO_LARGE error
+	cleanup     func()
 
 	once sync.Once
 	info sandbox.ExitInfo
@@ -232,9 +270,22 @@ func (e *execHandle) Wait() (sandbox.ExitInfo, error) {
 		// diagnostic for real errors but nothing for a lost exec, so 125
 		// without one means the program MAY STILL BE RUNNING.
 		if e.err == nil && e.info.Code == exitHisnError {
-			if e.dw.Seen() {
+			switch {
+			case e.tooLarge != nil && e.tooLarge.Load():
+				// hisn 0.6.5+ E_TOO_LARGE on the CLI path: the request
+				// exceeded the supervisor's line limit and was refused
+				// pre-send, so the program provably never started. This is
+				// a backend error with hisn's own code+message, never a
+				// "may still be running" Lost.
+				msg, _ := e.tooLargeMsg.Load().(string)
+				if msg == "" {
+					msg = "hisn: E_TOO_LARGE: exec request too large"
+				}
 				e.info.BackendError = true
-			} else {
+				e.err = errors.New(msg)
+			case e.dw.Seen():
+				e.info.BackendError = true
+			default:
 				e.info.Lost = true
 				e.b.recordLost(e.argv)
 			}
@@ -282,12 +333,13 @@ func (b *Backend) recordLost(argv []string) {
 // not run at all (typed session death); reachable means it may still be
 // running (Lost, recorded).
 type ctlLostHandle struct {
-	b    *Backend
-	l    *live
-	argv []string
-	info sandbox.ExitInfo
-	dead bool
-	once sync.Once
+	b          *Backend
+	l          *live
+	argv       []string
+	info       sandbox.ExitInfo
+	backendErr error // E_TOO_LARGE (0.6.5): the explicit ctl.Error to report
+	dead       bool
+	once       sync.Once
 }
 
 func (h *ctlLostHandle) Pid() int    { return 0 }
@@ -296,6 +348,10 @@ func (h *ctlLostHandle) Kill() error { return nil }
 func (h *ctlLostHandle) Wait() (sandbox.ExitInfo, error) {
 	h.once.Do(func() {
 		switch {
+		case h.backendErr != nil:
+			// E_TOO_LARGE: the program never started; the backend error
+			// carries hisn's code+message (e.g. "hisn exec failed:
+			// E_TOO_LARGE: ...").
 		case h.info.BackendError:
 			// Already decided (no session): a backend error for this exec.
 		case h.dead, h.b.sessionUnreachable(h.l):
@@ -306,6 +362,9 @@ func (h *ctlLostHandle) Wait() (sandbox.ExitInfo, error) {
 			h.b.recordLost(h.argv)
 		}
 	})
+	if h.backendErr != nil {
+		return h.info, h.backendErr
+	}
 	if h.dead {
 		return h.info, h.l.deadErr()
 	}
@@ -349,6 +408,16 @@ func (b *Backend) execCtl(ctx context.Context, l *live, release func(), spec san
 			// A backend error for this exec (the program did not run), not a
 			// session-death claim — the session may never have been ours.
 			return &ctlLostHandle{b: b, l: l, info: sandbox.ExitInfo{Code: exitHisnError, BackendError: true}}, nil
+		}
+		var cerr *ctl.Error
+		if errors.As(err, &cerr) && cerr.IsTooLarge() {
+			// hisn 0.6.5+ E_TOO_LARGE on the ctl path: the exec request
+			// exceeded the supervisor's line limit and was refused pre-send
+			// as an explicit error reply (before 0.6.5 the connection simply
+			// dropped, surfacing as an ambiguous launch). The program
+			// provably never started: a backend-error HANDLE, mirroring the
+			// CLI path's BackendError, carrying hisn's code+message.
+			return &ctlLostHandle{b: b, l: l, info: sandbox.ExitInfo{Code: exitHisnError, BackendError: true}, backendErr: cerr}, nil
 		}
 		return nil, fmt.Errorf("hisn exec: %w", err)
 	}

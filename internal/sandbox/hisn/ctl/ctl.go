@@ -63,6 +63,12 @@ func (e *Error) Error() string { return fmt.Sprintf("hisn %s failed: %s: %s", e.
 // IsNotFound reports an E_NOT_FOUND — a stale exec_id or recycled pid.
 func (e *Error) IsNotFound() bool { return e.Code == "E_NOT_FOUND" }
 
+// IsTooLarge reports the refusal of a request over hisn's line limit. Since
+// hisn 0.6.5 the supervisor answers it as an explicit error reply (before,
+// the connection simply dropped), so StartExec now sees it instead of an
+// ambiguous launch: the program provably never started.
+func (e *Error) IsTooLarge() bool { return e.Code == "E_TOO_LARGE" }
+
 // Client is one hisn session's control client. Every operation dials its own
 // short-lived connection except exec, which holds one for the program's life.
 type Client struct {

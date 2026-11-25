@@ -19,7 +19,7 @@ func TestCheckOpenKernelFloor(t *testing.T) {
 		{"6.6.15-arch1 refused", "6.6.15-arch1-1", "open", false},
 		{"kernel 5 refused", "5.14.0-300.fc45.x86_64", "open", false},
 		{"10.0 treated as 10 not 1.9", "10.0.0", "open", true},
-		{"9.9 refused", "9.9.0", "open", false},
+		{"9.9 is above the floor", "9.9.0", "open", true},
 		{"host mode never checked", "5.14.0", "host", true},
 		{"empty mode never checked", "5.14.0", "", true},
 		{"unparseable fails closed for open", "weird", "open", false},

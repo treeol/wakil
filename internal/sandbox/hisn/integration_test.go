@@ -1020,8 +1020,8 @@ func TestIntegrationCloseStopsSession(t *testing.T) {
 // .wakil/, the CDP tunnel over a unix-socket pair), so they are not blocked
 // by `open`.
 //
-// Skips when hisn < 0.6.1 or `open` is refused (kernel older than 5.14, Yama
-// ptrace_scope too high, or missing DNS upstream).
+// Skips when hisn < 0.6.5 or `open` is refused (kernel older than 6.7 /
+// Landlock ABI v4, Yama ptrace_scope too high, or missing DNS upstream).
 func TestIntegrationOpenNetwork(t *testing.T) {
 	bin := os.Getenv("WAKIL_HISN_BIN")
 	if bin == "" {
@@ -1033,8 +1033,8 @@ func TestIntegrationOpenNetwork(t *testing.T) {
 	}
 	if out, err := osexec.Command(bin, "--version").Output(); err != nil {
 		t.Skipf("hisn unusable: %v", err)
-	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 6, 1}) {
-		t.Skipf("hisn >= 0.6.1 required for network = open (got %q)", strings.TrimSpace(string(out)))
+	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 6, 5}) {
+		t.Skipf("hisn >= 0.6.5 required for network = open (got %q)", strings.TrimSpace(string(out)))
 	}
 
 	// Detect a visible kvr-server for the KVR sub-test.

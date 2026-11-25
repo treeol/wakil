@@ -167,14 +167,19 @@ COPY --from=golangci/golangci-lint:v2.11.1@sha256:906ae07afe01a069637a7e91e92c20
 # accompanied by a re-diff of the union types (esp. DocumentChange) in protocol.go.
 RUN go install golang.org/x/tools/gopls@v0.22.0
 
-# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.6.1;
+# hisn — rootless sandbox backend (github.com/treeol/hisn, pinned to v0.6.5;
 # the default backend of release builds when usable).
 # Installed into the wakil-dev image so the allow_userns acceptance test can
 # run `hisn check` for real instead of skipping. The binary is multi-arch
 # (amd64/arm64), downloaded from the GitHub release and SHA256-verified.
-# 0.6.1 is a security release for `network = "open"` (0.6.0 did not fully
-# enforce the network policy for a socket handed to a program before a connect
-# that then failed). 0.6.0 added `network = "open"` (outbound TCP to public
+# 0.6.5 is the first release whose open-mode enforcement is sound end-to-end:
+# 0.6.1 fixed a policy bypass where network = "open" did not fully enforce
+# the network policy for a socket handed to a program before a connect that
+# then failed, and 0.6.2 closed the remaining open-mode timing gap (the
+# supervisor now executes every listen and INET connect/bind itself, so open
+# mode is enforced independently of when the program races a connect). 0.6.2+
+# requires Landlock ABI v4 (kernel 6.7) for network = "open". 0.6.0 added
+# `network = "open"` (outbound TCP to public
 # addresses only) on top
 # of 0.5.x's additive ls --json and sessioninfo fields, and 0.4.2's
 # `run --detach` contract, supervisor.pid, `ls --prune --name-prefix`,
@@ -190,12 +195,12 @@ RUN go install golang.org/x/tools/gopls@v0.22.0
 ARG TARGETARCH
 RUN case "${TARGETARCH:-$(dpkg --print-architecture)}" in \
       amd64) HISN_ARCH=x86_64-linux-gnu; \
-             HISN_SHA256=bb7c6cafbbf4a70f8ecee022afdbb4cf6d90440a8e96def2b8ae65f6e9422fed ;; \
+             HISN_SHA256=890147848475d0aee57d1dab3effa939a3392426dd6aaae2b174fe1dc5f981aa ;; \
       arm64) HISN_ARCH=aarch64-linux-gnu; \
-             HISN_SHA256=3ca3483adfc304fd3f6d040015d24a8e1d707fc2ffc5e8bc4e7b04023279bc6e ;; \
+             HISN_SHA256=4bd4db05247e17d61ecea6dc90f00ef813b71cf9182cda8809ec428bae4bf18a ;; \
       *) echo "unsupported architecture: ${TARGETARCH}" >&2; exit 1 ;; \
     esac \
-    && HISN_VERSION=0.6.1 \
+    && HISN_VERSION=0.6.5 \
     && curl -fsSL -o /tmp/hisn \
        "https://github.com/treeol/hisn/releases/download/v${HISN_VERSION}/hisn-${HISN_ARCH}" \
     && echo "${HISN_SHA256}  /tmp/hisn" | sha256sum -c - \
