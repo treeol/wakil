@@ -67,6 +67,39 @@ func TestStartOpenRefusalShowsHisnText(t *testing.T) {
 	}
 }
 
+// TestWithSupervisorStderrChecksAgent067: hisn 0.6.7's check_host_agent
+// failure ("…names the path actually checked"; a caller socket is no longer
+// reported as SSH_AUTH_SOCK) has no matcher in Wakil — its real surface is
+// `hisn run` supervisor stderr, surfaced through withSupervisorStderr. This
+// pins that the recorded 0.6.7 shape reaches the user intact: the checked
+// path is the caller socket, and nothing rewrites it to SSH_AUTH_SOCK.
+// Fixture-only: the text needs a running session to capture for real
+// (the pre-capture sandbox blocks user namespaces); it never ran live.
+func TestWithSupervisorStderrChecksAgent067(t *testing.T) {
+	fe := newFakeEnv(t)
+	b, err := openWith(t, fe, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ring := newRingBuffer(supervisorStderrCap)
+	ring.Write([]byte("hisn: ssh-agent socket /tmp/.tmp-nonexistent/agent.sock: No such file or directory (check_host_agent failed: checking caller agent socket)\n"))
+	sup := &supervisorProc{stderr: ring, logPath: "sup.log", exited: make(chan struct{}), logged: make(chan struct{}), supExited: make(chan struct{})}
+	close(sup.exited)
+	close(sup.logged)
+	err = b.withSupervisorStderr(errors.New("start failed"), sup)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	for _, want := range []string{"/tmp/.tmp-nonexistent/agent.sock", "check_host_agent", "caller agent socket", "stderr:"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error lacks %q:\n%v", want, err)
+		}
+	}
+	if strings.Contains(err.Error(), "SSH_AUTH_SOCK") {
+		t.Errorf("the caller socket must not be reported as SSH_AUTH_SOCK: %v", err)
+	}
+}
+
 // In host mode the same stderr is not reinterpreted as an open refusal.
 func TestStartHostFailureNotLabelledOpenRefusal(t *testing.T) {
 	fe := newFakeEnv(t)

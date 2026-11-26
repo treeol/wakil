@@ -24,17 +24,18 @@ func TestPreflightRefusesHisn032NamingMinimum(t *testing.T) {
 	}
 }
 
-// A refusal for the real minimum names the reason: hisn before 0.6.2 does not
-// enforce network = "open" at the supervisor, so the user knows why an upgrade
-// is needed.
+// A refusal for the real minimum names the reason: hisn 0.6.7 gates signing
+// by seat role (owner/member sign, observer is refused), and hisn before
+// 0.6.2 does not enforce network = "open" at the supervisor, so the user
+// knows why an upgrade is needed.
 func TestPreflightRefusalNamesSecurityReason(t *testing.T) {
 	fe := newFakeEnv(t)
-	setVersion(t, fe, "0.6.0")
+	setVersion(t, fe, "0.6.5")
 	_, err := Open(ctxT(t), fe.options())
 	if err == nil {
-		t.Fatal("hisn 0.6.0 must be refused")
+		t.Fatal("hisn 0.6.5 must be refused")
 	}
-	for _, want := range []string{"0.6.0", "need >= 0.6.5", "open network mode needs hisn 0.6.2+", `Landlock ABI v4 / kernel 6.7`} {
+	for _, want := range []string{"0.6.5", "need >= 0.6.7", "seat role", "open network mode needs hisn 0.6.2+", `Landlock ABI v4 / kernel 6.7`} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("refusal lacks %q: %v", want, err)
 		}

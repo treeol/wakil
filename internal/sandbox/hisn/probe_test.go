@@ -37,12 +37,12 @@ func TestProbe(t *testing.T) {
 	})
 	t.Run("too old names the security reason", func(t *testing.T) {
 		fe := newFakeEnv(t)
-		setVersion(t, fe, "0.6.0")
+		setVersion(t, fe, "0.6.5")
 		v, why := Probe(ctxT(t), fe.bin, MinVersion)
-		if v != "0.6.0" {
+		if v != "0.6.5" {
 			t.Fatalf("v=%q", v)
 		}
-		for _, want := range []string{"hisn 0.6.0 is older than 0.6.5", "open network mode needs hisn 0.6.2+", `Landlock ABI v4 / kernel 6.7`} {
+		for _, want := range []string{"hisn 0.6.5 is older than 0.6.7", "seat role", "open network mode needs hisn 0.6.2+", `Landlock ABI v4 / kernel 6.7`} {
 			if !strings.Contains(why, want) {
 				t.Errorf("why lacks %q: %q", want, why)
 			}

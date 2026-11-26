@@ -148,11 +148,11 @@ func TestMinHisnDefaultVersionNotBelowMinHisnVersion(t *testing.T) {
 // or too old) is told the open mode is NOT applied there.
 func TestDefaultNoteSaysOpenNotAppliedOnDockerFallback(t *testing.T) {
 	cfg := Config{Sandbox: SandboxConfig{BackendDefaulted: true, Hisn: HisnConfig{NetworkMode: "open"}}}
-	got := ApplyDefaultBackend(cfg, HisnAvailability{Version: "0.6.4", Reason: "hisn 0.6.4 is older than 0.6.5 (open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7))"}, "")
+	got := ApplyDefaultBackend(cfg, HisnAvailability{Version: "0.6.5", Reason: "hisn 0.6.5 is older than 0.6.7 (signing is gated by seat role (owner/member sign, observer is refused); open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7))"}, "")
 	if got.Sandbox.Backend == SandboxBackendHisn {
 		t.Fatal("an old hisn must not become the default backend")
 	}
-	for _, want := range []string{"older than 0.6.5", `"open" is NOT applied on docker`} {
+	for _, want := range []string{"older than 0.6.7", "seat role", `"open" is NOT applied on docker`} {
 		if !strings.Contains(got.Sandbox.DefaultNote, want) {
 			t.Errorf("DefaultNote lacks %q: %q", want, got.Sandbox.DefaultNote)
 		}
