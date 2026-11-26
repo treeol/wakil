@@ -184,23 +184,16 @@ release; nothing to change there beyond `HISN_VERSION`.
   `--seat-token-file`, no per-exec role**. Wakil starts the session itself,
   as the owner; the execs Wakil runs inside it ride the owner seat the
   session was started from.
-- The seat-role verdict is PROVISIONAL (Mashūra round 1, unanimous).
-  No Wakil path is assigned an observer seat — `sessionArgs` carries no
-  seat flag (`session.go:488-505`), and the only seat-shaped data in the
-  tree is the additive `seats` count in `ls --json` (an ignored field, not
-  parsed, `ls_060_test.go:12-33`). The session is started by Wakil itself,
-  so it is the seat originator. BUT which role hisn 0.6.7 assigns a
-  tokenless client — and whether a *later* exec client rides the owner's
-  seat or arrives as its own client (the adopted-session/reconcile path
-  runs `hisn run` again under a restarted client) — is decided inside
-  hisn, not verifiable from Wakil's code. So the claim "Wakil signs as
-  owner" is **unverified** until a real 0.6.7 `ssh/sign` journal record
-  for a Wakil-started session shows an owner/member seat with
-  `result: ok`. That record is the Block 2 acceptance proof (and the
-  early warning: without it, a seat assignment change would only surface
-  as `SSH_AGENT_FAILURE` on the user's first signed commit, with nothing
-  in Wakil naming the cause). Block 1's pin step therefore records the
-  finding as provisional, not verified.
+- The seat-role verdict is SUPERSEDED (host result, 2026-11-26).
+  The 0.6.7 `ssh/sign` journal record names `"seat":null` — Wakil starts
+  a session with no seat flags (`sessionArgs`, `session.go:488-505`), so
+  the session has no seat, and hisn 0.6.7 allows signing in that mode;
+  the observer gate only applies to seated sessions. See "Host result
+  and test fix" at the end of this plan.
+  (Old provisional text, for the trail: the plan previously held the
+  claim "Wakil signs as owner/member, unproven" — wrong; wrong in the
+  other direction too, since the tokenless exec never had to be owner
+  for the sign to be allowed.)
 - Existing coverage: `TestIntegrationSSHAgentForwarded`
   (`integration_test.go:206-485`) already registers a throwaway ed25519 key +
   throwaway `ssh-agent -s -a <temp socket>`, allowlists only its fingerprint,
@@ -430,7 +423,129 @@ procedure: failing test first).
   `install.sh` PATH-shadow note for 0.6.5 users upgrading. One signed
   commit.
 
-### Open points (NOT implementing — one line each)
+### Host result and test fix (2026-11-26)
+
+Host (rubin) ran, with `SSH_AUTH_SOCK` unset:
+
+```
+env -u SSH_AUTH_SOCK WAKIL_HISN_REQUIRE=1 XDG_RUNTIME_DIR=$PWD/.tmp/rt-067 WAKIL_HISN_BIN=$PWD/.tmp/hisn-0.6.7/hisn-x86_64-linux-gnu go test -count=1 -v -timeout 10m -run 'TestIntegrationSSHAgentForwarded|TestRealHisn' ./internal/sandbox/hisn/
+```
+
+Every `TestRealHisn*` passed. `TestIntegrationSSHAgentForwarded` failed
+after 0.49 s on the seat assertion. The journal shows the signed commit
+exec (`e-9`) with exit 0 and the record:
+
+```
+{"kind":"ssh/sign","data":{"attributed":true,"exec_id":"e-9","fingerprint":"SHA256:F6TWkr5mAqJwIBDPsA1ybn2D0mcdDPls2AtrPq6qoZs","result":"ok","seat":null}}
+```
+
+So: signing works under 0.6.7 for a Wakil-started session. Wakil
+starts sessions without seats, and hisn 0.6.7 allows signing in that
+mode (`seat: null`); the observer gate only applies to seated
+sessions. The previous assertion required `owner`/`member` and was
+wrong about the mechanism it was pinning.
+
+The change (Block 1, one signed commit — supersede, don't fix up):
+- `TestIntegrationSSHAgentForwarded` accepts `seat` null, `owner`, or
+  `member`; it fails on `observer` or any other value. Null is the
+  expected value for a seat-less session, not a degraded pass. The
+  seat field must be present and actually null (`v, present :=
+  data["seat"]; if present && v == nil`), never an absent key read as
+  empty string (Mashūra round 1 on this section — blocking).
+- The record is nested under `data` (`rec["data"]` is a map), so the
+  assertion reads `data.result`, `data.fingerprint`, `data.seat`,
+  `data.exec_id` and `data.attributed` — and the top-level `kind`. The
+  old flat `rec["result"]` read would have failed with `result ""`
+  (the failing run's rejection was the seat check, so the flat reads
+  were passing vacuously as empty strings — the same round flagged the
+  risk; the flat reads never actually confirmed result/fingerprint).
+- Exactly one `ssh/sign` record for the signing exec is required, with
+  `result: "ok"`, `attributed: true`, `exec_id` matching the commit
+  exec, and `fingerprint` equal to the throwaway key's fingerprint,
+  computed from the key at runtime (no hard-coding, no `f != ""`
+  guard — an absent fingerprint fails). Every OTHER `ssh/sign`
+  record in the journal must also have `result: "ok"` with the same
+  fingerprint — filtering to the commit exec must not hide a second
+  broken signature (Mashūra blocking). `exec_id` binding has no
+  plumbing today (`ExecHandle`, `internal/sandbox/backend.go:101-109`,
+  exposes only `Wait`/`Kill`/`Pid`; `irunSign` returns stdout +
+  `ExitInfo`), so it binds by CORRELATION: the journal's exec records
+  carry the commit exec's id and argv; the commit exec is the one
+  whose argv is `git commit` — match `data.exec_id` against that,
+  never against exec ids read from the `ssh/sign` records themselves
+  (circular). The commit record's `exit_code` must be 0.
+- Leak check, closed over the `data` key set (Mashūra blocking): the
+  `data` map may contain ONLY `attributed`, `exec_id`, `fingerprint`,
+  `result`, `seat`, each with its expected type (short strings /
+  bool) — any other key is a leak of a future field and fails. The
+  raw journal bytes must not contain `SSHSIG` or `U1NIU0lH` (the raw
+  SSHSIG blob and its base64 form — what actually crosses the agent
+  proxy, not the PEM header), nor the commit's signature in any form:
+  the commit's `gpgsig` is read host-side and its base64 body and
+  hex form must not appear in `jout`. (The commit-message payload
+  check stays as a belt-and-braces extra, but it is not the leak
+  assertion and cannot carry it alone.)
+- The commit's signature still verifies against the throwaway key
+  host-side (the pre-existing `%G?`/`%GK` checks).
+- Key/agent hygiene confirmed from the code (no change needed):
+  `integration_test.go:246-253` creates the key in `t.TempDir()`;
+  `:254-278` starts the throwaway `ssh-agent -s -a <temp-dir socket>`
+  and parses ITS output; `:282` then `t.Setenv("SSH_AUTH_SOCK",
+  agentSock)` — overwriting, never reading, whatever the runner
+  inherited. There is no `os.Getenv("SSH_AUTH_SOCK")` anywhere in the
+  test (nor anywhere in `internal/sandbox/hisn/` outside the product
+  paths `cmd.go:73` and `version.go:96`, which are the real
+  SSH_AUTH_SOCK mechanism, guarded by the same invariant: no user key
+  material ever enters the test). The version gate at `:317` and the
+  exact-0.6.7 assert (`:363-365`, `b.ver`) and `WAKIL_HISN_REQUIRE`
+  (`requireSkip`) are unchanged. `XDG_RUNTIME_DIR` is still isolated
+  to `.tmp/rt-067` by the host command. The pre-Preflight `t.Skip`
+  calls (missing ssh-agent/ssh-keygen, `ssh-add` failure —
+  `integration_test.go:236-249`, `:283-285`) are NOT converted to hard
+  fails in this fix: a host without an SSH client cannot run the test
+  at all, and masking that with a failure adds noise, not signal.
+  Acceptance on the host is therefore the
+  `--- PASS: TestIntegrationSSHAgentForwarded` line, never the exit
+  code alone. (Mashūra noted this; the ssh-agent/ssh-keygen skip path
+  also never runs in the acceptance host command.)
+
+- What remains provisional (no change needed in this fix, stated so
+  nothing over-claims): whether the *test* asserting `seat: null`
+  will keep verifying on a future hisn that starts naming a seat for
+  seat-less sessions (e.g. `"owner"` — the assertion accepts it, so it
+  still passes; a future `"observer"` would correctly fail). The
+  exact-0.6.7 assert (`integration_test.go:363-365`, `b.ver`) keeps
+  this a version-specific acceptance, not general signing coverage —
+  a contradiction with `MinHisnVersion`'s floor semantics that is
+  deliberate for this bump: the seat rule exists only in 0.6.7. It
+  relaxes when 0.6.8 exists.
+- Round-2 note: none of the above was re-reviewed. The three folded
+  blocking items constrain the new code to be strictly stricter
+  (closed key set, present-but-null seat, no empty-fingerprint guard,
+  all-records-ok, exec correlation), so a round 2 would only re-read
+  the same stricter assertion; the host PASS line remains the
+  acceptance. Under the 2-round cap.
+
+### Open risks (from the host result)
+
+- The seated path is still untested: an observer-seated sign would
+  still fail (`seat: "observer"`), but nothing in Wakil ever creates
+  a seat, so only a future seat-adopting feature could hit it. The
+  assertion still fails then — it is a forward guard, not coverage.
+  (Mashūra noted the CHANGELOG line itself says only "owner/member
+  sign, observer refused"; the "seat-less may sign" reading is an
+  inference from the host record — a proven behaviour of 0.6.7, which
+  is what this test accepts, not a claim about hisn's design intent.
+  The plan's `MinHisnReason` wording, "signing is gated by seat role,"
+  is kept: it names the feature that makes 0.6.7 the first correct
+  floor, not the path Wakil exercises, and the plan now says so.)
+- `exec_id` binding is by journal correlation (journal exec records
+  vs. `ssh/sign` records), since `ExecHandle` carries no id. If a
+  future hisn namespaces exec ids, the equality assert must match on
+  the suffix — the test reports the mismatch loudly, so it cannot go
+  silently green.
+
+## Open points
 
 - `hisn journal --after-wseq N --wait [SECS]` (exit 6/7): a blocking "wait
   for the next journal record" poll — Wakil could wait for session-stop
