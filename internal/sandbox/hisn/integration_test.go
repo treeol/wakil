@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -524,14 +526,27 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	// --json form prints "the records unchanged as JSON (one per line)", so
 	// the output is a stream of JSON lines, not one document. On >= 0.6.7
 	// this is a hard fail, never a skip: Preflight passing means the binary
-	// supports journal, so a missing record is a real regression — and the
-	// seat it names is the direct proof that Wakil's own sessions sign as
-	// owner/member under the new seat-role gate.
+	// supports journal, so a missing record is a real regression. The
+	// session is seat-less (Wakil passes no seat flag), and hisn 0.6.7
+	// allows signing in that mode, so the seat field is present and null.
+	// A seated session in observer role would be refused with
+	// SSH_AGENT_FAILURE (commit.gpgsign=true already fails the commit) —
+	// the `observer`/other-value failure below is the forward guard for a
+	// future seat-adopting feature.
 	jout, jerr := b.output(ictx(t), false, "journal", "--session", "wakil-it-ssh-agent", "--json")
 	if jerr != nil {
 		t.Fatalf("hisn journal --session wakil-it-ssh-agent --json failed: %v\n%s", jerr, jout)
 	}
+	// The commit exec's real id: the journal's exec records carry the argv
+	// that was run; the commit is the exec whose argv is `git commit`.
+	// `data.exec_id` on a sign record must equal it. (No exec-id plumbing
+	// exists on ExecHandle, so correlation through the journal is the
+	// binding — never the ids mentioned by the sign records themselves.
+	// Matched on the "exec" kind only if records carry an argv sibling;
+	// see the family-name heuristic below.)
+	var commitExecID string
 	var signRecs []map[string]any
+	var parsedRecs []map[string]any
 	for _, line := range strings.Split(strings.TrimSpace(jout), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "hisn:") {
@@ -541,42 +556,228 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		if jerr := json.Unmarshal([]byte(line), &rec); jerr != nil {
 			t.Fatalf("journal line is not a JSON record: %v\n%s", jerr, line)
 		}
+		parsedRecs = append(parsedRecs, rec)
 		if kind, _ := rec["kind"].(string); kind == "ssh/sign" {
 			signRecs = append(signRecs, rec)
 		}
 	}
+	// Find the commit exec among exec records: match any exec-kind record
+	// whose stringified form mentions "commit" in an argv-shaped position.
+	// The journal record shape is hisn's; where the id lives is discovered
+	// from the records themselves and reported on failure, never assumed.
+	//
+	// Since the journal schema was proven only for the ssh/sign record,
+	// the commit-exec binding stays soft-but-loud: if exec records carry
+	// no argv/id fields we can identify, the comparison is against the
+	// single ssh/sign record's exec_id by exclusion counts (exactly one
+	// exec record family must exist carrying a "commit" argv). No silent
+	// green path exists: every fallback failure is t.Fatalf.
+	candidates := journalExecCandidates(parsedRecs)
+	if len(candidates) != 1 {
+		t.Fatalf("cannot identify the commit exec in the journal: %d candidate exec records\n%s", len(candidates), jout)
+	}
+	commitExecID = candidates[0]
+	if commitExecID == "" {
+		t.Fatalf("commit exec record carries no id:\n%s", jout)
+	}
 	if len(signRecs) == 0 {
 		t.Fatalf("no ssh/sign record in the journal:\n%s", jout)
 	}
-	var ok, failed int
+	// The record CHECKS (exact-one-ok, closed key set, leak markers) are
+	// separate; the binding below requires exactly one ssh/sign record
+	// whose data.exec_id equals the commit exec id.
+	var commitSigns []map[string]any
 	for _, rec := range signRecs {
-		result, _ := rec["result"].(string)
-		if result == "ok" {
-			ok++
-			// The seat named in the record is the direct proof the
-			// owner/member gate held for this Wakil-started session.
-			seat, _ := rec["seat"].(string)
-			if seat != "owner" && seat != "member" {
-				t.Errorf("ssh/sign seat = %q, want owner or member (signing under any other seat hits the 0.6.7 gate)", seat)
-			}
-			if f, _ := rec["fingerprint"].(string); f != "" && f != fp {
-				t.Errorf("ssh/sign fingerprint = %q, want the throwaway key %s", f, fp)
-			}
-		} else {
-			failed++
-			t.Errorf("ssh/sign record with result %q (want ok): %v", result, rec)
+		data, _ := rec["data"].(map[string]any)
+		if eid, _ := data["exec_id"].(string); eid == commitExecID {
+			commitSigns = append(commitSigns, rec)
 		}
 	}
-	if ok == 0 {
-		t.Fatalf("no ssh/sign record with result ok (failed=%d):\n%s", failed, jout)
+	if len(commitSigns) != 1 {
+		t.Fatalf("want exactly 1 ssh/sign record for the commit exec %s, got %d (total ssh/sign %d):\n%s", commitExecID, len(commitSigns), len(signRecs), jout)
 	}
-	if failed > 0 {
-		t.Fatalf("%d ssh/sign record(s) failed:\n%s", failed, jout)
+	// Every ssh/sign record must be ok with the throwaway fingerprint —
+	// a second broken sign anywhere in the session must fail too.
+	allowed := map[string]bool{"attributed": true, "exec_id": true, "fingerprint": true, "result": true, "seat": true}
+	var okCount int
+	for _, rec := range signRecs {
+		data, _ := rec["data"].(map[string]any)
+		if data == nil {
+			t.Fatalf("ssh/sign record without a data object: %v", rec)
+		}
+		// Closed data key set — any unknown key is a possible payload
+		// passthrough and fails closed.
+		for k := range data {
+			if !allowed[k] {
+				t.Errorf("ssh/sign data carries unexpected key %q (possible signed-payload passthrough): %v", k, rec)
+			}
+		}
+		// Types: short strings / bool only. A long or composite value
+		// (payload, signature bytes) fails.
+		if _, isBool := data["attributed"].(bool); !isBool {
+			t.Errorf("ssh/sign attributed = %v, want bool", data["attributed"])
+		}
+		for _, k := range []string{"exec_id", "fingerprint", "result"} {
+			if s, isStr := data[k].(string); !isStr || len(s) > 128 {
+				t.Errorf("ssh/sign %s = %v (len > 128 or non-string), want a short string", k, data[k])
+			}
+		}
+		result, _ := data["result"].(string)
+		if result != "ok" {
+			t.Errorf("ssh/sign record with result %q (want ok): %v", result, rec)
+			continue
+		}
+		okCount++
+		// Seat: present-but-null for this seat-less session; owner/member
+		// for a seated one; observer or any other value fails.
+		seatRaw, seatPresent := data["seat"]
+		if !seatPresent {
+			t.Errorf("ssh/sign record without a seat field: %v", rec)
+		} else if seatRaw == nil {
+			// present and null: the seat-less mode — signing is allowed
+			// (0.6.7 host result: seat is null, result ok).
+		} else if seat, isStr := seatRaw.(string); !isStr || (seat != "owner" && seat != "member") {
+			t.Errorf("ssh/sign seat = %v, want null (seat-less session), owner, or member", seatRaw)
+		}
+		if f, _ := data["fingerprint"].(string); f != fp {
+			t.Errorf("ssh/sign fingerprint = %q, want the throwaway key %s", f, fp)
+		}
 	}
-	// The journal must not carry the signed data or the signature itself.
+	if okCount == 0 {
+		t.Fatalf("no ssh/sign record with result ok:\n%s", jout)
+	}
+	if okCount != len(signRecs) {
+		t.Fatalf("%d ssh/sign record(s) failed out of %d:\n%s", len(signRecs)-okCount, len(signRecs), jout)
+	}
+	// No signed payload / signature bytes anywhere in the raw journal.
+	// What crosses the agent proxy is the SSHSIG blob (raw bytes) and the
+	// raw signature bytes; the PEM header never appears. Reject the
+	// blob's markers and the commit's own signature in base64 and in
+	// hex-encoded-bytes form.
+	if strings.Contains(jout, "SSHSIG") || strings.Contains(jout, "U1NIU0lH") ||
+		strings.Contains(jout, "SSH SIGNATURE") {
+		t.Errorf("the journal carries ssh-signature marker bytes:\n%s", jout)
+	}
+	// Extract the commit's gpgsig (host git) and require both its base64
+	// armor body (as one joined line — the journal's JSON line wraps
+	// don't re-wrap it) and its decoded-bytes hex form to be absent.
+	sigOut, err := func() ([]byte, error) {
+		cmd := osexec.Command("git", "-C", cwd, "log", "-1", "--format=%GG")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		return cmd.Output()
+	}()
+	if err != nil {
+		t.Fatalf("git log %%GG on host failed: %v", err)
+	}
+	gpgsig := strings.TrimSpace(string(sigOut))
+	if gpgsig == "" {
+		t.Fatalf("git log %%GG empty: the commit carries no signature to check the journal against")
+	}
+	// The base64 armor body: strip PGP-armor header/footer lines ("-----",
+	// "Version:", ...) and fold the line-wrapped base64 back into one
+	// string. Concatenated-wrap is the base64 the proxy would have had to
+	// journal verbatim to leak it.
+	var body strings.Builder
+	for _, l := range strings.Split(gpgsig, "\n") {
+		l = strings.TrimSpace(l)
+		if l == "" || strings.HasPrefix(l, "-----") || strings.Contains(l, ": ") {
+			continue
+		}
+		body.WriteString(l)
+	}
+	armorBody := body.String()
+	if armorBody != "" && strings.Contains(jout, armorBody) {
+		t.Errorf("the journal carries the commit's signature bytes (base64):\n%s", jout)
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(armorBody); err == nil && len(decoded) > 0 {
+		hexForm := hex.EncodeToString(decoded)
+		if strings.Contains(jout, hexForm) {
+			t.Errorf("the journal carries the commit's signature bytes (hex):\n%s", jout)
+		}
+	}
+	// Belt-and-braces: the commit message itself must not appear in the
+	// journal either (the closed data key set is the real leak guard;
+	// this catches a future record that echoes the payload elsewhere).
 	if strings.Contains(jout, "test signed commit") {
 		t.Errorf("the journal carries the commit payload:\n%s", jout)
 	}
+}
+
+// journalExecCandidates returns the journal exec records' ids for the exec
+// whose argv is the signed commit. The journal schema for exec records was
+// not captured in the plan, so this discovers the shape from the records
+// themselves: a record counts as the commit exec when its kind mentions
+// "exec" and somewhere in its (nested) JSON a string field holds an argv
+// whose first element is "git" and second is "commit", or a single string
+// field contains the substring "git commit". The exec id is the record's
+// "exec_id" or "id" field, at top level or under a "data" object; a record
+// without a discoverable id fails loudly rather than being guessed. The
+// ssh/sign record's own exec_id is never used here (that would be circular).
+func journalExecCandidates(recs []map[string]any) []string {
+	var out []string
+	for _, rec := range recs {
+		kind, _ := rec["kind"].(string)
+		if kind == "" {
+			kind, _ = rec["type"].(string)
+		}
+		if !strings.Contains(kind, "exec") {
+			continue
+		}
+		if !journalRecordIsCommitExec(rec) {
+			continue
+		}
+		id, ok := journalRecordID(rec)
+		if !ok {
+			return nil // cannot identify the id of the commit exec, fail loudly upstream
+		}
+		out = append(out, id)
+	}
+	return out
+}
+
+func journalRecordID(rec map[string]any) (string, bool) {
+	for _, key := range []string{"exec_id", "id"} {
+		if s, isStr := rec[key].(string); isStr && s != "" {
+			return s, true
+		}
+		if data, isMap := rec["data"].(map[string]any); isMap {
+			if s, isStr := data[key].(string); isStr && s != "" {
+				return s, true
+			}
+		}
+	}
+	return "", false
+}
+
+// journalRecordIsCommitExec reports whether an exec record (or any record)
+// mentions a `git commit` argv, in an argv array or as a command string.
+func journalRecordIsCommitExec(rec map[string]any) bool {
+	for _, v := range rec {
+		switch t := v.(type) {
+		case string:
+			if strings.Contains(t, "git commit") || t == "git commit" {
+				return true
+			}
+		case []any:
+			if len(t) >= 2 {
+				a, _ := t[0].(string)
+				b, _ := t[1].(string)
+				if a == "git" && b == "commit" {
+					return true
+				}
+			}
+			for _, e := range t {
+				if s, isStr := e.(string); isStr && s == "commit" {
+					return true
+				}
+			}
+		case map[string]any:
+			if journalRecordIsCommitExec(t) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func TestIntegrationGrantRevokeVisibility(t *testing.T) {
