@@ -77,7 +77,7 @@ func fakeMain(state string, args []string) int {
 	case "--version":
 		v, err := os.ReadFile(filepath.Join(state, "version"))
 		if err != nil {
-			v = []byte("0.6.5")
+			v = []byte("0.6.7")
 		}
 		fmt.Printf("hisn %s\n", strings.TrimSpace(string(v)))
 		return 0

@@ -4,7 +4,7 @@ Wakil runs every tool call inside a sandbox. Backends:
 
 | backend | selected by | notes |
 |---|---|---|
-| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.6.5 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the `run --detach` contract, `network = "open"` described [below](#supervisor-and-the-detach-contract)) |
+| `hisn` | the **default when usable** (see [Choosing the backend](#choosing-the-backend)), or `sandbox.backend: "hisn"` | rootless, no daemon; needs hisn >= 0.6.7 (named sessions, `hisn-ls/v2`, the client record, `hisn stop`, the `run --detach` contract, `network = "open"` described [below](#supervisor-and-the-detach-contract)) |
 | `docker` | `sandbox.backend: "docker"`, or the fallback when hisn is not usable | behaviour unchanged |
 | `direct` | `sandbox.backend: "direct"` (or the deprecated `exec_mode: "direct"`) | no sandbox at all: explicit opt-out |
 
@@ -17,13 +17,13 @@ Since v0.4.0 hisn is the default **only when all three hold**:
 1. nothing chose a backend — no `sandbox.backend` in the config file, no
    `WAKIL_SANDBOX_BACKEND`, no `--sandbox`/`--exec`, no `exec_mode`;
 2. `hisn check` passes;
-3. hisn >= 0.6.5 is in `PATH`.
+3. hisn >= 0.6.7 is in `PATH`.
 
 Otherwise the backend is docker, and the startup banner says why:
 
 ```
-sandbox: backend=docker · browser tools: on · default: docker (hisn 0.6.4 is older than 0.6.5 (open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7)))
-sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.6.5 (hisn check ok)
+sandbox: backend=docker · browser tools: on · default: docker (hisn 0.6.5 is older than 0.6.7 (signing is gated by seat role (owner/member sign, observer is refused); open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7)))
+sandbox: backend=hisn · browser tools: on (inside hisn session) · default: hisn 0.6.7 (hisn check ok)
 ```
 
 A host without hisn therefore sees no behaviour change. Further reasons that
@@ -219,7 +219,7 @@ be safe for concurrent `Exec` calls.
 ### Preflight
 
 `Open` calls `Preflight`: `hisn --version` parses and is >= `MinVersion`
-("0.6.5"), and `hisn check` exits 0; when the session selects
+("0.6.7"), and `hisn check` exits 0; when the session selects
 `network = "open"`, the host kernel release is also checked against the
 6.7 / Landlock ABI v4 floor at preflight (host mode is never gated).
 Otherwise `Open` returns an error and
@@ -249,7 +249,7 @@ One session per chat, `session-id = chatID` (UUID, valid for hisn's
 ### Supervisor and the detach contract
 
 This section is the one description of the contract; other documents link
-here. Wakil requires **hisn >= 0.6.5** (`MinVersion`). An older hisn is refused
+here. Wakil requires **hisn >= 0.6.7** (`MinVersion`). An older hisn is refused
 at preflight with a message naming the found and required versions and the
 reason (0.6.5 is the first release whose open-mode enforcement is sound
 end-to-end: 0.6.1 fixed a policy bypass where `network = "open"` did not fully
@@ -947,8 +947,8 @@ hisn itself inside the sandbox and are rejected in per-exec env.
   are not labelled by hisn. The banner shows what hisn labels.
 * The hisn integration tests skip when `hisn check` fails (no unprivileged
   user namespaces); they have not been run in the build sandbox. The profiles
-  Wakil generates ARE checked against a real hisn >= 0.6.5 wherever the binary
+  Wakil generates ARE checked against a real hisn >= 0.6.7 wherever the binary
   exists (`TestRealHisn*`: `profile validate`/`explain` are file checks and need
   no user namespaces), so the contract does not rest on the test fake alone.
-  Run the session tests on a host with hisn >= 0.6.5:
+  Run the session tests on a host with hisn >= 0.6.7:
   `go test -count=1 -v -timeout 10m -run TestIntegration ./internal/sandbox/hisn/`

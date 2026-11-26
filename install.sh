@@ -31,7 +31,7 @@ set -eu
 
 # Keep HISN_VERSION equal to MinHisnVersion in internal/sandbox/backend.go
 # (enforced by TestInstallScriptHisnVersionMatchesMinVersion).
-HISN_VERSION="0.6.5"
+HISN_VERSION="0.6.7"
 KVR_VERSION="0.2.0"
 
 WAKIL_REPO="treeol/wakil"

@@ -185,7 +185,7 @@ func TestPrepareKVRDir(t *testing.T) {
 
 func kvrBackend(t *testing.T, fe *fakeEnv, bin string, mut func(*Options)) *Backend {
 	t.Helper()
-	setVersion(t, fe, "0.6.5")
+	setVersion(t, fe, "0.6.7")
 	b, err := openWith(t, fe, func(o *Options) {
 		o.KVR = kvrOpts(bin)
 		if mut != nil {

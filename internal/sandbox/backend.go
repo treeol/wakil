@@ -10,22 +10,28 @@ import (
 )
 
 // MinHisnVersion is the oldest hisn release the hisn backend (and the
-// launcher's default-backend decision) supports. 0.6.5 is the first release
-// whose open-mode enforcement is sound end-to-end: 0.6.1 fixed a policy bypass
-// where network = "open" did not fully enforce the network policy for a socket
-// handed to a program before a connect that then failed, and 0.6.2 closed the
-// remaining open-mode timing gap (the supervisor now executes every listen and
-// INET connect/bind itself, so open mode is enforced independently of when the
-// program races a connect). Hisn 0.6.2+ also requires Landlock ABI v4
-// (kernel 6.7) for network = "open", enforced at Preflight. The constant
-// lives here, in the leaf backend-neutral package both internal/config and
-// internal/sandbox/hisn already import, so the minimum cannot drift between
-// the two constants that used to guard selection and refusal separately.
-const MinHisnVersion = "0.6.5"
+// launcher's default-backend decision) supports. 0.6.7 is the first release
+// whose ssh-agent proxy gates signing by seat role (owner/member sign, an
+// observer is refused SSH_AGENT_FAILURE): before it, signing was
+// allowlist-only, so a non-owner exec could sign. The 0.6.5 floor it
+// replaces was the first sound open-mode release (0.6.1 fixed a policy bypass
+// where network = "open" did not fully enforce the policy for a socket
+// handed to a program before a connect that then failed, and 0.6.2 closed
+// the remaining open-mode timing gap — the supervisor executes every listen
+// and INET connect/bind itself; hisn 0.6.2+ also requires Landlock ABI v4,
+// i.e. kernel 6.7, for network = "open", enforced at Preflight). The
+// constant lives here, in the leaf backend-neutral package both
+// internal/config and internal/sandbox/hisn already import, so the minimum
+// cannot drift between the two constants that used to guard selection and
+// refusal separately.
+const MinHisnVersion = "0.6.7"
 
 // MinHisnReason is why MinHisnVersion is the minimum, in a form that follows
-// "need >= <version>" in a user-facing message.
-const MinHisnReason = "open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7)"
+// "need >= <version>" in a user-facing message. It names both floors the
+// upgrade enforces: the seat-role signing gate (the 0.6.7 change) and the
+// open-mode kernel floor (the 0.6.2+ change, enforced by the dedicated
+// kernel-floor error once the version check passes).
+const MinHisnReason = "signing is gated by seat role (owner/member sign, observer is refused); open network mode needs hisn 0.6.2+ (Landlock ABI v4 / kernel 6.7)"
 
 // Sentinel errors shared by all backends.
 var (

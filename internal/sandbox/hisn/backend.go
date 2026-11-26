@@ -17,17 +17,19 @@ import (
 	"github.com/treeol/wakil/internal/timeline"
 )
 
-// MinVersion is the oldest supported hisn release: 0.6.5 (0.6.2 closed the
-// open-mode timing gap — the supervisor executes every listen and INET connect
-// /bind itself — and 0.6.5 keeps the protocol at revision 4; on top of 0.6.1's
-// security release for the `network = "open"` mode that 0.6.0 introduced, on
-// top of 0.5.x's additive ls --json and sessioninfo fields, and 0.4.2's
-// `run --detach` contract that returns once the session is up, supervisor.pid
-// as "<pid> <starttime>", `ls --prune --name-prefix`; on top of 0.4.0's named
-// sessions, hisn-ls/v2 states running/stopped/crashed, the client record on
-// control requests, `hisn stop`, and 0.3.3's profiles, services, risk labels,
-// [home]/[rootfs]/[ssh] and "src:dst" known_hosts mounts). Older hisn is
-// refused at startup with a message naming this version; there is no fallback.
+// MinVersion is the oldest supported hisn release: 0.6.7 (it gates signing
+// by seat role — owner/member sign, observer refused SSH_AGENT_FAILURE —
+// and keeps the protocol at revision 4 with no wire change; on top of 0.6.5,
+// 0.6.2 closed the open-mode timing gap — the supervisor executes every listen
+// and INET connect/bind itself — on top of 0.6.1's security release for the
+// `network = "open"` mode that 0.6.0 introduced, on top of 0.5.x's additive
+// ls --json and sessioninfo fields, and 0.4.2's `run --detach` contract that
+// returns once the session is up, supervisor.pid as "<pid> <starttime>",
+// `ls --prune --name-prefix`; on top of 0.4.0's named sessions, hisn-ls/v2
+// states running/stopped/crashed, the client record on control requests,
+// `hisn stop`, and 0.3.3's profiles, services, risk labels, [home]/[rootfs]/
+// [ssh] and "src:dst" known_hosts mounts). Older hisn is refused at startup
+// with a message naming this version; there is no fallback.
 // It aliases sandbox.MinHisnVersion, the single definition this package and
 // internal/config share.
 const MinVersion = sandbox.MinHisnVersion

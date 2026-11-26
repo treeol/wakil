@@ -115,7 +115,7 @@ func tailLines(s string, n int) string {
 	return strings.Join(lines, "\n")
 }
 
-// minReasonSuffix is " (security fix for network = "open")" when min is the
+// minReasonSuffix is " (" + sandbox.MinHisnReason + ")" when min is the
 // release Wakil requires (sandbox.MinHisnVersion), else "". A custom minimum
 // (tests, probes with another floor) carries no claim about why it is set.
 func minReasonSuffix(min string) string {
