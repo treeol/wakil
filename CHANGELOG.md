@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- hisn minimum bumped 0.6.5 → 0.6.7. 0.6.7 (0.6.6 was never released) gates signing by seat role in the ssh-agent proxy: owner and member seats may sign, an observer seat is refused with `SSH_AGENT_FAILURE` — before it, signing was allowlist-only. The floor is a policy floor, not a protocol break: no wire change, protocol revision stays 4, so a 0.6.5 hisn keeps working against a 0.6.7 supervisor and Wakil's existing requests are unchanged. Wakil refuses an older hisn at preflight naming the found and required versions and both reasons (the seat-role gate and the open-mode kernel floor: hisn 0.6.2+ needs kernel 6.7+ with Landlock ABI v4, enforced by the dedicated preflight error once the version check passes), and the default-backend probe refuses the same hisn in the same words (a default user on an older hisn falls back to docker with a DefaultNote naming the refusal, never a silent switch; an explicit `sandbox.backend = "hisn"` on an older hisn is a startup error). `install.sh` upgrade note: a 0.6.5 hisn earlier on PATH no longer counts as "already installed", so the installer drops 0.6.7 into the install dir — an older binary still on PATH can shadow it, so confirm `hisn --version` reports 0.6.7 after upgrading. Hisn 0.6.7 also adds `journal --wait`, `run --ssh-agent-socket` (off by default), and `ssh/sign` journal records (fingerprint, seat, exec id, result; never signed data) — none of these are wired in yet (see `docs/plans/hisn-0.6.7.md` Open points); Wakil signs through the existing `SSH_AUTH_SOCK` env path only.
+
 ## [0.8.12] - 2026-11-25
 
 Upgrading from 0.8.11, in short (details below):

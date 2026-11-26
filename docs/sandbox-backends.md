@@ -249,15 +249,19 @@ One session per chat, `session-id = chatID` (UUID, valid for hisn's
 ### Supervisor and the detach contract
 
 This section is the one description of the contract; other documents link
-here. Wakil requires **hisn >= 0.6.7** (`MinVersion`). An older hisn is refused
-at preflight with a message naming the found and required versions and the
-reason (0.6.5 is the first release whose open-mode enforcement is sound
-end-to-end: 0.6.1 fixed a policy bypass where `network = "open"` did not fully
-enforce the network policy for a socket handed to a program before a connect
-that then failed, and 0.6.2 closed the remaining open-mode timing gap — the
-supervisor now executes every INET listen/connect/bind itself; hisn 0.6.2+
-needs Landlock ABI v4, i.e. kernel 6.7+, for `network = "open"`), and there is no
+here. Wakil requires **hisn >= 0.6.7** (`MinVersion`). 0.6.7 is the minimum
+because it gates signing by seat role (owner/member sign, observer refused
+`SSH_AGENT_FAILURE`); the open-mode floor stays 0.6.2+ (Landlock ABI v4,
+i.e. kernel 6.7+, for `network = "open"`). No wire or protocol break
+(revision 4, unchanged): the floor is a policy floor, and there is no
 compatibility path for it ([ADR 0014](adr/0014-hisn-minimum-0.4.1.md)).
+The refusal names the found and required versions and both reasons.
+0.6.5 was the first release whose open-mode enforcement was sound
+end-to-end (0.6.1 fixed a policy bypass where `network = "open"` did not
+fully enforce the network policy for a socket handed to a program before
+a connect that then failed, and 0.6.2 closed the remaining open-mode
+timing gap — the supervisor now executes every INET listen/connect/bind
+itself).
 
 `hisn run --detach` starts a session with no main command (PID 1 sleeps until
 stopped) and **returns once the session is ready**:
