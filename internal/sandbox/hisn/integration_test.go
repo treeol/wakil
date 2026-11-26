@@ -27,6 +27,10 @@ import (
 // Integration tests against a REAL hisn. They SKIP (never fail) when hisn is
 // missing, too old, or `hisn check` reports the host cannot run sessions
 // (e.g. no unprivileged user namespaces, as in many build sandboxes).
+// With WAKIL_HISN_REQUIRE=1 a preflight/version failure is a FAIL instead:
+// acceptance runs set it so a green run proves the tests actually ran
+// against the 0.6.7 binary (Mashūra round 1: without it the suite can go
+// green without ever touching 0.6.7).
 //
 // Run on a host with hisn >= 0.2.0:
 //
@@ -42,21 +46,35 @@ import (
 //
 // Set WAKIL_HISN_BIN to test a specific binary.
 
+// hisnRequire reports WAKIL_HISN_REQUIRE=1: preflight/version skips become
+// failures so acceptance runs cannot pass without exercising the real binary.
+func hisnRequire() bool { return os.Getenv("WAKIL_HISN_REQUIRE") == "1" }
+
+// requireSkip fails when hisnRequire, else skips (the pre-0.6.7 default for
+// host-capability gates like `hisn check`).
+func requireSkip(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if hisnRequire() {
+		t.Fatalf(format, args...)
+	}
+	t.Skipf(format, args...)
+}
+
 func realBackend(t *testing.T, grantable ...string) (*Backend, string) {
 	t.Helper()
 	bin := os.Getenv("WAKIL_HISN_BIN")
 	if bin == "" {
 		p, err := osexec.LookPath("hisn")
 		if err != nil {
-			t.Skip("hisn not found on PATH")
+			requireSkip(t, "hisn not found on PATH")
 		}
 		bin = p
 	}
 	// 0.2.1 gate: --ready-fd, exec_id, --prune, stale-kill, session.shm/tmp_size.
 	if out, err := osexec.Command(bin, "--version").Output(); err != nil {
-		t.Skipf("hisn unusable: %v", err)
+		requireSkip(t, "hisn unusable: %v", err)
 	} else if v, err := ParseVersion(string(out)); err != nil || !VersionAtLeast(v, [3]int{0, 2, 1}) {
-		t.Skipf("hisn >= 0.2.1 required (got %q, err %v)", strings.TrimSpace(string(out)), err)
+		requireSkip(t, "hisn >= 0.2.1 required (got %q, err %v)", strings.TrimSpace(string(out)), err)
 	}
 	root := t.TempDir()
 	// hisn forbids cwd under its runtime dir (/tmp/hisn-$UID); a t.TempDir()
@@ -78,7 +96,7 @@ func realBackend(t *testing.T, grantable ...string) (*Backend, string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := b.Preflight(ctx); err != nil {
-		t.Skipf("hisn unusable on this host: %v", err)
+		requireSkip(t, "hisn unusable on this host: %v", err)
 	}
 	cleanupSessions(t, b)
 	t.Cleanup(func() { _ = b.Close(context.Background()) })
@@ -334,10 +352,17 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 	if err := b.Preflight(ctx); err != nil {
-		t.Skipf("hisn unusable on this host: %v", err)
+		requireSkip(t, "hisn unusable on this host: %v", err)
 	}
 	cleanupSessions(t, b)
 	t.Cleanup(func() { _ = b.Close(context.Background()) })
+
+	// The resolved binary must be exactly 0.6.7: the seat-role gate and the
+	// ssh/sign journal records this test asserts on exist only there. A
+	// PATH-fallback run against an older hisn must fail here, never pass.
+	if got := b.ver; got != [3]int{0, 6, 7} {
+		t.Fatalf("the signing test requires hisn exactly 0.6.7 (got %d.%d.%d from %s)", got[0], got[1], got[2], bin)
+	}
 
 	if err := b.Start(ictx(t), sandbox.Session{ID: "wakil-it-ssh-agent", HostCwd: cwd}); err != nil {
 		t.Fatalf("Start failed: %v", err)
@@ -450,10 +475,14 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	// Verify the commit is signed on the host side. The host git needs
 	// gpg.ssh.allowedSignersFile to verify SSH signatures; point it at the
 	// allowed_signers file written under HomeRoot (the host copy).
-	signOut, err := osexec.Command("git", "-C", cwd,
-		"-c", "gpg.format=ssh",
-		"-c", "gpg.ssh.allowedSignersFile="+filepath.Join(b.opts.HomeRoot, ".wakil-allowed-signers"),
-		"log", "-1", "--format=%G?").Output()
+	signOut, err := func() ([]byte, error) {
+		cmd := osexec.Command("git", "-C", cwd,
+			"-c", "gpg.format=ssh",
+			"-c", "gpg.ssh.allowedSignersFile="+filepath.Join(b.opts.HomeRoot, ".wakil-allowed-signers"),
+			"log", "-1", "--format=%G?")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		return cmd.Output()
+	}()
 	if err != nil {
 		t.Fatalf("git log on host failed: %v", err)
 	}
@@ -465,10 +494,14 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 	// 0.5.1: the signature must be made by the RESOLVED session key (the
 	// repo's key at plan time), not the repo-local key set inside the session.
-	keyOut, err := osexec.Command("git", "-C", cwd,
-		"-c", "gpg.format=ssh",
-		"-c", "gpg.ssh.allowedSignersFile="+filepath.Join(b.opts.HomeRoot, ".wakil-allowed-signers"),
-		"log", "-1", "--format=%GK").Output()
+	keyOut, err := func() ([]byte, error) {
+		cmd := osexec.Command("git", "-C", cwd,
+			"-c", "gpg.format=ssh",
+			"-c", "gpg.ssh.allowedSignersFile="+filepath.Join(b.opts.HomeRoot, ".wakil-allowed-signers"),
+			"log", "-1", "--format=%GK")
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		return cmd.Output()
+	}()
 	if err != nil {
 		t.Fatalf("git log %%GK on host failed: %v", err)
 	}
@@ -481,6 +514,68 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 	if signingKeyFp != fp {
 		t.Errorf("commit signed by %s, want the resolved session key %s", signingKeyFp, fp)
+	}
+
+	// 0.6.7: the sign must be journalled. hisn records one ssh/sign record
+	// per sign request (key fingerprint, seat, exec id, result — never the
+	// data being signed, never the signature). Read the journal through
+	// b.output so the invocation inherits the session's XDG_RUNTIME_DIR from
+	// b.baseEnv() (clientEnvAllow carries it). Per `journal --help` the
+	// --json form prints "the records unchanged as JSON (one per line)", so
+	// the output is a stream of JSON lines, not one document. On >= 0.6.7
+	// this is a hard fail, never a skip: Preflight passing means the binary
+	// supports journal, so a missing record is a real regression — and the
+	// seat it names is the direct proof that Wakil's own sessions sign as
+	// owner/member under the new seat-role gate.
+	jout, jerr := b.output(ictx(t), false, "journal", "--session", "wakil-it-ssh-agent", "--json")
+	if jerr != nil {
+		t.Fatalf("hisn journal --session wakil-it-ssh-agent --json failed: %v\n%s", jerr, jout)
+	}
+	var signRecs []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(jout), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "hisn:") {
+			continue // envelope note lines (no-session fallbacks) are not records
+		}
+		var rec map[string]any
+		if jerr := json.Unmarshal([]byte(line), &rec); jerr != nil {
+			t.Fatalf("journal line is not a JSON record: %v\n%s", jerr, line)
+		}
+		if kind, _ := rec["kind"].(string); kind == "ssh/sign" {
+			signRecs = append(signRecs, rec)
+		}
+	}
+	if len(signRecs) == 0 {
+		t.Fatalf("no ssh/sign record in the journal:\n%s", jout)
+	}
+	var ok, failed int
+	for _, rec := range signRecs {
+		result, _ := rec["result"].(string)
+		if result == "ok" {
+			ok++
+			// The seat named in the record is the direct proof the
+			// owner/member gate held for this Wakil-started session.
+			seat, _ := rec["seat"].(string)
+			if seat != "owner" && seat != "member" {
+				t.Errorf("ssh/sign seat = %q, want owner or member (signing under any other seat hits the 0.6.7 gate)", seat)
+			}
+			if f, _ := rec["fingerprint"].(string); f != "" && f != fp {
+				t.Errorf("ssh/sign fingerprint = %q, want the throwaway key %s", f, fp)
+			}
+		} else {
+			failed++
+			t.Errorf("ssh/sign record with result %q (want ok): %v", result, rec)
+		}
+	}
+	if ok == 0 {
+		t.Fatalf("no ssh/sign record with result ok (failed=%d):\n%s", failed, jout)
+	}
+	if failed > 0 {
+		t.Fatalf("%d ssh/sign record(s) failed:\n%s", failed, jout)
+	}
+	// The journal must not carry the signed data or the signature itself.
+	if strings.Contains(jout, "test signed commit") {
+		t.Errorf("the journal carries the commit payload:\n%s", jout)
 	}
 }
 
