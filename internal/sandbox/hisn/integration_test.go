@@ -561,31 +561,25 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 			signRecs = append(signRecs, rec)
 		}
 	}
-	// Find the commit exec among exec records: match any exec-kind record
-	// whose stringified form mentions "commit" in an argv-shaped position.
-	// The journal record shape is hisn's; where the id lives is discovered
-	// from the records themselves and reported on failure, never assumed.
-	//
-	// Since the journal schema was proven only for the ssh/sign record,
-	// the commit-exec binding stays soft-but-loud: if exec records carry
-	// no argv/id fields we can identify, the comparison is against the
-	// single ssh/sign record's exec_id by exclusion counts (exactly one
-	// exec record family must exist carrying a "commit" argv). No silent
-	// green path exists: every fallback failure is t.Fatalf.
-	candidates := journalExecCandidates(parsedRecs)
-	if len(candidates) != 1 {
-		t.Fatalf("cannot identify the commit exec in the journal: %d candidate exec records\n%s", len(candidates), jout)
+	// Find the commit exec in the journal via the req_id link (see the
+	// helper): the exec/request record carries the `git commit` argv and
+	// the top-level client.req_id; the exec/exit record with the same
+	// req_id carries the exec_id; exactly one ssh/sign record must name
+	// that exec_id. Zero or two+ matches at any step fails with the
+	// step and the count named. (The 0.6.7 journal splits one exec
+	// across records: argv and exec_id never appear in the same record.)
+	commitExecID, stepErr := journalCommitExecID(parsedRecs)
+	if stepErr != "" {
+		t.Fatalf("cannot correlate the commit exec in the journal: %s\n%s", stepErr, jout)
 	}
-	commitExecID = candidates[0]
 	if commitExecID == "" {
-		t.Fatalf("commit exec record carries no id:\n%s", jout)
+		t.Fatalf("commit exec correlation returned an empty id:\n%s", jout)
 	}
 	if len(signRecs) == 0 {
 		t.Fatalf("no ssh/sign record in the journal:\n%s", jout)
 	}
-	// The record CHECKS (exact-one-ok, closed key set, leak markers) are
-	// separate; the binding below requires exactly one ssh/sign record
-	// whose data.exec_id equals the commit exec id.
+	// The matched sign record (the helper already required exactly one
+	// for the commit exec) — its content is verified below.
 	var commitSigns []map[string]any
 	for _, rec := range signRecs {
 		data, _ := rec["data"].(map[string]any)
@@ -614,8 +608,8 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		}
 		// Types: short strings / bool only. A long or composite value
 		// (payload, signature bytes) fails.
-		if _, isBool := data["attributed"].(bool); !isBool {
-			t.Errorf("ssh/sign attributed = %v, want bool", data["attributed"])
+		if attr, isBool := data["attributed"].(bool); !isBool || !attr {
+			t.Errorf("ssh/sign attributed = %v, want true (the bind rests on hisn attributing the sign to this exec)", data["attributed"])
 		}
 		for _, k := range []string{"exec_id", "fingerprint", "result"} {
 			if s, isStr := data[k].(string); !isStr || len(s) > 128 {
@@ -703,81 +697,322 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	}
 }
 
-// journalExecCandidates returns the journal exec records' ids for the exec
-// whose argv is the signed commit. The journal schema for exec records was
-// not captured in the plan, so this discovers the shape from the records
-// themselves: a record counts as the commit exec when its kind mentions
-// "exec" and somewhere in its (nested) JSON a string field holds an argv
-// whose first element is "git" and second is "commit", or a single string
-// field contains the substring "git commit". The exec id is the record's
-// "exec_id" or "id" field, at top level or under a "data" object; a record
-// without a discoverable id fails loudly rather than being guessed. The
-// ssh/sign record's own exec_id is never used here (that would be circular).
-func journalExecCandidates(recs []map[string]any) []string {
-	var out []string
+// journalCommitExecID correlates the journal's `git commit` exec to the
+// ssh/sign record that names it, returning the exec_id and a step error
+// naming the first step that did not yield exactly one match ("" on
+// success). The 0.6.7 journal splits one exec across records and never
+// puts argv and exec_id in the same record:
+//
+//   - an exec/request record carries data.argv and the top-level
+//     client.req_id;
+//   - the exec/exit record with the same client.req_id carries
+//     data.exec_id and data.exit_code;
+//   - an ssh/sign record names that exec_id in data.
+//
+// The link is client.req_id (with data.seq as corroboration). Every
+// step requires exactly one match and a non-empty, correctly-typed
+// identifier — an empty string never binds — and any failure is a step
+// error, never a guess. This pins the 0.6.7 journal schema; the unit
+// test covers it against recorded-fixture shapes.
+func journalCommitExecID(recs []map[string]any) (string, string) {
+	// Step 1: exactly one exec/request record whose data.argv starts
+	// with `git` then `commit`.
+	var reqs []map[string]any
 	for _, rec := range recs {
 		kind, _ := rec["kind"].(string)
-		if kind == "" {
-			kind, _ = rec["type"].(string)
-		}
-		if !strings.Contains(kind, "exec") {
+		if kind != "exec/request" {
 			continue
 		}
-		if !journalRecordIsCommitExec(rec) {
+		data, _ := rec["data"].(map[string]any)
+		argv, _ := data["argv"].([]any)
+		if len(argv) < 2 {
 			continue
 		}
-		id, ok := journalRecordID(rec)
-		if !ok {
-			return nil // cannot identify the id of the commit exec, fail loudly upstream
+		a, aStr := argv[0].(string)
+		b, bStr := argv[1].(string)
+		if aStr && bStr && a == "git" && b == "commit" {
+			reqs = append(reqs, rec)
 		}
-		out = append(out, id)
 	}
-	return out
+	if len(reqs) != 1 {
+		return "", fmt.Sprintf("step 1: want exactly 1 exec/request for `git commit`, got %d", len(reqs))
+	}
+	// Step 2: the commit request's top-level client.req_id must be a
+	// non-empty string.
+	reqID, stepErr := journalRecordReqID(reqs[0])
+	if stepErr != "" {
+		return "", "step 2: " + stepErr
+	}
+	reqSeq, seqErr := journalRecordSeq(reqs[0])
+	if seqErr != "" {
+		return "", "step 2: " + seqErr
+	}
+	// Step 3: exactly one exec/exit record with the same client.req_id,
+	// corroborated by data.seq, with exit_code 0.
+	var exits []map[string]any
+	for _, rec := range recs {
+		kind, _ := rec["kind"].(string)
+		if kind != "exec/exit" {
+			continue
+		}
+		if id, errStr := journalRecordReqID(rec); errStr == "" && id == reqID {
+			exits = append(exits, rec)
+		}
+	}
+	if len(exits) != 1 {
+		return "", fmt.Sprintf("step 3: want exactly 1 exec/exit for req_id %q, got %d", reqID, len(exits))
+	}
+	exitRec := exits[0]
+	exitSeq, seqErr := journalRecordSeq(exitRec)
+	if seqErr != "" {
+		return "", "step 3: " + seqErr
+	}
+	if exitSeq != reqSeq {
+		return "", fmt.Sprintf("step 3: seq mismatch (request %v, exit %v)", reqSeq, exitSeq)
+	}
+	exitData, _ := exitRec["data"].(map[string]any)
+	exitID, idOK := exitData["exec_id"].(string)
+	if !idOK || exitID == "" {
+		return "", "step 3: exec/exit carries no non-empty data.exec_id"
+	}
+	exitCode, codeOK := journalRecordExitCode(exitRec)
+	if !codeOK || exitCode != 0 {
+		return "", fmt.Sprintf("step 3: want exit_code 0, got %v", exitData["exit_code"])
+	}
+	// Step 4: exactly one ssh/sign record naming that exec_id.
+	var signs []map[string]any
+	for _, rec := range recs {
+		kind, _ := rec["kind"].(string)
+		if kind != "ssh/sign" {
+			continue
+		}
+		data, _ := rec["data"].(map[string]any)
+		if eid, isStr := data["exec_id"].(string); isStr && eid == exitID {
+			signs = append(signs, rec)
+		}
+	}
+	if len(signs) != 1 {
+		return "", fmt.Sprintf("step 4: want exactly 1 ssh/sign for exec_id %q, got %d", exitID, len(signs))
+	}
+	return exitID, ""
 }
 
-func journalRecordID(rec map[string]any) (string, bool) {
-	for _, key := range []string{"exec_id", "id"} {
-		if s, isStr := rec[key].(string); isStr && s != "" {
-			return s, true
+// journalRecordReqID returns the top-level client.req_id of a journal
+// record. Missing, non-string, or empty is a step error, not an empty
+// string that could match another empty string.
+func journalRecordReqID(rec map[string]any) (string, string) {
+	client, _ := rec["client"].(map[string]any)
+	switch v := client["req_id"].(type) {
+	case string:
+		if v == "" {
+			return "", "client.req_id is empty"
 		}
-		if data, isMap := rec["data"].(map[string]any); isMap {
-			if s, isStr := data[key].(string); isStr && s != "" {
-				return s, true
-			}
-		}
+		return v, ""
+	default:
+		return "", "client.req_id is missing or not a string"
 	}
-	return "", false
 }
 
-// journalRecordIsCommitExec reports whether an exec record (or any record)
-// mentions a `git commit` argv, in an argv array or as a command string.
-func journalRecordIsCommitExec(rec map[string]any) bool {
-	for _, v := range rec {
-		switch t := v.(type) {
-		case string:
-			if strings.Contains(t, "git commit") || t == "git commit" {
-				return true
+// journalRecordSeq returns data.seq as an integer. A missing or
+// non-integer seq is a step error (the 0.6.7 shape always carries it).
+func journalRecordSeq(rec map[string]any) (int, string) {
+	data, _ := rec["data"].(map[string]any)
+	switch v := data["seq"].(type) {
+	case float64:
+		if v != float64(int(v)) {
+			return 0, fmt.Sprintf("data.seq = %v, want an integer", v)
+		}
+		return int(v), ""
+	default:
+		return 0, "data.seq is missing or not a number"
+	}
+}
+
+// journalRecordExitCode returns data.exit_code as an integer.
+func journalRecordExitCode(rec map[string]any) (int, bool) {
+	data, _ := rec["data"].(map[string]any)
+	switch v := data["exit_code"].(type) {
+	case float64:
+		if v != float64(int(v)) {
+			return 0, false
+		}
+		return int(v), true
+	default:
+		return 0, false
+	}
+}
+
+// TestJournalCommitExecID unit-tests the req_id correlation helper
+// against recorded 0.6.7 journal line shapes (built as fixtures here
+// with fake ids and a fake fingerprint — nothing real). It asserts the
+// helper binds the right exec_id on the clean input and fails with the
+// right step named on every corrupted variant.
+func TestJournalCommitExecID(t *testing.T) {
+	commitReq := `{"kind":"exec/request","client":{"uid":1000,"label":"wakil@rubin","label_source":"none","req_id":"fake-88202b85.0b3cf4-9"},"data":{"argv":["git","commit","-m","test signed commit"],"argv_bytes":29,"argv_count":4,"argv_truncated":false,"authz":{"allow":true},"cwd":"/tmp/ws-fake","op":"exec","seq":19,"stage":"request"}}`
+	emptyReq := `{"kind":"exec/request","client":{"uid":1000,"label":"wakil@rubin","label_source":"none","req_id":"fake-88202b85.0b3cf4-8"},"data":{"path":"git","pid_peer":3185734,"result":null,"seq":19,"stage":"request"}}`
+	commitExit := `{"kind":"exec/exit","client":{"uid":1000,"label":"wakil@rubin","label_source":"none","req_id":"fake-88202b85.0b3cf4-9"},"data":{"attach":false,"cancelled":false,"duration_ms":9,"exec_id":"fake-e-9","exit_code":0,"lost":false,"op":"exec","pid":30,"seq":19,"stage":"exit"}}`
+	wrongExit := `{"kind":"exec/exit","client":{"uid":1000,"label":"wakil@rubin","label_source":"none","req_id":"fake-88202b85.0b3cf4-7"},"data":{"attach":false,"cancelled":false,"duration_ms":9,"exec_id":"fake-e-7","exit_code":0,"lost":false,"op":"exec","pid":31,"seq":19,"stage":"exit"}}`
+	signRec := `{"kind":"ssh/sign","data":{"attributed":true,"exec_id":"fake-e-9","fingerprint":"SHA256:fakefingerprintfakefingerprintfakefp","result":"ok","seat":null}}`
+	otherSign := `{"kind":"ssh/sign","data":{"attributed":true,"exec_id":"fake-e-7","fingerprint":"SHA256:fakefingerprintfakefingerprintfakefp","result":"ok","seat":null}}`
+
+	parse := func(lines ...string) []map[string]any {
+		var recs []map[string]any
+		for _, line := range lines {
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("fixture is not valid JSON: %v\n%s", err, line)
 			}
-		case []any:
-			if len(t) >= 2 {
-				a, _ := t[0].(string)
-				b, _ := t[1].(string)
-				if a == "git" && b == "commit" {
-					return true
-				}
-			}
-			for _, e := range t {
-				if s, isStr := e.(string); isStr && s == "commit" {
-					return true
-				}
-			}
-		case map[string]any:
-			if journalRecordIsCommitExec(t) {
-				return true
-			}
+			recs = append(recs, rec)
+		}
+		return recs
+	}
+
+	// The clean input binds to the commit exec's id.
+	if id, stepErr := journalCommitExecID(parse(emptyReq, commitReq, signRec, commitExit)); stepErr != "" || id != "fake-e-9" {
+		t.Errorf("clean input: want (\"fake-e-9\", \"\"), got (%q, %q)", id, stepErr)
+	}
+
+	negatives := []struct {
+		name       string
+		step       string
+		lines      []string
+		wantPrefix string
+	}{
+		{"exit with a different req_id", "step 3", []string{commitReq, wrongExit, signRec}, "step 3: want exactly 1 exec/exit"},
+		{"missing exit record", "step 3", []string{commitReq, signRec}, "step 3: want exactly 1 exec/exit"},
+		{"duplicate exit for the same req_id", "step 3", []string{commitReq, commitExit, commitExit, signRec}, "step 3: want exactly 1 exec/exit"},
+		{"two commit requests", "step 1", []string{commitReq, commitReq, commitExit, signRec}, "step 1: want exactly 1 exec/request"},
+		{"no commit request", "step 1", []string{emptyReq, commitExit, signRec}, "step 1: want exactly 1 exec/request"},
+		{"ssh/sign bound to another exec", "step 4", []string{commitReq, commitExit, otherSign}, "step 4: want exactly 1 ssh/sign"},
+		{"two ssh/sign records for the commit exec", "step 4", []string{commitReq, commitExit, signRec, signRec}, "step 4: want exactly 1 ssh/sign"},
+	}
+	for _, n := range negatives {
+		if id, stepErr := journalCommitExecID(parse(n.lines...)); stepErr == "" {
+			t.Errorf("%s: want a step error, got a clean bind to %q", n.name, id)
+		} else if !strings.HasPrefix(stepErr, n.wantPrefix) {
+			t.Errorf("%s: want the error to name %q, got %q", n.name, n.step, stepErr)
+		} else if id != "" {
+			t.Errorf("%s: want an empty id on failure, got %q", n.name, id)
 		}
 	}
-	return false
+
+	// Field-level corruption: each variant mutates a field of the clean
+	// records and the helper must fail at the step that reads it.
+	mutate := func(lines []string, fn func(rec map[string]any) map[string]any) []string {
+		var out []string
+		for _, line := range lines {
+			var rec map[string]any
+			if err := json.Unmarshal([]byte(line), &rec); err != nil {
+				t.Fatalf("fixture is not valid JSON: %v\n%s", err, line)
+			}
+			rec = fn(rec)
+			b, err := json.Marshal(rec)
+			if err != nil {
+				t.Fatalf("re-marshal failed: %v", err)
+			}
+			out = append(out, string(b))
+		}
+		return out
+	}
+	clean := []string{commitReq, commitExit, signRec}
+	set := func(rec map[string]any, path []string, val any) map[string]any {
+		cur := rec
+		for _, p := range path[:len(path)-1] {
+			m, _ := cur[p].(map[string]any)
+			if m == nil {
+				m = map[string]any{}
+			}
+			cur[p] = m
+			cur = m
+		}
+		cur[path[len(path)-1]] = val
+		return rec
+	}
+	unset := func(rec map[string]any, path []string) map[string]any {
+		if m, ok := rec[path[0]].(map[string]any); ok {
+			delete(m, path[len(path)-1])
+		}
+		return rec
+	}
+	fieldNegatives := []struct {
+		name       string
+		lines      []string
+		wantPrefix string
+	}{
+		{"missing req_id on the commit request", mutate(clean, func(r map[string]any) map[string]any {
+			if c, ok := r["client"].(map[string]any); ok && r["kind"] == "exec/request" {
+				delete(c, "req_id")
+			}
+			return r
+		}), "step 2"},
+		{"empty req_id on the commit request", mutate(clean, func(r map[string]any) map[string]any {
+			if c, ok := r["client"].(map[string]any); ok && r["kind"] == "exec/request" {
+				c["req_id"] = ""
+			}
+			return r
+		}), "step 2"},
+		{"non-string req_id on the commit request", mutate(clean, func(r map[string]any) map[string]any {
+			if c, ok := r["client"].(map[string]any); ok && r["kind"] == "exec/request" {
+				c["req_id"] = 9
+			}
+			return r
+		}), "step 2"},
+		{"seq mismatch", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return set(r, []string{"data", "seq"}, 20)
+			}
+			return r
+		}), "step 3"},
+		{"missing seq on the exit", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return unset(r, []string{"data", "seq"})
+			}
+			return r
+		}), "step 3"},
+		{"missing seq on the request", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/request" {
+				return unset(r, []string{"data", "seq"})
+			}
+			return r
+		}), "step 2"},
+		{"exit_code non-zero", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return set(r, []string{"data", "exit_code"}, 1)
+			}
+			return r
+		}), "step 3"},
+		{"exit_code missing", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return unset(r, []string{"data", "exit_code"})
+			}
+			return r
+		}), "step 3"},
+		{"exit_code as a string", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return set(r, []string{"data", "exit_code"}, "0")
+			}
+			return r
+		}), "step 3"},
+		{"missing exec_id on the exit", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return unset(r, []string{"data", "exec_id"})
+			}
+			return r
+		}), "step 3"},
+		{"empty exec_id on the exit", mutate(clean, func(r map[string]any) map[string]any {
+			if r["kind"] == "exec/exit" {
+				return set(r, []string{"data", "exec_id"}, "")
+			}
+			return r
+		}), "step 3"},
+	}
+	for _, n := range fieldNegatives {
+		if id, stepErr := journalCommitExecID(parse(n.lines...)); stepErr == "" {
+			t.Errorf("%s: want a step error, got a clean bind to %q", n.name, id)
+		} else if !strings.HasPrefix(stepErr, n.wantPrefix) {
+			t.Errorf("%s: want the error to name %q, got %q", n.name, n.wantPrefix, stepErr)
+		}
+	}
 }
 
 func TestIntegrationGrantRevokeVisibility(t *testing.T) {
