@@ -608,3 +608,128 @@ The change (Block 1, one signed commit — supersede, don't fix up):
   throwaway agent); bench files unchanged; no real model requests except
   Mashūra; staged by explicit path; no force-push/rebase/tags; untracked
   notes and `.tmp/**` stay untracked; domain `wakiil.pro`.
+
+## exec correlation fix (2026-11-27, HEAD cadb512)
+
+Host run (rubin, 2026-11-27): the session suite now reaches the journal
+and fails with `integration_test.go:577: cannot identify the commit exec
+in the journal: 0 candidate exec records`. The real 0.6.7 journal splits
+one exec across records and never puts `argv` and `exec_id` in the same
+record:
+
+- `exec/request` (shape record): `data.argv` = `["git","commit","-m","test
+  signed commit"]`, `data.seq` = 19, no `exec_id`; the pair carries
+  `client.req_id` = `88202b85.0b3cf4-9` (fake ids here; per-run ids vary).
+- `ssh/sign`: `data.exec_id` = `e-9`, `data.fingerprint` = SHA256:…,
+  `data.result` = `ok`, `data.seat` = `null`, `data.attributed` = true.
+- `exec/exit`: `data.exec_id` = `e-9`, `data.exit_code` = 0, same
+  `client.req_id`, same `data.seq`.
+
+So the argv→exec_id link is the top-level `client.req_id` (with
+`data.seq` as a corroborating field; step 3 compares it and fails on a
+mismatch or a missing `seq` — it is a gate, belt-and-braces alongside
+`req_id`, and a future record that bumps `seq` on stages would fail
+loudly, which is the desired behaviour for a journal-schema pin).
+
+The correlation rule as implemented (replaces `journalExecCandidates`
+and its argv-in-the-same-record heuristic):
+
+1. Find exactly one `exec/request` record whose `data.argv` starts with
+   `git` then `commit` (`argv[0] == "git" && argv[1] == "commit"`).
+   Zero or two+ → the helper returns a step error naming the step and
+   the count; the call site `Fatalf`s with it.
+2. Take its top-level `client.req_id`. A missing, non-string, or
+   empty `req_id` on the commit request → step error naming `req_id`
+   (an empty string must not be allowed to bind — the `"" == ""`
+   vacuous match the non-empty guard exists to prevent).
+   `client.uid`/`label` are ignored — they do not bind.
+3. Find exactly one `exec/exit` record with the same `client.req_id`;
+   also require `data.seq` equal to the request's `data.seq` and both
+   present and integers (a missing or non-integer `seq` on either side
+   is a step error — the 0.6.7 shape always carries it). Zero or two+
+   → step error with count. Take `data.exec_id` (missing, non-string,
+   or empty → step error; same non-empty rule) and require
+   `data.exit_code` == 0 (JSON number; a missing/non-integer or
+   non-zero exit code → step error, not a vacuous 0-pass).
+4. Require exactly one `ssh/sign` record with that `data.exec_id`
+   (missing, non-string, or empty → step error). **Step 4 is part of
+   the helper** — the helper itself returns the count error for zero
+   or two+ matches (naming step 4 and the count), so the caller does
+   not need its own count check once the helper returns successfully.
+   The helper returns the bound `exec_id`; the outer test then
+   re-verifies the matched sign record's content exactly as before
+   (seat, result, fingerprint, `attributed`, closed key set).
+
+The helper returns `(execID string, stepErr string)`. Zero or more than
+one match at any step fails with a message naming the step and the
+count; the call site `Fatalf`s with it and the journal bytes. A record
+whose `kind` mentions `exec` but is not in the known family
+(`exec/request`, `exec/exit`) is ignored — the family check is by
+`kind` prefix, not by shape discovery — but unknown exec-family kinds
+stay unknown: they are skipped, not guessed, and never bind. A hard
+failure happens only at a step whose input is not recognised.
+
+`data.attributed == true` is asserted as well (a missing or false
+`attributed` on any `ssh/sign` record fails — the bind rests on hisn
+attributing the sign to this exec, so an unattributed record must not
+pass silently).
+
+Existing assertions kept unchanged: seat null/owner/member
+(present-null checked), `result: "ok"`, fingerprint == the throwaway
+key's (computed from the key), closed `data` key set, no signature blob
+in base64 or hex (`SSHSIG`/`U1NIU0lH`/`SSH SIGNATURE` markers + the
+`%GG` signature in both forms), the commit verifies against the
+throwaway key host-side (`%G?`/`%GK`, with an explicit non-empty guard
+on `%GG` — an empty `%GG` `Fatalf`s rather than passing the leak
+search vacuously), and all other `ssh/sign` records must be `ok` with
+the same fingerprint. The leak checks run over the raw journal bytes,
+not the correlated records, so they cannot be satisfied by the bind.
+For the leak check the inner SSHSIG signature bytes are extracted from
+the commit's `gpgsig` header and searched in raw, hex, and all three
+base64 alignments (a base64 marker can appear at only one of three
+byte offsets; the `SSHSIG`-prefixed markers are an additional net, not
+the whole one; the closed key set covers the correlated record's
+fields as parsed).
+
+The unit test (no hisn needed) is written first and shown failing
+against the current helper — the helper's signature changes, so the
+*compile* of the test fails against the old code (which is the
+expected red state; the run output shows the undefined symbol, proving
+the test is wired to the new helper). It feeds the helper recorded
+0.6.7 lines — in the real shape, built as fixtures in the test with
+fake ids and a fake fingerprint (DO-NOT-ALTER) — and asserts the bind
+to the right `exec_id`. Negatives, each must fail with the step named:
+missing/empty `req_id` on the commit request; an exit with a different
+`req_id`; two commit requests; a missing exit record; a duplicate exit
+for the same `req_id`; `seq` mismatch or missing `seq`; `exit_code`
+non-zero, missing, or a string; missing/empty `exec_id` on the exit; an
+`ssh/sign` with another `exec_id`; two `ssh/sign` records for the
+commit exec. The acceptance criterion is the green host run (rubin,
+the user's exact `WAKIL_HISN_BIN` command) — the unit test proves the
+helper against authored fixtures, the host run proves the helper
+against the real journal.
+
+Open risks:
+
+- `exec_id` is `e-9` in the fixtures; hisn already namespaces exec ids
+  per session (`e-N`), so a future `<session>/<exec>` form would break
+  the equality — loudly (the count Fatalf reports the mismatch), never
+  silently green. Worse case a future hisn could reuse a short id
+  across sessions, but the journal is scoped `--session
+  wakil-it-ssh-agent`, so only this session's records are read.
+- `seq` values (19) are per-session monotonic counters in one run; the
+  step-3 `seq` equality is corroboration, not identity — `req_id` is
+  the identity. A future hisn that stamps a different `seq` on the
+  result/exit stages would fail loudly here (by design: the journal
+  schema is being pinned), and relaxing step 3 to a warning would
+  need its own plan section.
+- `exit_code` is a JSON number (`0`), not a string; if hisn ever
+  reports `"0"` the type check fails loudly rather than passing
+  vacuously — still the right side for this pin.
+- `client.uid`/`label` per-record allow a spoofed caller to inject a
+  record into the journal; the correlation never trusts them — only
+  `req_id` + `seq` + argv shape, all of which a journal-injector could
+  also forge, but the session journal is written by the supervisor
+  itself (hisn records its own view), so injection is not in the
+  threat model for this test: the journal is evidence, not a log an
+  attacker controls.
