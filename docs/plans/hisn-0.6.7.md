@@ -843,3 +843,264 @@ Open risks:
 - A passing unit test proves the parser against authored fixtures; only
   the host run proves `git cat-file` output shape on the real 0.6.7
   journal against the real commit.
+
+## payload check fix (2026-11-27, HEAD 08f6c5c)
+
+Host result (rubin, 2026-11-27, HEAD 08f6c5c), same command as before:
+
+```
+→ integration_test.go:686: the journal carries the commit payload:
+```
+
+Correlation and signature parsing now pass. The run stops at the last
+assertion, the belt-and-braces `strings.Contains(jout, "test signed
+commit")`. Cause: the test commits with `git commit -m "test signed
+commit"` and hisn records every exec's argv in `exec/request` by design, so
+the message is in the journal through argv, not through signing. The check
+cannot tell normal argv logging from a leak of signed data; it could only
+fail, never discriminate.
+
+What hisn logs in this test (read from the full journal in the host's
+`.tmp/host-verify/20261127-163406/go-test.log`: 41 records, one run, hisn
+0.6.7):
+
+- `argv` appears only in `exec/request` records (9 of 9 occurrences), as
+  the literal argv. The commit exec's argv is `["git","commit","-m","test
+  signed commit"]`.
+- The only `cwd` is the temp workspace path (`/tmp/Test…/003/ws`).
+- The only `git-change` record is `phase:"start"` with `"skipped":"no
+  .git"` (taken before `git init`). No later `git-change` record appears.
+- No 40-hex string occurs anywhere in the journal. Neither a tree hash nor
+  a commit hash reaches it through argv, cwd or any other field.
+
+So both the tree hash and the commit hash are usable needles: neither
+legitimately appears, and the task's "drop one if it legitimately appears"
+clause does not fire. This is one run on one host; it is evidence, not a
+guarantee.
+
+### What a "real leak" is
+
+Git signs the commit buffer without its `gpgsig` header. `ssh-keygen -Y
+sign` hashes it (sha512 by default, sha256 possible) and the agent receives
+the SSHSIG preimage `SSHSIG | namespace | reserved | hash-alg | H(payload)`.
+Two consequences:
+
+1. The commit message and tree hash are inside the payload, so a journal
+   that logged the payload would carry them.
+2. What actually crosses the agent proxy is the digest, not the message. A
+   needle made only of the message would stay silent on a leak of the sign
+   request. The needle set must therefore include H(payload).
+
+### The change (Block 1, one signed commit, failing test first)
+
+- The test writes the commit message to a file in the temp workspace
+  (`.wakil-it-commitmsg`, left untracked: only `file.txt` is added) and
+  commits with `git commit -F .wakil-it-commitmsg`. The message is a per-run
+  random marker (`wakil-it-payload-` + 16 bytes from `crypto/rand`, hex). The
+  marker is in no argv, no env, no cwd; argv carries only the file name.
+- A new helper `journalPayloadLeaks(journal string, needles
+  []payloadNeedle) []string` (`payloadNeedle{name, data, argvBlind}`)
+  returns the names of the needles found. Per journal line:
+  - a line that does not parse as JSON is scanned whole (fail closed);
+  - an `exec/request` record whose `data` is an object with an `argv` key is
+    scanned for the **argv-blind needles only** with `data.argv` removed
+    (argv is logged by design and is the caller's own input); every other
+    field, including `path`, `cwd` and a top-level `argv`, is still
+    scanned. Every other needle is scanned over the unmodified line;
+  - every other record kind, and an `exec/request` without a `data.argv`
+    object, is scanned whole, as raw text.
+  The scan reuses `signatureAppearsInJournal` (raw, hex both cases, base64
+  at all three alignments).
+- Argv-blindness applies to the `marker` needle only (Mashūra round 1: after
+  the `-F` change no needle is ever in an argv, so blindness protects against
+  nothing today and only removes coverage; the task asks for it, so it stays
+  where it can matter, on the marker, and nowhere else). Every digest and id
+  needle is scanned over the whole raw journal, argv included.
+- The message file is written on the HOST (`os.WriteFile` into the workspace
+  dir), never by an in-session exec; an in-session `echo` would put the
+  marker into an argv.
+- Needle set. Digests and ids are searched as RAW bytes (the scanner derives
+  hex, upper-case hex and base64 itself); a hex-string needle would make the
+  base64 forms wrong. Each needle must be at least 16 bytes, else the test
+  `Fatalf`s (an empty or tiny needle never passes):
+  - `marker`: the message text (argv-blind);
+  - `tree`, `tree-text`, `commit`, `commit-text`: the tree id (first `tree `
+    header of `git cat-file commit HEAD`) and `git rev-parse HEAD`, both read
+    on the host with the same hardened git environment as the other host
+    reads, as decoded raw id bytes and as the ASCII hex text. The id must be
+    40 or 64 lower-case hex characters, else `Fatalf` (object format);
+  - `payload-sha512` and `payload-sha256`: the raw digests of the signed
+    payload, which is the commit object with the `gpgsig` header and its
+    continuation lines removed (`commitPayloadBytes`). This is the one
+    addition beyond the task text; it exists because of point 2 above, so
+    that the check can fail on a leak of the sign request.
+- Oracle that the digests are the right bytes (Mashūra round 1, blocking). A
+  host PASS only means "needle not found", which is also what a one-byte
+  wrong `commitPayloadBytes` would give. So the integration test, before it
+  trusts the digests:
+  1. writes the commit's armored signature and `commitPayloadBytes` to
+     files in a temp dir and runs `ssh-keygen -Y check-novalidate -n git -s
+     <sig>` with the payload on stdin, `SSH_AUTH_SOCK` empty and `HOME` a
+     temp dir (no agent, no real key: the public key is inside the
+     signature). A non-zero exit is a `Fatalf`: the extracted bytes are not
+     what git signed. The same check runs in the unit test against a
+     fixture signed with a throwaway key file;
+  2. reads the hash-algorithm field of the SSHSIG blob and `Fatalf`s unless
+     it is `sha256` or `sha512`. This turns the old open risk "another hash
+     algorithm is not covered" into a loud failure;
+  3. canary: `journalPayloadLeaks(jout + "\n" + <one synthetic
+     non-argv line carrying the real raw digest>, needles)` must report
+     `payload-sha512` or `payload-sha256` (whichever the blob names), or the
+     test `Fatalf`s. This shows on every run that the scanner can see the
+     digest bytes it is about to declare absent.
+- The old `strings.Contains(jout, "test signed commit")` goes. The
+  `SSHSIG`/`U1NIU0lH`/`SSH SIGNATURE` marker checks, the signature blob and
+  inner-bytes checks, correlation via `client.req_id`, seat, result,
+  fingerprint, closed key set, `attributed`, and `%G?`/`%GK` stay unchanged.
+- Fix in `signatureAppearsInJournal`, found while reusing it: the pad-0
+  base64 needle is the full encoding including its `=` padding and last
+  characters, which depend on the bytes that follow the needle. A leak
+  embedded in a longer buffer at that alignment would not match (a 64-byte
+  signature encodes to `…==`). Pad 0 is to be trimmed the same way as pads 1
+  and 2. This also tightens the signature check committed in 08f6c5c, which
+  has the same hole. The unit test embeds each needle inside a longer buffer
+  at all three alignments; it is shown red before the fix (see Tests).
+
+### Tests (unit, no hisn, written first and shown failing)
+
+Red state: `go vet` fails with `undefined: journalPayloadLeaks` (and
+`commitPayloadBytes`), the same compile-level red as the earlier blocks.
+Then:
+
+- argv-blind by design: a fake journal whose only occurrence of the marker
+  is inside an `exec/request` `data.argv` reports no leak.
+- a fake journal with the marker in an `ssh/sign` record, in an
+  `exec/result` record, in `exec/request` `data.cwd` / `data.path`, in a
+  top-level `argv` of an `exec/request`, in `data.argv` of an unknown record
+  kind, in `data.argv` of an `exec/request` whose `data` is not an object,
+  and in a non-JSON line each reports `marker`.
+- the tree id, the commit id and each digest (as raw bytes embedded in the
+  journal as hex, as upper-case hex and as base64) are reported in a non-argv
+  record AND when inside `exec/request` `data.argv` (they are not
+  argv-blind).
+- needle guard: an empty needle and a needle shorter than 16 bytes are
+  refused by the validator, not silently passed.
+- `signatureAppearsInJournal` itself, in a separate test shown red at run
+  time BEFORE any other new code (it compiles against today's helpers): a
+  64-byte needle embedded after 0..5 prefix bytes and before 0..5 suffix
+  bytes, in raw, hex, upper-case hex and base64, is found; an unrelated
+  needle is not. The pad-0 alignments fail on today's code (the full
+  encoding's trailing characters depend on the following bytes).
+- `commitPayloadBytes`: a fixture signed with a throwaway key file
+  (`ssh-keygen -Y sign`, `SSH_AUTH_SOCK` empty, `HOME` a temp dir): the
+  payload extracted from the assembled commit object equals the exact bytes
+  that were signed (the oracle is the file that was signed, not the
+  parser); a commit with no `gpgsig` header fails.
+
+### Block 2: host_verify against the live binary
+
+Which hisn each step uses (read from `scripts/host_verify.sh`):
+
+- `go-test` (`:177`) and `go-test-race` (`:181`): no explicit binary. The
+  tests use `WAKIL_HISN_BIN` if the caller exported it, else `hisn` on PATH.
+  `host_verify.sh` does not set it for these steps.
+- `real-hisn` (`:412`): the PATH binary, `export WAKIL_HISN_BIN="$(command
+  -v hisn)"` (`:409`), run only when `version_ge "$hisn_ver" "$min_ver"`;
+  otherwise `SKIP real-hisn (<ver> < <min>)` with no install hint. `min_ver`
+  is read from `internal/sandbox/backend.go`.
+
+Finding against the task's premise, as inference only: in the run of
+2026-11-27 16:34 the `real-hisn` step ran (it prints SKIP when the PATH hisn
+is below the floor) and reached the signing test's journal read, which
+comes after the exact-0.6.7 assert. So the PATH hisn in that shell was, by
+inference, exactly 0.6.7, and the premise "the live hisn may still be 0.6.5"
+is not what that run shows. Limits: the version string is in no log; the
+`go-test` legs prove nothing about the PATH binary if `WAKIL_HISN_BIN` was
+exported in that shell (it was for every earlier host command); and the
+`real-hisn` reasoning assumes `min_ver` at that HEAD was already 0.6.7
+(`internal/sandbox/backend.go:27` says so now). Confirm with `command -v
+hisn; hisn --version` on rubin. The failures in that run were the single
+payload assertion in `TestIntegrationSSHAgentForwarded`, once per step.
+
+What an old live hisn does today: Preflight refuses it and `requireSkip`
+turns that into a skip (no `WAKIL_HISN_REQUIRE`), so `go-test` skips the
+session tests quietly and `real-hisn` prints a bare SKIP. The user gets no
+named versions and no install command. That is the gap.
+
+Change (minimal, binary selection untouched):
+
+- new `scripts/host_verify_hisn.sh` (sourced): `version_ge` moves here
+  unchanged from `host_verify.sh`, plus `hv_hisn_floor_line <found>
+  <required> <path>`, which prints nothing when found >= required and
+  otherwise one line naming found, required and path, and the install
+  source (below).
+- `host_verify.sh` gets a `hisn-floor` check ahead of `go-test`. It checks
+  BOTH binaries a later step can use: `WAKIL_HISN_BIN` when exported (the
+  `go-test` legs) and `command -v hisn` (the `real-hisn` step, which always
+  takes PATH, `host_verify.sh:409`). It FAILs with one line per binary below
+  the floor. No hisn at all stays a SKIP; an unparseable version is not a
+  floor failure (`real-hisn` handles it). It never runs an installer and
+  never executes a binary beyond `--version`.
+- Install hint (Mashūra round 1, deviation from the task's "the install
+  command"): the hint does NOT print `curl …/releases/latest/download/
+  install.sh | sh`. That script is a release asset, so "latest" pins the
+  hisn of the latest released Wakil (0.6.5 until 0.8.13 ships) and could not
+  clear the floor; it also installs Wakil itself over the user's, and it
+  leaves an older PATH hisn shadowing the new one (§1). The line instead
+  names the hisn release `https://github.com/treeol/hisn/releases/tag/v0.6.7`
+  (per-arch asset plus its `SHA256SUMS`) and says to put it first on PATH or
+  set `WAKIL_HISN_BIN`. The script prints this text only.
+- `scripts/host_verify_hisn_test.sh` (no hisn, no network), wired in as the
+  check `host-verify-hisn` next to `host-verify-summary`: found < required,
+  equal, greater, `0.10.0` vs `0.9.0`, suffix, and the exact message.
+
+### Tests and gates
+
+`gofmt -l` empty, `go vet ./...`, `golangci-lint run`, `go test -count=1
+-timeout 30m ./...` (every package line; a known-flaky package may be rerun
+once alone, both runs reported), `go test -race ./internal/sandbox/...`,
+`scripts/check_config_docs.sh`, plus `sh scripts/host_verify_hisn_test.sh`
+and `sh scripts/host_verify_summary_test.sh`. `shellcheck` is not installed
+in this sandbox, so the two shell changes are unlinted here (CI lints
+scripts). Acceptance for Block 1 is the host PASS line for
+`TestIntegrationSSHAgentForwarded`.
+
+### Open risks
+
+- The "no hash in the journal" fact is from one journal on one host. A
+  future hisn that records a later `git-change` snapshot with HEAD or the
+  tree would make the check fail, loudly and on the right records. That
+  would be a deliberate decision (drop the needle, say why), not a silent
+  pass.
+- argv-blindness removes only `exec/request` `data.argv`. Another record
+  kind that echoes argv would be scanned; it would trip a needle only if
+  that needle were in argv, which the marker no longer is.
+- The digest needles cover sha256 and sha512 only; any other SSHSIG hash
+  algorithm now fails the test loudly instead of passing.
+- The check cannot see a leak that transforms the data (compression,
+  encryption, a JSON integer array) before logging. That is the same limit
+  as the signature check. Not added: a decimal-array form and a scan of
+  decoded JSON string values (non-blocking in round 1).
+- The payload extraction is proven twice: against a throwaway-key fixture
+  in the unit test, and on every host run by `ssh-keygen -Y check-novalidate`
+  of the real commit's signature over `commitPayloadBytes`.
+- The journal is read mid-session, so a record written at session stop (a
+  closing `git-change`) is not seen by this check.
+- `hv_hisn_floor_line`'s install text is not run; it is checked only by the
+  shell self-test and by reading it.
+
+### Mashūra round 1 (2026-11-27), folded in
+
+BLOCKING (one, all three reviewers' common class, one by name): the digest
+needles could be vacuous because nothing on the host run proved
+`commitPayloadBytes` is what git signed. Folded in: the `check-novalidate`
+oracle, the hash-algorithm check, the canary, raw-byte needles, and a
+minimum needle length (see "The change"). No blocking finding under (b)
+(normal argv logging) or (c) (real keys/agent). Folded in as non-blocking:
+argv-blindness narrowed to the marker, host-side message file, 40/64-hex id
+validation, unknown-kind and top-level-`argv` negatives, the pad-0 test shown
+red first, the two-binary `hisn-floor` check, the install hint (deviation
+stated above), and the softer wording of the rubin inference. Round 2 is not
+run: every blocking item is a strictly stricter assertion.
+- `hisn-floor` reads `hisn --version` of the binary it will use; a binary
+  that prints something unparseable is passed through rather than failed.
