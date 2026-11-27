@@ -652,42 +652,32 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 		strings.Contains(jout, "SSH SIGNATURE") {
 		t.Errorf("the journal carries ssh-signature marker bytes:\n%s", jout)
 	}
-	// Extract the commit's gpgsig (host git) and require both its base64
-	// armor body (as one joined line — the journal's JSON line wraps
-	// don't re-wrap it) and its decoded-bytes hex form to be absent.
-	sigOut, err := func() ([]byte, error) {
-		cmd := osexec.Command("git", "-C", cwd, "log", "-1", "--format=%GG")
+	// Extract the commit's gpgsig (host git, raw commit object) and
+	// require both the whole decoded SSHSIG blob and its inner signature
+	// bytes — the bytes that actually cross the agent proxy as the agent
+	// reply — to be absent from the journal in raw, hex, and all three
+	// base64 alignments.
+	catOut, err := func() ([]byte, error) {
+		cmd := osexec.Command("git", "-C", cwd, "cat-file", "commit", "HEAD")
 		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 		return cmd.Output()
 	}()
 	if err != nil {
-		t.Fatalf("git log %%GG on host failed: %v", err)
+		t.Fatalf("git cat-file commit HEAD on host failed: %v", err)
 	}
-	gpgsig := strings.TrimSpace(string(sigOut))
-	if gpgsig == "" {
-		t.Fatalf("git log %%GG empty: the commit carries no signature to check the journal against")
+	sigBlob, parseErr := commitSignatureBlob(string(catOut))
+	if parseErr != "" {
+		t.Fatalf("cannot read the commit's signature from the commit object: %s", parseErr)
 	}
-	// The base64 armor body: strip PGP-armor header/footer lines ("-----",
-	// "Version:", ...) and fold the line-wrapped base64 back into one
-	// string. Concatenated-wrap is the base64 the proxy would have had to
-	// journal verbatim to leak it.
-	var body strings.Builder
-	for _, l := range strings.Split(gpgsig, "\n") {
-		l = strings.TrimSpace(l)
-		if l == "" || strings.HasPrefix(l, "-----") || strings.Contains(l, ": ") {
-			continue
-		}
-		body.WriteString(l)
+	sigInner, parseErr := extractSSHSigInner(sigBlob)
+	if parseErr != "" {
+		t.Fatalf("cannot extract the inner signature from the commit's SSHSIG blob: %s", parseErr)
 	}
-	armorBody := body.String()
-	if armorBody != "" && strings.Contains(jout, armorBody) {
-		t.Errorf("the journal carries the commit's signature bytes (base64):\n%s", jout)
+	if signatureAppearsInJournal(jout, sigBlob) {
+		t.Errorf("the journal carries the commit's signature bytes (whole blob):\n%s", jout)
 	}
-	if decoded, err := base64.StdEncoding.DecodeString(armorBody); err == nil && len(decoded) > 0 {
-		hexForm := hex.EncodeToString(decoded)
-		if strings.Contains(jout, hexForm) {
-			t.Errorf("the journal carries the commit's signature bytes (hex):\n%s", jout)
-		}
+	if signatureAppearsInJournal(jout, sigInner) {
+		t.Errorf("the journal carries the commit's inner signature bytes:\n%s", jout)
 	}
 	// Belt-and-braces: the commit message itself must not appear in the
 	// journal either (the closed data key set is the real leak guard;
@@ -840,6 +830,364 @@ func journalRecordExitCode(rec map[string]any) (int, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// TestCommitSignatureParser unit-tests the gpgsig parser and leak check.
+// The fixture is a real SSH signature produced by a throwaway key in the
+// test's own temp dir (never a real key, never the host agent: SSH_AUTH_SOCK
+// is cleared and HOME points at a temp dir), assembled into a commit object
+// by hand. "Expected" is outside the parser: the decoded .sig body.
+func TestCommitSignatureParser(t *testing.T) {
+	keygenPath, err := osexec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skipf("ssh-keygen not found on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+	if out, err := osexec.Command(keygenPath, "-t", "ed25519", "-N", "", "-f", keyPath).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen throwaway key failed: %v\n%s", err, out)
+	}
+	msgPath := filepath.Join(dir, "msg")
+	if err := os.WriteFile(msgPath, []byte("test signed commit\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Sign with the throwaway key FILE (never the agent). SSH_AUTH_SOCK
+	// stays empty and HOME is a temp dir so ssh-keygen cannot fall back.
+	sigPath := msgPath + ".sig"
+	env := append(os.Environ(), "HOME="+dir)
+	signEnv := append(env, "SSH_AUTH_SOCK=")
+	// Clear any inherited SSH_AUTH_SOCK by prepending the empty value.
+	signCmd := osexec.Command(keygenPath, "-Y", "sign", "-f", keyPath, "-n", "git", "-P", "", msgPath)
+	signCmd.Env = signEnv
+	if out, err := signCmd.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen -Y sign failed: %v\n%s", err, out)
+	}
+	sigBytes, err := os.ReadFile(sigPath)
+	if err != nil {
+		t.Fatalf("reading .sig file: %v", err)
+	}
+	sigText := string(sigBytes)
+	sigLines := strings.Split(strings.TrimSuffix(sigText, "\n"), "\n")
+	if len(sigLines) < 5 || sigLines[0] != "-----BEGIN SSH SIGNATURE-----" ||
+		sigLines[len(sigLines)-1] != "-----END SSH SIGNATURE-----" {
+		t.Fatalf("unexpected .sig armor shape: %q", sigText)
+	}
+	var body strings.Builder
+	for _, l := range sigLines[1 : len(sigLines)-1] {
+		body.WriteString(l)
+	}
+	wantBlob, err := base64.StdEncoding.DecodeString(body.String())
+	if err != nil {
+		t.Fatalf("decoding .sig body: %v", err)
+	}
+	if !bytes.HasPrefix(wantBlob, []byte("SSHSIG")) {
+		t.Fatalf("decoded .sig body missing SSHSIG magic: %x", wantBlob[:16])
+	}
+	wantInner, innerErr := extractSSHSigInner(wantBlob)
+	if innerErr != "" {
+		t.Fatalf("oracle SSHSIG parse failed: %s", innerErr)
+	}
+	if len(wantInner) != 64 {
+		t.Fatalf("oracle inner signature length = %d, want 64 (ed25519)", len(wantInner))
+	}
+
+	// Assemble a commit object: headers (incl. gpgsig with continuation),
+	// blank line, message. This is what git cat-file commit prints.
+	gpgsigHeader := "gpgsig " + sigLines[0]
+	for _, l := range sigLines[1:] {
+		gpgsigHeader += "\n " + l
+	}
+	mkCommit := func(headers string, message string) string {
+		return headers + "\n\n" + message
+	}
+	baseHeaders := "tree " + strings.Repeat("a", 40) + "\n" +
+		"author T <t@example.com> 0 +0000\n" +
+		"committer T <t@example.com> 0 +0000\n" +
+		gpgsigHeader + "\n"
+	commitObj := mkCommit(baseHeaders, "test signed commit\n")
+
+	blob, errStr := commitSignatureBlob(commitObj)
+	if errStr != "" {
+		t.Fatalf("clean commit object failed to parse: %s", errStr)
+	}
+	if !bytes.Equal(blob, wantBlob) {
+		t.Errorf("parsed blob != .sig decoded blob:\n got %x\nwant %x", blob, wantBlob)
+	}
+	inner, errStr := extractSSHSigInner(blob)
+	if errStr != "" {
+		t.Fatalf("clean blob failed to yield inner signature: %s", errStr)
+	}
+	if !bytes.Equal(inner, wantInner) {
+		t.Errorf("inner signature != oracle inner signature:\n got %x\nwant %x", inner, wantInner)
+	}
+
+	// Header-only scanning: a gpgsig block in the MESSAGE body must not
+	// be read as a header (unsigned commit with a fake body).
+	bodyOnly := "tree " + strings.Repeat("a", 40) + "\n" +
+		"author T <t@example.com> 0 +0000\n" +
+		"committer T <t@example.com> 0 +0000\n" +
+		"\n" + gpgsigHeader + "\n\ntest signed commit\n"
+	if _, errStr := commitSignatureBlob(bodyOnly); errStr == "" {
+		t.Errorf("message-body gpgsig block: want a failure, got a clean parse")
+	} else if !strings.Contains(errStr, "gpgsig") {
+		t.Errorf("message-body gpgsig block: want the error to name gpgsig, got %q", errStr)
+	}
+
+	negatives := []struct {
+		name   string
+		object string
+	}{
+		{"no gpgsig header", mkCommit("tree "+strings.Repeat("a", 40)+"\nauthor T <t@example.com> 0 +0000\ncommitter T <t@example.com> 0 +0000\n", "test signed commit\n")},
+		{"duplicate gpgsig header", mkCommit(baseHeaders+gpgsigHeader+"\n", "test signed commit\n")},
+		{"broken armor start", strings.Replace(commitObj, "-----BEGIN SSH SIGNATURE-----", "-----BEGIN PGP SIGNATURE-----", 1)},
+		{"continuation without the leading space", strings.Replace(commitObj, "\n "+sigLines[1], "\n"+sigLines[1], 1)},
+		{"non-base64 body", "tree " + strings.Repeat("a", 40) + "\n" +
+			"author T <t@example.com> 0 +0000\n" +
+			"committer T <t@example.com> 0 +0000\n" +
+			"gpgsig -----BEGIN SSH SIGNATURE-----\n !!!not-base64!!!\n -----END SSH SIGNATURE-----" +
+			"\n\ntest signed commit\n"},
+		{"blob without SSHSIG magic", func() string {
+			bad := make([]byte, len(wantBlob))
+			copy(bad, wantBlob)
+			copy(bad, "XXXXXX")
+			badBody := base64.StdEncoding.EncodeToString(bad)
+			wrapped := ""
+			for i := 0; i < len(badBody); i += 64 {
+				end := i + 64
+				if end > len(badBody) {
+					end = len(badBody)
+				}
+				wrapped += badBody[i:end] + "\n"
+			}
+			return "tree " + strings.Repeat("a", 40) + "\n" +
+				"author T <t@example.com> 0 +0000\n" +
+				"committer T <t@example.com> 0 +0000\n" +
+				"gpgsig -----BEGIN SSH SIGNATURE-----\n " +
+				strings.ReplaceAll(strings.TrimSuffix(wrapped, "\n"), "\n", "\n ") +
+				"\n -----END SSH SIGNATURE-----\n" +
+				"\ntest signed commit\n"
+		}()},
+	}
+	for _, n := range negatives {
+		if b, errStr := commitSignatureBlob(n.object); errStr == "" {
+			t.Errorf("%s: want a failure, got a clean parse (%d bytes)", n.name, len(b))
+		} else if !strings.Contains(errStr, "gpgsig") && !strings.Contains(errStr, "SSHSIG") && !strings.Contains(errStr, "base64") && !strings.Contains(errStr, "armor") {
+			t.Errorf("%s: want a clear message naming gpgsig/SSHSIG/base64/armor, got %q", n.name, errStr)
+		}
+	}
+
+	// Leak-check needle negative: a journal containing only the inner
+	// signature bytes (what the agent reply carries) must trip the check,
+	// in hex and in base64.
+	if !signatureAppearsInJournal(string(inner), inner) {
+		t.Errorf("inner signature in hex: signatureAppearsInJournal missed a hex-encoded inner signature")
+	}
+	if !signatureAppearsInJournal(base64.StdEncoding.EncodeToString(inner), inner) {
+		t.Errorf("inner signature in base64: signatureAppearsInJournal missed a base64-encoded inner signature")
+	}
+	if signatureAppearsInJournal("{\"kind\":\"ssh/sign\",\"data\":{\"result\":\"ok\"}}", inner) {
+		t.Errorf("clean journal: signatureAppearsInJournal tripped on a journal with no signature bytes")
+	}
+}
+
+// commitSignatureBlob reads the commit object's gpgsig header from the raw
+// object bytes (git cat-file commit HEAD) and returns the base64-decoded
+// SSHSIG blob. The header block is scanned only up to the first blank
+// line, so a gpgsig-looking line in the message body is never read as a
+// header. Exactly one gpgsig header is allowed; a duplicate fails. The
+// armor must read -----BEGIN SSH SIGNATURE----- ... -----END SSH SIGNATURE-----
+// and the decoded blob must start with SSHSIG. A single trailing empty
+// continuation line (version-dependent git output) is tolerated. Every
+// failure names what was expected — an empty signature never passes.
+func commitSignatureBlob(commitObj string) ([]byte, string) {
+	lines := strings.Split(commitObj, "\n")
+	var gpgsig []string
+	seen := 0
+	for _, line := range lines {
+		if line == "" {
+			break // headers end at the first blank line
+		}
+		if strings.HasPrefix(line, "gpgsig ") {
+			seen++
+			if seen > 1 {
+				return nil, "commit carries duplicate gpgsig headers"
+			}
+			gpgsig = append(gpgsig, line)
+			continue
+		}
+		if seen == 0 || !strings.HasPrefix(line, " ") {
+			continue
+		}
+		gpgsig = append(gpgsig, line)
+	}
+	if len(gpgsig) == 0 {
+		return nil, "commit carries no gpgsig header"
+	}
+	// The first gpgsig line is "gpgsig -----BEGIN SSH SIGNATURE-----";
+	// continuation lines carry one leading space, stripped here.
+	var text []string
+	text = append(text, strings.TrimPrefix(gpgsig[0], "gpgsig "))
+	for _, l := range gpgsig[1:] {
+		if !strings.HasPrefix(l, " ") {
+			return nil, "gpgsig continuation line is missing its leading space"
+		}
+		text = append(text, l[1:])
+	}
+	// Tolerate a single trailing empty continuation line.
+	for len(text) > 0 && text[len(text)-1] == "" {
+		text = text[:len(text)-1]
+	}
+	if len(text) < 2 {
+		return nil, "gpgsig header holds no SSH signature armor"
+	}
+	if text[0] != "-----BEGIN SSH SIGNATURE-----" || text[len(text)-1] != "-----END SSH SIGNATURE-----" {
+		return nil, "gpgsig armor does not start with -----BEGIN SSH SIGNATURE----- or end with -----END SSH SIGNATURE-----"
+	}
+	var body strings.Builder
+	for _, l := range text[1 : len(text)-1] {
+		body.WriteString(l)
+	}
+	if body.Len() == 0 {
+		return nil, "gpgsig armor body is empty"
+	}
+	blob, err := base64.StdEncoding.DecodeString(body.String())
+	if err != nil {
+		return nil, fmt.Sprintf("gpgsig armor body is not valid base64: %v", err)
+	}
+	if !bytes.HasPrefix(blob, []byte("SSHSIG")) {
+		return nil, "gpgsig blob does not start with SSHSIG"
+	}
+	if len(blob) == 0 {
+		return nil, "gpgsig blob is empty"
+	}
+	return blob, ""
+}
+
+// extractSSHSigInner parses the SSH wire fields inside a decoded SSHSIG
+// blob and returns the raw signature bytes inside the final string field.
+// Format: "SSHSIG" | uint32 version | string pubkey | string namespace |
+// string reserved | string hash-algorithm | string signature. The
+// signature field is itself an SSH string (algo + raw sig). The raw 64-byte
+// ed25519 signature is what crosses the agent proxy (as part of the agent
+// reply), so it — not the whole blob alone — is the leak-check needle.
+// A non-empty 64-byte signature is required; anything else fails.
+func extractSSHSigInner(blob []byte) ([]byte, string) {
+	if !bytes.HasPrefix(blob, []byte("SSHSIG")) {
+		return nil, "blob does not start with SSHSIG"
+	}
+	off := len("SSHSIG") + 4 // magic + uint32 version
+	readString := func() ([]byte, bool) {
+		if off+4 > len(blob) {
+			return nil, false
+		}
+		n := uint32(blob[off])<<24 | uint32(blob[off+1])<<16 | uint32(blob[off+2])<<8 | uint32(blob[off+3])
+		off += 4
+		if off+int(n) > len(blob) {
+			return nil, false
+		}
+		s := blob[off : off+int(n)]
+		off += int(n)
+		return s, true
+	}
+	// Field 5 of 5 is the signature string (pubkey, namespace, reserved,
+	// hash-algorithm, signature).
+	var sig []byte
+	for i := 0; i < 5; i++ {
+		s, ok := readString()
+		if !ok {
+			return nil, fmt.Sprintf("SSHSIG blob truncated at string field %d", i+1)
+		}
+		if i == 4 {
+			sig = s
+		}
+	}
+	if off != len(blob) {
+		return nil, "SSHSIG blob carries unexpected trailing bytes"
+	}
+	// sig is the 83-byte signature string field:
+	// uint32 len=11 | "ssh-ed25519" | uint32 len=64 | 64 raw bytes —
+	// an SSH string whose content is itself (algo string + sig string).
+	if len(sig) == 64 {
+		return sig, ""
+	}
+	if len(sig) > 8 {
+		an := uint32(sig[0])<<24 | uint32(sig[1])<<16 | uint32(sig[2])<<8 | uint32(sig[3])
+		if int(an)+4 < len(sig) {
+			inner := sig[int(an)+4:]
+			if len(inner) > 4 {
+				sn := uint32(inner[0])<<24 | uint32(inner[1])<<16 | uint32(inner[2])<<8 | uint32(inner[3])
+				if int(sn)+4 == len(inner) && len(inner[4:]) == 64 {
+					return inner[4:], ""
+				}
+			}
+		}
+	}
+	return nil, fmt.Sprintf("SSHSIG inner signature length = %d, want 64 (ed25519)", len(sig))
+}
+
+// signatureAppearsInJournal reports whether the journal text contains any
+// needle derived from inner: the raw signature bytes, their hex form
+// (lower and upper case), and their base64 form at all three alignments
+// with edge characters trimmed. It returns true on the first hit.
+func signatureAppearsInJournal(journal string, inner []byte) bool {
+	if len(inner) == 0 {
+		return false
+	}
+	needleForms := [][]byte{inner}
+	hexForm := hex.EncodeToString(inner)
+	needleForms = append(needleForms, []byte(hexForm), []byte(strings.ToUpper(hexForm)))
+	b64 := base64.StdEncoding.EncodeToString(inner)
+	// All three alignments: a base64 occurrence can start at any of three
+	// byte offsets relative to a 4-char block; padding with 0, 1, or 2
+	// dummy prefix bytes and dropping leading/trailing partial characters
+	// covers each alignment.
+	for pad := 0; pad < 3; pad++ {
+		padded := padPrefix(b64, inner, pad)
+		for _, n := range padded {
+			needleForms = append(needleForms, []byte(n))
+		}
+	}
+	for _, n := range needleForms {
+		if len(n) == 0 {
+			continue
+		}
+		if strings.Contains(journal, string(n)) {
+			return true
+		}
+	}
+	return false
+}
+
+// padPrefix encodes inner preceded by pad dummy bytes in base64 and
+// returns the strict interior that any such encoding shares — the
+// characters that depend on neither the prefix nor the alignment. The
+// strict interior is always a substring of a real embedded occurrence,
+// so searching for it covers that alignment.
+func padPrefix(b64 string, inner []byte, pad int) []string {
+	if pad == 0 {
+		return []string{b64}
+	}
+	dummy := make([]byte, pad)
+	combined := append(append([]byte{}, dummy...), inner...)
+	enc := base64.StdEncoding.EncodeToString(combined)
+	// Drop the leading chars that depend on the dummy prefix bytes and
+	// the trailing chars that depend on zero-padding at the end.
+	switch pad {
+	case 1:
+		enc = strings.TrimPrefix(enc, enc[:2])
+	case 2:
+		enc = strings.TrimPrefix(enc, enc[:3])
+	}
+	enc = strings.TrimRight(enc, "=")
+	// Trim one more char at each end: the characters adjacent to the
+	// dummy/neighbour bytes may also depend on them.
+	if len(enc) > 2 {
+		enc = enc[1 : len(enc)-1]
+	}
+	if enc == "" {
+		return nil
+	}
+	return []string{enc}
 }
 
 // TestJournalCommitExecID unit-tests the req_id correlation helper
