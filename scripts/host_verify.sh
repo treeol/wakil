@@ -24,6 +24,8 @@ repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 # shellcheck source=host_verify_summary.sh
 . "$repo_root/scripts/host_verify_summary.sh"
+# shellcheck source=host_verify_hisn.sh
+. "$repo_root/scripts/host_verify_hisn.sh"
 
 # --- header (read go and git info BEFORE redirecting HOME) ---
 go_version=$(go version 2>&1 || echo "go: not found")
@@ -173,6 +175,21 @@ else
   skip=$((skip+1))
 fi
 
+# --- 4b. hisn floor ---
+# The go-test steps use WAKIL_HISN_BIN when it is exported, else hisn on PATH;
+# real-hisn always uses PATH. A binary below MinHisnVersion makes the session
+# tests skip quietly (go-test) or the step print a bare SKIP (real-hisn), so
+# say it here in one line per binary: found, required, where to get it. No
+# hisn at all is a SKIP; nothing is installed and no binary runs beyond
+# --version. The binary selection is unchanged.
+hisn_floor_min=$(grep -o 'MinHisnVersion = "[^"]*"' internal/sandbox/backend.go 2>/dev/null | head -1 | sed 's/.*"\([^"]*\)".*/\1/')
+if [ -n "$hisn_floor_min" ]; then
+  check hisn-floor hv_hisn_floor_check "$hisn_floor_min"
+else
+  echo "SKIP  hisn-floor (MinHisnVersion not found in internal/sandbox/backend.go)"
+  skip=$((skip+1))
+fi
+
 # --- 5. go test ---
 check go-test sh -c 'go test -count=1 ./... >"$TMPROOT/go-test.log" 2>&1; rc=$?; cat "$TMPROOT/go-test.log"; exit $rc'
 
@@ -225,6 +242,7 @@ check bench-selftest sh -c 'mkdir -p "$TMPROOT/bench-cache" && XDG_CACHE_HOME="$
 
 # --- 8c. the failure summary of this script ---
 check host-verify-summary sh -c 'sh scripts/host_verify_summary_test.sh'
+check host-verify-hisn sh -c 'sh scripts/host_verify_hisn_test.sh'
 
 # --- 9. DefaultConfig diff ---
 check default-config-diff sh -c '
@@ -343,25 +361,7 @@ fi
 # enough" case is detected by grepping the log: if hisn >= MinHisnVersion
 # but no test ran (only SKIP lines), that is a FAIL.
 
-# version_ge: return 0 (true) if version $1 >= $2, comparing numerically
-# per component (major, minor, patch). Ignores any suffix after the patch
-# number. No string comparison — only integer -lt/-gt/-eq. The sed keeps
-# only [0-9.] characters after stripping an optional "hisn " prefix, so
-# "0.6.0-dev1" → "0.6.0" and "0.10.0" → "0.10.0".
-version_ge() {
-  a=$(printf '%s' "$1" | sed 's/^hisn //; s/[^0-9.].*$//')
-  b=$(printf '%s' "$2" | sed 's/^hisn //; s/[^0-9.].*$//')
-  a1=$(printf '%s' "$a" | cut -d. -f1); a2=$(printf '%s' "$a" | cut -d. -f2); a3=$(printf '%s' "$a" | cut -d. -f3)
-  b1=$(printf '%s' "$b" | cut -d. -f1); b2=$(printf '%s' "$b" | cut -d. -f2); b3=$(printf '%s' "$b" | cut -d. -f3)
-  a1=${a1:-0}; a2=${a2:-0}; a3=${a3:-0}
-  b1=${b1:-0}; b2=${b2:-0}; b3=${b3:-0}
-  if [ "$a1" -gt "$b1" ]; then return 0; fi
-  if [ "$a1" -lt "$b1" ]; then return 1; fi
-  if [ "$a2" -gt "$b2" ]; then return 0; fi
-  if [ "$a2" -lt "$b2" ]; then return 1; fi
-  if [ "$a3" -ge "$b3" ]; then return 0; fi
-  return 1
-}
+# version_ge lives in scripts/host_verify_hisn.sh (sourced at the top).
 
 # Self-test for version_ge — runs before the real-hisn check so a broken
 # comparison is caught before it hides a real hisn. Prints each case with the
