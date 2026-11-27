@@ -733,3 +733,113 @@ Open risks:
   itself (hisn records its own view), so injection is not in the
   threat model for this test: the journal is evidence, not a log an
   attacker controls.
+
+## signature source fix (2026-11-27, HEAD cf6c16b)
+
+Host result (rubin, 2026-11-27, HEAD cf6c16b):
+
+```
+env -u SSH_AUTH_SOCK WAKIL_HISN_REQUIRE=1 XDG_RUNTIME_DIR=$PWD/.tmp/rt-067 WAKIL_HISN_BIN=$PWD/.tmp/hisn-0.6.7/hisn-x86_64-linux-gnu go test -count=1 -v -timeout 10m -run 'TestIntegrationSSHAgentForwarded|TestRealHisn' ./internal/sandbox/hisn/
+→ integration_test.go:668: git log %GG empty: the commit carries no signature to check the journal against
+```
+
+The correlation step now passes; the run stops at the leak check. Cause: `%GG`
+is git's raw verification output, not the signature. It stays empty when git
+cannot verify, and the test runs host git with `GIT_CONFIG_GLOBAL=/dev/null`
+and `GIT_CONFIG_NOSYSTEM=1`, so git has no `gpg.format=ssh` and no
+allowed-signers file. The signature itself is the commit object's `gpgsig`
+header. The plan section's prior wording — "the commit's `gpgsig` is read
+host-side and its base64 body and hex form must not appear" plus the note
+that "an empty `%GG` `Fatalf`s rather than passing the leak search
+vacuously" — describes the intent correctly but names the wrong mechanism:
+`%GG` never yields the signature on the host invocation the test actually
+makes (`%G?`/`%GK` pass `-c gpg.format=ssh` + the allowed-signers file, the
+`%GG` read does not), so the intended fail-if-unsigned guard fires on every
+run, signed or not.
+
+The change (Block 1, one signed commit — failing test first):
+
+- Replace the `%GG` read with `git cat-file commit HEAD`, run from the same
+  repo dir (`git -C <cwd>`) on the host with the same hardened env
+  (`GIT_CONFIG_GLOBAL=/dev/null`, `GIT_CONFIG_NOSYSTEM=1`). The host never
+  reads the user's real gitconfig, SSH_AUTH_SOCK, ~/.ssh, or any real key.
+- A small parser (test helper in the same test file) extracts the `gpgsig`
+  header: the first line after `gpgsig ` plus continuation lines starting
+  with one space, stripped of that space. The parser scans only the header
+  block, stopping at the first blank line that separates headers from the
+  commit message, and takes exactly one `gpgsig` header — a duplicate
+  fails, and a `gpgsig`-looking line in the message body is never read as
+  a header. The joined text must start with
+  `-----BEGIN SSH SIGNATURE-----` and end with `-----END SSH SIGNATURE-----`
+  and, base64-decoded from the body between the armor lines, must start
+  with the `SSHSIG` magic. A missing header, wrong armor, or a blob without
+  the magic fails the test — an empty signature never passes. A single
+  trailing empty continuation line is tolerated (version-dependent git
+  output shape); anything else malformed fails loudly.
+- The leak check compares the journal against two byte strings, not one:
+  the whole decoded `SSHSIG` blob, and the *inner* signature field parsed
+  from it (the SSH wire fields `SSHSIG` | uint32 version | string pubkey |
+  string namespace | string reserved | string hash-algorithm | string
+  signature; the searched bytes are the raw signature bytes inside that
+  last field). The whole blob alone would not match a journal that leaked
+  only what actually crosses the agent proxy — the agent reply
+  (`string(algo) || string(raw sig)`) or the sign-request preimage — so
+  the inner bytes are required: they are a suffix of both the blob and the
+  agent reply, and a leak of either trips the check. The extracted
+  signature must be non-empty and, for ed25519, 64 bytes; anything else
+  fails rather than searching for a vacuous needle. Each searched byte
+  string is checked in raw form, in hex (either case), and in base64 at
+  all three alignments with edge characters trimmed. The `SSHSIG` /
+  `U1NIU0lH` / `SSH SIGNATURE` marker checks stay. The `%G?`/`%GK`
+  verification and every other assertion stay unchanged: the test still
+  fails if signing fails, if the commit is unsigned, if the ssh/sign record
+  is missing or bound to another exec, if the fingerprint does not match
+  the throwaway key, or if signature data appears in the journal. The
+  commit message check stays as the belt-and-braces extra.
+- A unit test (no hisn needed) is written first and shown failing against
+  the current code (an undefined-symbol compile error, as the previous
+  section's red state): a commit object carrying a valid `gpgsig` block
+  from a key generated in the test passes the parser and yields the
+  expected blob, plus the expected inner signature bytes. "Expected" is
+  established outside the parser: the fixture is assembled by hand from
+  `ssh-keygen -Y sign -f <throwaway key>` output written into the test's
+  own temp dir, with `SSH_AUTH_SOCK` cleared/empty and `HOME` pointed at a
+  temp dir, and the expected blob is that `.sig` file's decoded body —
+  never from `git commit -S` (which would consult host git config and the
+  host agent). Negatives, each failing with a clear message: no header; a
+  `gpgsig` block in the message body only (unsigned commit with a fake
+  body); a duplicate `gpgsig` header; broken armor; continuation without
+  the leading space; non-base64 body; blob without `SSHSIG`; and a fake
+  journal containing only the inner signature bytes in hex and in base64
+  (the leak-check needle negative).
+- Recorded stale text: the exec-correlation section above still names
+  `%GG` as the signature source and guard. It describes the intent
+  (fail on an empty read rather than searching vacuously); the mechanism
+  it names is superseded by this section.
+
+Tests and gates: `gofmt -l` clean, `go vet ./...`, `golangci-lint run`,
+`go test -count=1 -timeout 30m ./...` (every package line reported; a
+known-flaky package may be rerun once by itself, both runs reported),
+`go test -race ./internal/sandbox/...`, `scripts/check_config_docs.sh`. The
+host rerun command stays the one above; acceptance is the
+`--- PASS: TestIntegrationSSHAgentForwarded` line, never the exit code
+alone.
+
+Open risks:
+
+- `git cat-file commit HEAD` prints the raw object, header continuation
+  lines included. The parser assumes exactly one `gpgsig` header with
+  space-continuation (git's own invariant); a second or malformed header
+  fails loudly rather than binding a wrong blob — unless a future git
+  emits a header this parser happens to accept, which would still have to
+  decode to `SSHSIG` form to pass.
+- The armor's interior headers (`Comment:`, `Version:`) are possible in
+  general; ssh signs emit none. The parser rejects any interior line that
+  is not base64 at decode time rather than special-casing header names, so
+  a future armor header fails loudly instead of silently dropping bytes.
+- `%GG` removal deletes the only assertion that the raw host git could
+  render the signature; the `%G?`/`%GK` host verification remains, and
+  both run under the same hardened env, so the swap loses no live guard.
+- A passing unit test proves the parser against authored fixtures; only
+  the host run proves `git cat-file` output shape on the real 0.6.7
+  journal against the real commit.
