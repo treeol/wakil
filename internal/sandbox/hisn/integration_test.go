@@ -4,6 +4,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -12,6 +15,7 @@ import (
 	"os"
 	osexec "os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -470,7 +474,21 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	if _, info := irunSign(t, b, cwd, "git", "add", "file.txt"); info.Code != 0 {
 		t.Fatalf("git add inside session failed: %+v", info)
 	}
-	commitOut, commitInfo := irunSign(t, b, cwd, "git", "commit", "-m", "test signed commit")
+	// The commit message goes in through a file written HERE, on the host, so
+	// it is in no argv, env or cwd: hisn logs every exec's argv in
+	// exec/request by design, and a message passed with -m would be in the
+	// journal through argv, not through signing. The marker is random per run
+	// so nothing else in the journal can collide with it. The file stays
+	// untracked (only file.txt was added).
+	markerRand := make([]byte, 16)
+	if _, err := rand.Read(markerRand); err != nil {
+		t.Fatalf("random commit marker: %v", err)
+	}
+	commitMarker := "wakil-it-payload-" + hex.EncodeToString(markerRand)
+	if err := os.WriteFile(filepath.Join(cwd, ".wakil-it-commitmsg"), []byte(commitMarker+"\n"), 0o600); err != nil {
+		t.Fatalf("writing the commit message file: %v", err)
+	}
+	commitOut, commitInfo := irunSign(t, b, cwd, "git", "commit", "-F", ".wakil-it-commitmsg")
 	if commitInfo.Code != 0 {
 		t.Fatalf("git commit inside session failed: %q %+v", commitOut, commitInfo)
 	}
@@ -679,11 +697,68 @@ func TestIntegrationSSHAgentForwarded(t *testing.T) {
 	if signatureAppearsInJournal(jout, sigInner) {
 		t.Errorf("the journal carries the commit's inner signature bytes:\n%s", jout)
 	}
-	// Belt-and-braces: the commit message itself must not appear in the
-	// journal either (the closed data key set is the real leak guard;
-	// this catches a future record that echoes the payload elsewhere).
-	if strings.Contains(jout, "test signed commit") {
-		t.Errorf("the journal carries the commit payload:\n%s", jout)
+
+	// The signed payload must not be in the journal either. Git signs the
+	// commit object without its gpgsig header; ssh-keygen hashes it and the
+	// agent receives only H(payload) inside the SSHSIG preimage, so a leak of
+	// the sign request carries the digest, not the message. The needles are
+	// the marker (the message), the tree and commit ids, and the digest of
+	// the payload.
+	//
+	// First prove the digest is the one that was signed: an off-by-one in
+	// commitPayloadBytes would make the digest needle search for nothing and
+	// pass on any journal. The signature must verify over exactly those
+	// bytes (the public key is inside the signature: no agent, no real key),
+	// and the hash algorithm must be one we compute.
+	payloadBytes, parseErr := commitPayloadBytes(string(catOut))
+	if parseErr != "" {
+		t.Fatalf("cannot read the commit's signed payload: %s", parseErr)
+	}
+	if msg := sshVerifyPayload(sigBlob, payloadBytes); msg != "" {
+		t.Fatalf("the extracted commit payload is not what git signed: %s", msg)
+	}
+	hashAlg, parseErr := sshsigHashAlg(sigBlob)
+	if parseErr != "" {
+		t.Fatalf("cannot read the SSHSIG hash algorithm: %s", parseErr)
+	}
+	payloadDig, parseErr := payloadDigest(hashAlg, payloadBytes)
+	if parseErr != "" {
+		t.Fatal(parseErr)
+	}
+	hostGit := func(args ...string) string {
+		t.Helper()
+		cmd := osexec.Command("git", append([]string{"-C", cwd}, args...)...)
+		cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatalf("git %v on host failed: %v", args, err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	commitID := hostGit("rev-parse", "HEAD")
+	treeID := hostGit("rev-parse", "HEAD^{tree}")
+	var needles []payloadNeedle
+	needles = append(needles, payloadNeedle{name: "marker", data: []byte(commitMarker), argvBlind: true})
+	for _, id := range []struct{ name, text string }{{"commit", commitID}, {"tree", treeID}} {
+		raw, err := hex.DecodeString(id.text)
+		if err != nil || (len(id.text) != 40 && len(id.text) != 64) {
+			t.Fatalf("%s id %q is not a 40 or 64 digit hex object id: %v", id.name, id.text, err)
+		}
+		needles = append(needles,
+			payloadNeedle{name: id.name, data: raw},
+			payloadNeedle{name: id.name + "-text", data: []byte(id.text)})
+	}
+	needles = append(needles, payloadNeedle{name: "payload-" + hashAlg, data: payloadDig})
+	if msg := validatePayloadNeedles(needles); msg != "" {
+		t.Fatalf("payload needles unusable: %s", msg)
+	}
+	// Canary: the scanner must see the digest it is about to declare absent.
+	canary := `{"kind":"ssh/sign","data":{"x":"` + hex.EncodeToString(payloadDig) + `"}}`
+	if got := journalPayloadLeaks(jout+"\n"+canary, needles); len(got) == 0 {
+		t.Fatalf("canary: journalPayloadLeaks did not report a journal that carries the payload digest")
+	}
+	if leaks := journalPayloadLeaks(jout, needles); len(leaks) > 0 {
+		t.Errorf("the journal carries signed data (%s):\n%s", strings.Join(leaks, ", "), jout)
 	}
 }
 
@@ -990,6 +1065,238 @@ func TestCommitSignatureParser(t *testing.T) {
 	}
 }
 
+// TestSignatureAppearsInJournalEmbedded pins the needle scanner: a needle
+// embedded in a longer buffer, at any byte offset, is found in raw, hex,
+// upper-case hex and base64 form, and an unrelated needle is not. The base64
+// cases matter: the trailing characters of a base64 needle depend on the
+// bytes that follow it, so a full-encoding needle misses an embedded leak.
+func TestSignatureAppearsInJournalEmbedded(t *testing.T) {
+	needle := make([]byte, 64)
+	for i := range needle {
+		needle[i] = byte(0xA0 + i*3)
+	}
+	other := make([]byte, 64)
+	for i := range other {
+		other[i] = byte(0x11 + i*7)
+	}
+	for prefix := 0; prefix <= 5; prefix++ {
+		for suffix := 0; suffix <= 5; suffix++ {
+			buf := append(append(bytes.Repeat([]byte{0x5A}, prefix), needle...), bytes.Repeat([]byte{0xC3}, suffix)...)
+			forms := map[string]string{
+				"raw":       string(buf),
+				"hex":       hex.EncodeToString(buf),
+				"hex-upper": strings.ToUpper(hex.EncodeToString(buf)),
+				"base64":    base64.StdEncoding.EncodeToString(buf),
+			}
+			for name, journal := range forms {
+				if !signatureAppearsInJournal("x"+journal+"y", needle) {
+					t.Errorf("%s, prefix %d, suffix %d: embedded needle not found", name, prefix, suffix)
+				}
+				if signatureAppearsInJournal("x"+journal+"y", other) {
+					t.Errorf("%s, prefix %d, suffix %d: unrelated needle reported", name, prefix, suffix)
+				}
+			}
+		}
+	}
+}
+
+// TestJournalPayloadLeaks unit-tests the payload leak scanner on fake
+// journals (nothing real). The scan is argv-blind for the marker needle only:
+// hisn logs every exec's argv in exec/request by design, so the marker
+// appearing there is not a leak, but it appearing anywhere else is, and
+// every other needle is searched over the whole raw line, argv included.
+func TestJournalPayloadLeaks(t *testing.T) {
+	marker := []byte("wakil-it-payload-0123456789abcdef0123456789abcdef")
+	tree := make([]byte, 20)
+	for i := range tree {
+		tree[i] = byte(0x7e + i*5)
+	}
+	digest := make([]byte, 64)
+	for i := range digest {
+		digest[i] = byte(0x21 + i*11)
+	}
+	needles := []payloadNeedle{
+		{name: "marker", data: marker, argvBlind: true},
+		{name: "tree", data: tree},
+		{name: "payload-sha512", data: digest},
+	}
+	client := `"client":{"uid":1000,"label":"wakil@fake","label_source":"none","req_id":"fake-1"}`
+	leaks := func(lines ...string) []string {
+		return journalPayloadLeaks(strings.Join(lines, "\n"), needles)
+	}
+	check := func(name string, got []string, want ...string) {
+		t.Helper()
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("%s: leaks = %v, want %v", name, got, want)
+		}
+	}
+	m := string(marker)
+
+	cleanReq := `{"kind":"exec/request",` + client + `,"data":{"argv":["git","commit","-F",".msg"],"cwd":"/tmp/ws","op":"exec","seq":19}}`
+	check("clean journal", leaks(cleanReq, `{"kind":"ssh/sign","data":{"result":"ok","seat":null}}`))
+
+	// Argv-blind by design: the marker only inside exec/request data.argv.
+	argvReq := `{"kind":"exec/request",` + client + `,"data":{"argv":["git","commit","-m","` + m + `"],"cwd":"/tmp/ws","op":"exec","seq":19}}`
+	check("marker only in exec/request data.argv", leaks(argvReq))
+
+	// The marker anywhere else is a leak.
+	for _, c := range []struct{ name, line string }{
+		{"ssh/sign record", `{"kind":"ssh/sign","data":{"result":"ok","note":"` + m + `"}}`},
+		{"exec/result record", `{"kind":"exec/result",` + client + `,"data":{"result":"ok","path":"` + m + `"}}`},
+		{"exec/request data.cwd", `{"kind":"exec/request",` + client + `,"data":{"argv":["git"],"cwd":"/tmp/` + m + `"}}`},
+		{"exec/request data.path", `{"kind":"exec/request",` + client + `,"data":{"argv":["git"],"path":"` + m + `"}}`},
+		{"exec/request top-level argv", `{"kind":"exec/request","argv":["` + m + `"],"data":{"cwd":"/tmp/ws"}}`},
+		{"unknown kind with data.argv", `{"kind":"exec/other","data":{"argv":["` + m + `"]}}`},
+		{"exec/request whose data is not an object", `{"kind":"exec/request","data":"` + m + `"}`},
+		{"exec/request without data.argv", `{"kind":"exec/request","data":{"note":"` + m + `"}}`},
+		{"non-JSON line", `session ended ` + m},
+	} {
+		check(c.name, leaks(cleanReq, c.line), "marker")
+	}
+
+	// Digests and ids are not argv-blind: found inside data.argv too, in
+	// hex, upper-case hex and base64 at any offset.
+	embed := func(data []byte) map[string]string {
+		out := map[string]string{
+			"raw":       string(data),
+			"hex":       hex.EncodeToString(data),
+			"hex-upper": strings.ToUpper(hex.EncodeToString(data)),
+		}
+		for prefix := 0; prefix < 3; prefix++ {
+			buf := append(bytes.Repeat([]byte{0x5A}, prefix), data...)
+			buf = append(buf, 0xC3, 0xC4)
+			out["base64+"+strconv.Itoa(prefix)] = base64.StdEncoding.EncodeToString(buf)
+		}
+		return out
+	}
+	for _, n := range []payloadNeedle{needles[1], needles[2]} {
+		for form, text := range embed(n.data) {
+			if strings.ContainsAny(text, "\"\\\n") {
+				continue // a raw binary form that cannot sit in a JSON string unescaped
+			}
+			check(n.name+" "+form+" in ssh/sign", leaks(cleanReq, `{"kind":"ssh/sign","data":{"x":"`+text+`"}}`), n.name)
+			check(n.name+" "+form+" in data.argv", leaks(`{"kind":"exec/request","data":{"argv":["`+text+`"]}}`), n.name)
+		}
+	}
+
+	// Several needles in one journal come back sorted and once each.
+	check("two needles", leaks(
+		`{"kind":"ssh/sign","data":{"x":"`+hex.EncodeToString(digest)+`"}}`,
+		`{"kind":"ssh/sign","data":{"y":"`+m+`"}}`,
+		`{"kind":"ssh/sign","data":{"z":"`+m+`"}}`,
+	), "marker", "payload-sha512")
+
+	// The needle validator refuses what could pass vacuously.
+	if msg := validatePayloadNeedles(needles); msg != "" {
+		t.Errorf("valid needles refused: %s", msg)
+	}
+	for _, c := range []struct {
+		name string
+		ns   []payloadNeedle
+	}{
+		{"empty data", []payloadNeedle{{name: "a", data: nil}}},
+		{"short data", []payloadNeedle{{name: "a", data: make([]byte, 15)}}},
+		{"empty name", []payloadNeedle{{name: "", data: make([]byte, 20)}}},
+		{"duplicate name", []payloadNeedle{{name: "a", data: make([]byte, 20)}, {name: "a", data: make([]byte, 21)}}},
+		{"no needles", nil},
+	} {
+		if msg := validatePayloadNeedles(c.ns); msg == "" {
+			t.Errorf("%s: validatePayloadNeedles accepted it", c.name)
+		}
+	}
+}
+
+// TestCommitPayloadBytes proves commitPayloadBytes returns exactly the bytes
+// that were signed, with a throwaway key file (never the agent: the signing
+// env drops SSH_AUTH_SOCK and HOME is a temp dir). The oracle is the payload
+// file that was handed to ssh-keygen, not the parser.
+func TestCommitPayloadBytes(t *testing.T) {
+	headers := "tree " + strings.Repeat("a", 40) + "\n" +
+		"author T <t@example.com> 0 +0000\n" +
+		"committer T <t@example.com> 0 +0000\n"
+	message := "\nwakil-it-payload-fake\n gpgsig-looking indented body line\n"
+	payload := headers + message
+
+	// Static cases need no ssh-keygen.
+	armor := "gpgsig -----BEGIN SSH SIGNATURE-----\n AAAA\n BBBB\n -----END SSH SIGNATURE-----\n"
+	got, errStr := commitPayloadBytes(headers + armor + message)
+	if errStr != "" || string(got) != payload {
+		t.Errorf("static: got (%q, %q), want (%q, \"\")", got, errStr, payload)
+	}
+	if _, errStr := commitPayloadBytes(payload); errStr == "" {
+		t.Errorf("no gpgsig header: want a failure, got a clean result")
+	}
+	// A gpgsig line in the message body is not a header: nothing to remove.
+	if _, errStr := commitPayloadBytes(headers + message + "gpgsig x\n"); errStr == "" {
+		t.Errorf("gpgsig only in the message body: want a failure")
+	}
+	// Digests.
+	for alg, want := range map[string]int{"sha256": 32, "sha512": 64} {
+		d, errStr := payloadDigest(alg, []byte(payload))
+		if errStr != "" || len(d) != want {
+			t.Errorf("payloadDigest(%s): len %d, err %q, want len %d", alg, len(d), errStr, want)
+		}
+	}
+	if _, errStr := payloadDigest("sha1", []byte(payload)); errStr == "" {
+		t.Errorf("payloadDigest(sha1): want a failure")
+	}
+
+	keygenPath, err := osexec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skipf("ssh-keygen not found on PATH: %v", err)
+	}
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_ed25519")
+	if out, err := osexec.Command(keygenPath, "-t", "ed25519", "-N", "", "-f", keyPath).CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen throwaway key failed: %v\n%s", err, out)
+	}
+	payloadPath := filepath.Join(dir, "payload")
+	if err := os.WriteFile(payloadPath, []byte(payload), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	signCmd := osexec.Command(keygenPath, "-Y", "sign", "-f", keyPath, "-n", "git", "-P", "", payloadPath)
+	signCmd.Env = signingTestEnv(dir)
+	if out, err := signCmd.CombinedOutput(); err != nil {
+		t.Fatalf("ssh-keygen -Y sign failed: %v\n%s", err, out)
+	}
+	sigBytes, err := os.ReadFile(payloadPath + ".sig")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sigLines := strings.Split(strings.TrimSuffix(string(sigBytes), "\n"), "\n")
+	commitObj := headers + "gpgsig " + sigLines[0] + "\n"
+	for _, l := range sigLines[1:] {
+		commitObj += " " + l + "\n"
+	}
+	commitObj += message
+
+	extracted, errStr := commitPayloadBytes(commitObj)
+	if errStr != "" {
+		t.Fatalf("commitPayloadBytes on the signed commit: %s", errStr)
+	}
+	if !bytes.Equal(extracted, []byte(payload)) {
+		t.Fatalf("extracted payload != the bytes that were signed:\n got %q\nwant %q", extracted, payload)
+	}
+	blob, errStr := commitSignatureBlob(commitObj)
+	if errStr != "" {
+		t.Fatalf("commitSignatureBlob: %s", errStr)
+	}
+	if msg := sshVerifyPayload(blob, extracted); msg != "" {
+		t.Errorf("a correct payload failed verification: %s", msg)
+	}
+	tampered := append(append([]byte{}, extracted...), '\n')
+	if msg := sshVerifyPayload(blob, tampered); msg == "" {
+		t.Errorf("a one-byte-longer payload passed verification: the oracle cannot catch an off-by-one")
+	}
+	alg, errStr := sshsigHashAlg(blob)
+	if errStr != "" || alg != "sha512" {
+		t.Errorf("sshsigHashAlg = (%q, %q), want (\"sha512\", \"\")", alg, errStr)
+	}
+	if _, errStr := sshsigHashAlg(blob[:20]); errStr == "" {
+		t.Errorf("sshsigHashAlg on a truncated blob: want a failure")
+	}
+}
+
 // commitSignatureBlob reads the commit object's gpgsig header from the raw
 // object bytes (git cat-file commit HEAD) and returns the base64-decoded
 // SSHSIG blob. The header block is scanned only up to the first blank
@@ -1126,68 +1433,249 @@ func extractSSHSigInner(blob []byte) ([]byte, string) {
 }
 
 // signatureAppearsInJournal reports whether the journal text contains any
-// needle derived from inner: the raw signature bytes, their hex form
-// (lower and upper case), and their base64 form at all three alignments
-// with edge characters trimmed. It returns true on the first hit.
+// needle derived from inner: the raw bytes, their hex form (lower and upper
+// case), and base64 at all three alignments. It returns true on the first
+// hit.
+//
+// A base64 occurrence of inner embedded in a longer buffer starts at one of
+// three byte offsets relative to a 3-byte group. Only the groups lying wholly
+// inside inner encode the same way whatever surrounds it, so for each offset
+// the needle is the encoding of inner minus its leading partial group and
+// minus its trailing partial group. Including the first or last partial
+// group would make the needle depend on the neighbouring bytes and miss an
+// embedded leak.
 func signatureAppearsInJournal(journal string, inner []byte) bool {
 	if len(inner) == 0 {
 		return false
 	}
-	needleForms := [][]byte{inner}
+	needleForms := []string{string(inner)}
 	hexForm := hex.EncodeToString(inner)
-	needleForms = append(needleForms, []byte(hexForm), []byte(strings.ToUpper(hexForm)))
-	b64 := base64.StdEncoding.EncodeToString(inner)
-	// All three alignments: a base64 occurrence can start at any of three
-	// byte offsets relative to a 4-char block; padding with 0, 1, or 2
-	// dummy prefix bytes and dropping leading/trailing partial characters
-	// covers each alignment.
-	for pad := 0; pad < 3; pad++ {
-		padded := padPrefix(b64, inner, pad)
-		for _, n := range padded {
-			needleForms = append(needleForms, []byte(n))
+	needleForms = append(needleForms, hexForm, strings.ToUpper(hexForm))
+	for skip := 0; skip < 3; skip++ {
+		if skip > len(inner) {
+			break
 		}
-	}
-	for _, n := range needleForms {
-		if len(n) == 0 {
+		sub := inner[skip:]
+		sub = sub[:len(sub)-len(sub)%3]
+		if len(sub) < 9 { // fewer than three whole groups: too weak to search for
 			continue
 		}
-		if strings.Contains(journal, string(n)) {
+		needleForms = append(needleForms, base64.StdEncoding.EncodeToString(sub))
+	}
+	for _, n := range needleForms {
+		if n != "" && strings.Contains(journal, n) {
 			return true
 		}
 	}
 	return false
 }
 
-// padPrefix encodes inner preceded by pad dummy bytes in base64 and
-// returns the strict interior that any such encoding shares — the
-// characters that depend on neither the prefix nor the alignment. The
-// strict interior is always a substring of a real embedded occurrence,
-// so searching for it covers that alignment.
-func padPrefix(b64 string, inner []byte, pad int) []string {
-	if pad == 0 {
-		return []string{b64}
+// payloadNeedle is one thing the signing journal must not carry: data is
+// searched in raw, hex and base64 form by signatureAppearsInJournal.
+// argvBlind exempts exec/request data.argv from the search, for needles the
+// test itself passes through an argv (none today; hisn logs every exec's argv
+// by design).
+type payloadNeedle struct {
+	name      string
+	data      []byte
+	argvBlind bool
+}
+
+const minPayloadNeedleLen = 16
+
+// validatePayloadNeedles returns "" when every needle is usable: a list that
+// is empty, a needle with no name, a duplicate name or data shorter than
+// minPayloadNeedleLen could pass vacuously.
+func validatePayloadNeedles(needles []payloadNeedle) string {
+	if len(needles) == 0 {
+		return "no payload needles"
 	}
-	dummy := make([]byte, pad)
-	combined := append(append([]byte{}, dummy...), inner...)
-	enc := base64.StdEncoding.EncodeToString(combined)
-	// Drop the leading chars that depend on the dummy prefix bytes and
-	// the trailing chars that depend on zero-padding at the end.
-	switch pad {
+	seen := map[string]bool{}
+	for _, n := range needles {
+		switch {
+		case n.name == "":
+			return "a payload needle has no name"
+		case seen[n.name]:
+			return fmt.Sprintf("duplicate payload needle %q", n.name)
+		case len(n.data) < minPayloadNeedleLen:
+			return fmt.Sprintf("payload needle %q is %d bytes, want at least %d", n.name, len(n.data), minPayloadNeedleLen)
+		}
+		seen[n.name] = true
+	}
+	return ""
+}
+
+// journalPayloadLeaks returns the sorted names of the needles found in the
+// journal, one JSON record per line. A needle is searched over the whole raw
+// line, except an argvBlind needle on an exec/request record whose data is an
+// object with an argv key: that one is searched with data.argv removed. A
+// line that does not parse as a JSON object is searched whole (fail closed).
+func journalPayloadLeaks(journal string, needles []payloadNeedle) []string {
+	found := map[string]bool{}
+	for _, line := range strings.Split(journal, "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		blindLine := line
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err == nil {
+			if kind, _ := rec["kind"].(string); kind == "exec/request" {
+				if data, ok := rec["data"].(map[string]any); ok {
+					if _, hasArgv := data["argv"]; hasArgv {
+						delete(data, "argv")
+						if b, err := json.Marshal(rec); err == nil {
+							blindLine = string(b)
+						}
+					}
+				}
+			}
+		}
+		for _, n := range needles {
+			if found[n.name] {
+				continue
+			}
+			scan := line
+			if n.argvBlind {
+				scan = blindLine
+			}
+			if signatureAppearsInJournal(scan, n.data) {
+				found[n.name] = true
+			}
+		}
+	}
+	names := make([]string, 0, len(found))
+	for name := range found {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// commitPayloadBytes returns the bytes git signs for a commit: the raw commit
+// object (git cat-file commit) with its gpgsig header and that header's
+// continuation lines removed. Only the header block is read, so a gpgsig line
+// in the message is left alone; no gpgsig header, or two, is a failure.
+func commitPayloadBytes(commitObj string) ([]byte, string) {
+	lines := strings.Split(commitObj, "\n")
+	var kept []string
+	inSig := false
+	seen := 0
+	for i, line := range lines {
+		if line == "" { // end of the header block: the rest is the message
+			kept = append(kept, lines[i:]...)
+			break
+		}
+		if strings.HasPrefix(line, "gpgsig ") {
+			seen++
+			inSig = true
+			continue
+		}
+		if inSig && strings.HasPrefix(line, " ") {
+			continue
+		}
+		inSig = false
+		kept = append(kept, line)
+	}
+	switch seen {
+	case 0:
+		return nil, "commit carries no gpgsig header to remove from the payload"
 	case 1:
-		enc = strings.TrimPrefix(enc, enc[:2])
-	case 2:
-		enc = strings.TrimPrefix(enc, enc[:3])
+		return []byte(strings.Join(kept, "\n")), ""
 	}
-	enc = strings.TrimRight(enc, "=")
-	// Trim one more char at each end: the characters adjacent to the
-	// dummy/neighbour bytes may also depend on them.
-	if len(enc) > 2 {
-		enc = enc[1 : len(enc)-1]
+	return nil, "commit carries duplicate gpgsig headers"
+}
+
+// payloadDigest hashes the signed payload the way ssh-keygen -Y sign does
+// for the SSHSIG hash algorithm alg (sha256 or sha512).
+func payloadDigest(alg string, payload []byte) ([]byte, string) {
+	switch alg {
+	case "sha256":
+		d := sha256.Sum256(payload)
+		return d[:], ""
+	case "sha512":
+		d := sha512.Sum512(payload)
+		return d[:], ""
 	}
-	if enc == "" {
-		return nil
+	return nil, fmt.Sprintf("SSHSIG hash algorithm %q is not covered (want sha256 or sha512)", alg)
+}
+
+// sshsigHashAlg returns the hash-algorithm field of a decoded SSHSIG blob:
+// "SSHSIG" | uint32 version | string pubkey | string namespace |
+// string reserved | string hash-algorithm | string signature.
+func sshsigHashAlg(blob []byte) (string, string) {
+	if !bytes.HasPrefix(blob, []byte("SSHSIG")) {
+		return "", "blob does not start with SSHSIG"
 	}
-	return []string{enc}
+	off := len("SSHSIG") + 4
+	for i := 0; i < 4; i++ {
+		if off+4 > len(blob) {
+			return "", fmt.Sprintf("SSHSIG blob truncated at string field %d", i+1)
+		}
+		n := int(uint32(blob[off])<<24 | uint32(blob[off+1])<<16 | uint32(blob[off+2])<<8 | uint32(blob[off+3]))
+		off += 4
+		if n < 0 || off+n > len(blob) {
+			return "", fmt.Sprintf("SSHSIG blob truncated at string field %d", i+1)
+		}
+		if i == 3 {
+			return string(blob[off : off+n]), ""
+		}
+		off += n
+	}
+	return "", "unreachable"
+}
+
+// signingTestEnv is the environment for running ssh-keygen against a key
+// FILE in the throwaway directory dir: HOME is dir and SSH_AUTH_SOCK is
+// absent, so ssh-keygen can never reach the user's agent or keys.
+func signingTestEnv(dir string) []string {
+	var env []string
+	for _, kv := range os.Environ() {
+		if strings.HasPrefix(kv, "HOME=") || strings.HasPrefix(kv, "SSH_AUTH_SOCK=") {
+			continue
+		}
+		env = append(env, kv)
+	}
+	return append(env, "HOME="+dir)
+}
+
+// sshVerifyPayload checks that the SSHSIG blob is a valid signature over
+// payload for namespace "git", with ssh-keygen -Y check-novalidate (the
+// public key is inside the signature, so no key, agent or allowed-signers
+// file is read). It returns "" on success. A wrong byte in payload fails it,
+// which is what proves a digest computed from payload is the digest that was
+// signed.
+func sshVerifyPayload(blob, payload []byte) string {
+	keygen, err := osexec.LookPath("ssh-keygen")
+	if err != nil {
+		return fmt.Sprintf("ssh-keygen not found: %v", err)
+	}
+	dir, err := os.MkdirTemp("", "wakil-sshsig-verify-")
+	if err != nil {
+		return fmt.Sprintf("temp dir: %v", err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	body := base64.StdEncoding.EncodeToString(blob)
+	var armor strings.Builder
+	armor.WriteString("-----BEGIN SSH SIGNATURE-----\n")
+	for i := 0; i < len(body); i += 70 {
+		end := i + 70
+		if end > len(body) {
+			end = len(body)
+		}
+		armor.WriteString(body[i:end] + "\n")
+	}
+	armor.WriteString("-----END SSH SIGNATURE-----\n")
+	sigPath := filepath.Join(dir, "payload.sig")
+	if err := os.WriteFile(sigPath, []byte(armor.String()), 0o600); err != nil {
+		return fmt.Sprintf("writing the signature: %v", err)
+	}
+	cmd := osexec.Command(keygen, "-Y", "check-novalidate", "-n", "git", "-s", sigPath)
+	cmd.Env = signingTestEnv(dir)
+	cmd.Stdin = bytes.NewReader(payload)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Sprintf("ssh-keygen -Y check-novalidate rejected the signature over the payload: %v: %s", err, strings.TrimSpace(string(out)))
+	}
+	return ""
 }
 
 // TestJournalCommitExecID unit-tests the req_id correlation helper
