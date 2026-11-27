@@ -7,9 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.13] - 2026-11-27
+
+Upgrading from 0.8.12, in short (details below):
+
+- **hisn minimum bumped 0.6.5 → 0.6.7.** 0.6.7 (0.6.6 was never released) gates signing by seat role in the ssh-agent proxy: owner and member seats may sign, an observer seat is refused with `SSH_AGENT_FAILURE` — before it, signing was allowlist-only. Wakil starts hisn sessions without seats, and 0.6.7 allows signing in that mode (the `ssh/sign` journal record names `seat: null`); the gate only applies to seated sessions. The floor is a policy floor, not a protocol break: no wire change, protocol revision stays 4, so 0.6.5 hisn clients keep working against a 0.6.7 supervisor and Wakil's existing requests are unchanged. Wakil refuses an older hisn at preflight naming the found and required versions and both reasons (the seat-role gate and the open-mode kernel floor: hisn 0.6.2+ needs kernel 6.7+ with Landlock ABI v4, enforced by the dedicated preflight error once the version check passes), and the default-backend probe refuses the same hisn in the same words (a default user on an older hisn falls back to docker with a DefaultNote naming the refusal, never a silent switch; an explicit `sandbox.backend = "hisn"` on an older hisn is a startup error). `install.sh` upgrade note: a 0.6.5 hisn earlier on PATH no longer counts as "already installed", so the installer drops 0.6.7 into the install dir — an older binary still on PATH can shadow it, so confirm `hisn --version` reports 0.6.7 after upgrading. Hisn 0.6.7 also adds `journal --wait`, `run --ssh-agent-socket` (off by default), and `ssh/sign` journal records (fingerprint, seat, exec id, result; never signed data) — none of these are wired in yet (see `docs/plans/hisn-0.6.7.md` Open points); Wakil signs through the existing `SSH_AUTH_SOCK` env path only.
+- **`host_verify.sh` hisn-floor check.** `scripts/host_verify.sh` now names the found and required hisn versions when the live binary (on `PATH` or `WAKIL_HISN_BIN`) is below `MinHisnVersion`, instead of a bare SKIP. New `scripts/host_verify_hisn.sh` and `scripts/host_verify_hisn_test.sh` cover the version comparison and floor check. No hisn at all is still a SKIP.
+
 ### Changed
 
 - hisn minimum bumped 0.6.5 → 0.6.7. 0.6.7 (0.6.6 was never released) gates signing by seat role in the ssh-agent proxy: owner and member seats may sign, an observer seat is refused with `SSH_AGENT_FAILURE` — before it, signing was allowlist-only. Wakil starts hisn sessions without seats, and 0.6.7 allows signing in that mode (the `ssh/sign` journal record names `seat: null`); the gate only applies to seated sessions. The floor is a policy floor, not a protocol break: no wire change, protocol revision stays 4, so a 0.6.5 hisn keeps working against a 0.6.7 supervisor and Wakil's existing requests are unchanged. Wakil refuses an older hisn at preflight naming the found and required versions and both reasons (the seat-role gate and the open-mode kernel floor: hisn 0.6.2+ needs kernel 6.7+ with Landlock ABI v4, enforced by the dedicated preflight error once the version check passes), and the default-backend probe refuses the same hisn in the same words (a default user on an older hisn falls back to docker with a DefaultNote naming the refusal, never a silent switch; an explicit `sandbox.backend = "hisn"` on an older hisn is a startup error). `install.sh` upgrade note: a 0.6.5 hisn earlier on PATH no longer counts as "already installed", so the installer drops 0.6.7 into the install dir — an older binary still on PATH can shadow it, so confirm `hisn --version` reports 0.6.7 after upgrading. Hisn 0.6.7 also adds `journal --wait`, `run --ssh-agent-socket` (off by default), and `ssh/sign` journal records (fingerprint, seat, exec id, result; never signed data) — none of these are wired in yet (see `docs/plans/hisn-0.6.7.md` Open points); Wakil signs through the existing `SSH_AUTH_SOCK` env path only.
+
+### Added
+
+- `scripts/host_verify.sh` now names the found and required hisn versions when the live binary (on `PATH` or `WAKIL_HISN_BIN`) is below `MinHisnVersion`, instead of a bare SKIP. New `scripts/host_verify_hisn.sh` and `scripts/host_verify_hisn_test.sh` cover the version comparison and the floor check. No hisn at all is still a SKIP.
+
+### Fixed (test/CI)
+
+- The signing integration test (`TestIntegrationSSHAgentForwarded`) now commits a test message from a file and checks the signed payload digest against the file, and reads the signing leak check from the commit `gpgsig` header: the journal records the `ssh/sign` call (fingerprint, seat, exec id, result) but no signature or payload data appears in the journal. The exec correlation is checked via `client.req_id` in the hisn 0.6.7 journal. The test requires hisn exactly 0.6.7 (`WAKIL_HISN_REQUIRE=1` forces it) and relaxes when 0.6.8 exists.
+
+No configuration key was added or removed. `context_modules` stays `"off"` by default and, with it off, the tool array and system prompt are byte-identical to 0.8.12. `MinHisnVersion` is 0.6.7.
 
 ## [0.8.12] - 2026-11-25
 
